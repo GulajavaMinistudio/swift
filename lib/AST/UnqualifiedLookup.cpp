@@ -22,6 +22,7 @@
 #include "swift/AST/ModuleNameLookup.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/NameLookupRequests.h"
+#include "swift/AST/PropertyWrappers.h"
 #include "swift/Basic/Debug.h"
 #include "swift/Basic/STLExtras.h"
 #include "swift/Basic/SourceManager.h"
@@ -88,32 +89,6 @@ namespace {
                        SmallVectorImpl<LookupResultEntry> &results) const;
     };
     
-    enum class AddGenericParameters { Yes, No };
-
-#ifndef NDEBUG
-    /// A consumer for debugging that lets the UnqualifiedLookupFactory know when
-    /// finding something.
-    class InstrumentedNamedDeclConsumer : public NamedDeclConsumer {
-      virtual void anchor() override;
-      UnqualifiedLookupFactory *factory;
-      
-    public:
-      InstrumentedNamedDeclConsumer(UnqualifiedLookupFactory *factory,
-                                    DeclNameRef name,
-                                    SmallVectorImpl<LookupResultEntry> &results,
-                                    bool isTypeLookup)
-      : NamedDeclConsumer(name, results, isTypeLookup), factory(factory) {}
-      
-      virtual void foundDecl(ValueDecl *VD, DeclVisibilityKind Reason,
-                             DynamicLookupInfo dynamicLookupInfo = {}) override {
-        unsigned before = results.size();
-        NamedDeclConsumer::foundDecl(VD, Reason, dynamicLookupInfo);
-        unsigned after = results.size();
-        if (after > before)
-          factory->addedResult(results.back());
-      }
-    };
-#endif
     // Inputs
     const DeclNameRef Name;
     DeclContext *const DC;
@@ -128,12 +103,7 @@ namespace {
     const Options options;
     const bool isOriginallyTypeLookup;
     const NLOptions baseNLOptions;
-    // Transputs
-#ifndef NDEBUG
-    InstrumentedNamedDeclConsumer Consumer;
-#else
-    NamedDeclConsumer Consumer;
-#endif
+
     // Outputs
     SmallVectorImpl<LookupResultEntry> &Results;
     size_t &IndexOfFirstOuterResult;
@@ -279,11 +249,6 @@ UnqualifiedLookupFactory::UnqualifiedLookupFactory(
   options(options),
   isOriginallyTypeLookup(options.contains(Flags::TypeLookup)),
   baseNLOptions(computeBaseNLOptions(options, isOriginallyTypeLookup)),
-  #ifdef NDEBUG
-  Consumer(Name, Results, isOriginallyTypeLookup),
-  #else
-  Consumer(this, Name, Results, isOriginallyTypeLookup),
-  #endif
   Results(Results),
   IndexOfFirstOuterResult(IndexOfFirstOuterResult)
 {}
@@ -600,8 +565,22 @@ bool ASTScopeDeclConsumerForUnqualifiedLookup::consume(
       }
     }
 
-    if (!value->getName().matchesRef(factory.Name.getFullName()))
-      continue;
+    auto fullName = factory.Name.getFullName();
+    if (!value->getName().matchesRef(fullName)) {
+      bool foundMatch = false;
+      if (auto *varDecl = dyn_cast<VarDecl>(value)) {
+        // Check if the name matches any auxiliary decls not in the AST
+        varDecl->visitAuxiliaryDecls([&](VarDecl *auxiliaryVar) {
+          if (auxiliaryVar->ValueDecl::getName().matchesRef(fullName)) {
+            value = auxiliaryVar;
+            foundMatch = true;
+          }
+        });
+      }
+
+      if (!foundMatch)
+        continue;
+    }
 
     // In order to preserve the behavior of the existing context-based lookup,
     // which finds all results for non-local variables at the top level instead
@@ -675,9 +654,6 @@ UnqualifiedLookupRequest::evaluate(Evaluator &evaluator,
 }
 
 #pragma mark debugging
-#ifndef NDEBUG
-void UnqualifiedLookupFactory::InstrumentedNamedDeclConsumer::anchor() {}
-#endif
 
 void UnqualifiedLookupFactory::ResultFinderForTypeContext::dump() const {
   (void)factory;
@@ -775,13 +751,16 @@ namespace {
 
 class ASTScopeDeclConsumerForLocalLookup
     : public AbstractASTScopeDeclConsumer {
-  SmallVectorImpl<ValueDecl *> &results;
   DeclName name;
+  bool stopAfterInnermostBraceStmt;
+  SmallVectorImpl<ValueDecl *> &results;
 
 public:
   ASTScopeDeclConsumerForLocalLookup(
-      SmallVectorImpl<ValueDecl *> &results, DeclName name)
-    : results(results), name(name) {}
+      DeclName name, bool stopAfterInnermostBraceStmt,
+      SmallVectorImpl<ValueDecl *> &results)
+    : name(name), stopAfterInnermostBraceStmt(stopAfterInnermostBraceStmt),
+      results(results) {}
 
   bool consume(ArrayRef<ValueDecl *> values, DeclVisibilityKind vis,
                NullablePtr<DeclContext> baseDC) override {
@@ -792,12 +771,16 @@ public:
       results.push_back(value);
     }
 
-    return !results.empty();
+    return (!stopAfterInnermostBraceStmt && !results.empty());
   }
 
   bool lookInMembers(DeclContext *const,
                      NominalTypeDecl *const) override {
     return true;
+  }
+
+  bool finishLookupInBraceStmt(BraceStmt *stmt) override {
+    return stopAfterInnermostBraceStmt;
   }
 
 #ifndef NDEBUG
@@ -812,15 +795,19 @@ public:
 /// Lookup that only finds local declarations and does not trigger
 /// interface type computation.
 void ASTScope::lookupLocalDecls(SourceFile *sf, DeclName name, SourceLoc loc,
+                                bool stopAfterInnermostBraceStmt,
                                 SmallVectorImpl<ValueDecl *> &results) {
-  ASTScopeDeclConsumerForLocalLookup consumer(results, name);
+  ASTScopeDeclConsumerForLocalLookup consumer(name, stopAfterInnermostBraceStmt,
+                                              results);
   ASTScope::unqualifiedLookup(sf, loc, consumer);
 }
 
 ValueDecl *ASTScope::lookupSingleLocalDecl(SourceFile *sf, DeclName name,
                                            SourceLoc loc) {
   SmallVector<ValueDecl *, 1> result;
-  ASTScope::lookupLocalDecls(sf, name, loc, result);
+  ASTScope::lookupLocalDecls(sf, name, loc,
+                             /*finishLookupInBraceStmt=*/false,
+                             result);
   if (result.size() != 1)
     return nullptr;
   return result[0];
