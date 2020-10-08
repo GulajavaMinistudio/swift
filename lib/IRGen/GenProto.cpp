@@ -2567,8 +2567,10 @@ MetadataResponse MetadataPath::followComponent(IRGenFunction &IGF,
 
     if (!source) return MetadataResponse();
 
-    auto sourceMetadata = IGF.emitTypeMetadataRef(sourceType);
-    auto associatedMetadata = IGF.emitTypeMetadataRef(sourceKey.Type);
+    auto sourceMetadata =
+      IGF.emitAbstractTypeMetadataRef(sourceType);
+    auto associatedMetadata =
+      IGF.emitAbstractTypeMetadataRef(sourceKey.Type);
     auto sourceWTable = source.getMetadata();
 
     AssociatedConformance associatedConformanceRef(sourceProtocol,
@@ -3098,7 +3100,11 @@ NecessaryBindings NecessaryBindings::computeBindings(
       continue;
 
     case MetadataSource::Kind::SelfMetadata:
-      bindings.addTypeMetadata(getSubstSelfType(IGM, origType, subs));
+      // Async functions pass the SelfMetadata and SelfWitnessTable parameters
+      // along explicitly.
+      if (forPartialApplyForwarder) {
+        bindings.addTypeMetadata(getSubstSelfType(IGM, origType, subs));
+      }
       continue;
 
     case MetadataSource::Kind::SelfWitnessTable:
