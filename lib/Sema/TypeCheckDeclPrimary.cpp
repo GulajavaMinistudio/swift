@@ -17,7 +17,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "CodeSynthesis.h"
-#include "ConstraintSystem.h"
 #include "DerivedConformances.h"
 #include "TypeChecker.h"
 #include "TypeCheckAccess.h"
@@ -1915,7 +1914,6 @@ public:
         if (!rawTy->is<ErrorType>()) {
           DE.diagnose(ED->getInherited().front().getSourceRange().Start,
                       diag::raw_type_not_literal_convertible, rawTy);
-          ED->getInherited().front().setType(ErrorType::get(getASTContext()));
         }
       }
       

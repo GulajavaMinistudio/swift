@@ -397,7 +397,6 @@ class ASTSourceFileScope final : public ASTScopeImpl {
 public:
   SourceFile *const SF;
   ScopeCreator *const scopeCreator;
-  ASTScopeImpl *insertionPoint;
 
   ASTSourceFileScope(SourceFile *SF, ScopeCreator *scopeCreator);
 
@@ -798,7 +797,6 @@ protected:
 
 private:
   void expandAScopeThatDoesNotCreateANewInsertionPoint(ScopeCreator &);
-  SourceLoc fixupEndForBadInput(SourceRange) const;
 
 public:
   std::string getClassName() const override;
@@ -1534,11 +1532,11 @@ class BraceStmtScope final : public AbstractStmtScope {
   BraceStmt *const stmt;
 
   /// Declarations which are in scope from the beginning of the statement.
-  SmallVector<ValueDecl *, 2> localFuncsAndTypes;
+  ArrayRef<ValueDecl *> localFuncsAndTypes;
 
   /// Declarations that are normally in scope only after their
   /// definition.
-  SmallVector<VarDecl *, 2> localVars;
+  ArrayRef<VarDecl *> localVars;
 
   /// The end location for bindings introduced in this scope. This can
   /// extend past the actual end of the BraceStmt in top-level code,
@@ -1548,8 +1546,8 @@ class BraceStmtScope final : public AbstractStmtScope {
 
 public:
   BraceStmtScope(BraceStmt *e,
-                 SmallVector<ValueDecl *, 2> localFuncsAndTypes,
-                 SmallVector<VarDecl *, 2> localVars,
+                 ArrayRef<ValueDecl *> localFuncsAndTypes,
+                 ArrayRef<VarDecl *> localVars,
                  SourceLoc endLoc)
       : stmt(e),
         localFuncsAndTypes(localFuncsAndTypes),
