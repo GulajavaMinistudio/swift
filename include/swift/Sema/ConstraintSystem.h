@@ -4942,6 +4942,7 @@ public:
   Optional<Type> checkTypeOfBinding(TypeVariableType *typeVar, Type type) const;
   Optional<PotentialBindings> determineBestBindings();
 
+public:
   /// Infer bindings for the given type variable based on current
   /// state of the constraint system.
   PotentialBindings inferBindingsFor(TypeVariableType *typeVar,
@@ -4951,7 +4952,6 @@ private:
   Optional<ConstraintSystem::PotentialBinding>
   getPotentialBindingForRelationalConstraint(PotentialBindings &result,
                                              Constraint *constraint) const;
-  PotentialBindings getPotentialBindings(TypeVariableType *typeVar) const;
 
   /// Add a constraint to the constraint system.
   SolutionKind addConstraintImpl(ConstraintKind kind, Type first, Type second,
