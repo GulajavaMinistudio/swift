@@ -1907,6 +1907,7 @@ public:
     case Kind::patternBinding:
       return patternBinding;
     }
+    llvm_unreachable("invalid case label type");
   }
 
   VarDecl *getAsUninitializedWrappedVar() const {
@@ -1921,6 +1922,7 @@ public:
     case Kind::uninitializedWrappedVar:
       return uninitializedWrappedVar;
     }
+    llvm_unreachable("invalid case label type");
   }
 
   BraceStmt *getFunctionBody() const {
@@ -5032,8 +5034,6 @@ private:
   /// \returns The selected disjunction.
   Constraint *selectDisjunction();
 
-  Constraint *selectApplyDisjunction();
-
   /// Solve the system of constraints generated from provided expression.
   ///
   /// \param target The target to generate constraints from.
@@ -5292,19 +5292,6 @@ public:
       ConstraintMatchLoop;
   typedef std::function<void(SmallVectorImpl<unsigned> &options)>
       PartitionAppendCallback;
-
-  // Attempt to sort nominalTypes based on what we can discover about
-  // calls into the overloads in the disjunction that bindOverload is
-  // a part of.
-  void sortDesignatedTypes(SmallVectorImpl<NominalTypeDecl *> &nominalTypes,
-                           Constraint *bindOverload);
-
-  // Partition the choices in a disjunction based on those that match
-  // the designated types for the operator that the disjunction was
-  // formed for.
-  void partitionForDesignatedTypes(ArrayRef<Constraint *> Choices,
-                                   ConstraintMatchLoop forEachChoice,
-                                   PartitionAppendCallback appendPartition);
 
   // Partition the choices in the disjunction into groups that we will
   // iterate over in an order appropriate to attempt to stop before we
