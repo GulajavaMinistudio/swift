@@ -725,8 +725,12 @@ public:
 
   llvm::StructType *SwiftContextTy;
   llvm::StructType *SwiftTaskTy;
+  llvm::StructType *SwiftExecutorTy;
   llvm::PointerType *SwiftContextPtrTy;
   llvm::PointerType *SwiftTaskPtrTy;
+  llvm::PointerType *SwiftExecutorPtrTy;
+  llvm::FunctionType *TaskContinuationFunctionTy;
+  llvm::PointerType *TaskContinuationFunctionPtrTy;
 
   llvm::StructType *DifferentiabilityWitnessTy; // { i8*, i8* }
 
@@ -889,6 +893,9 @@ public:
   const TypeInfo &getTypeInfo(SILType T);
   const TypeInfo &getWitnessTablePtrTypeInfo();
   const TypeInfo &getTypeMetadataPtrTypeInfo();
+  const TypeInfo &getSwiftContextPtrTypeInfo();
+  const TypeInfo &getTaskContinuationFunctionPtrTypeInfo();
+  const TypeInfo &getSwiftExecutorPtrTypeInfo();
   const TypeInfo &getObjCClassPtrTypeInfo();
   const LoadableTypeInfo &getOpaqueStorageTypeInfo(Size size, Alignment align);
   const LoadableTypeInfo &

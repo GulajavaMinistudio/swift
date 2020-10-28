@@ -516,6 +516,8 @@ bool MissingConformanceFailure::diagnoseTypeCannotConform(
                  nonConformingType->isEqual(protocolType),
                  protocolType);
 
+  emitDiagnostic(diag::only_concrete_types_conform_to_protocols);
+
   if (auto *OTD = dyn_cast<OpaqueTypeDecl>(AffectedDecl)) {
     auto *namingDecl = OTD->getNamingDecl();
     if (auto *repr = namingDecl->getOpaqueResultTypeRepr()) {
@@ -2171,6 +2173,7 @@ bool ContextualFailure::diagnoseAsError() {
         emitDiagnostic(diag::type_cannot_conform,
                        /*isExistentialType=*/true, fromType, 
                        fromType->isEqual(toType), toType);
+        emitDiagnostic(diag::only_concrete_types_conform_to_protocols);
         return true;
       }
 
@@ -2463,9 +2466,6 @@ void ContextualFailure::tryFixIts(InFlightDiagnostic &diagnostic) const {
 }
 
 bool ContextualFailure::diagnoseMissingFunctionCall() const {
-  if (getLocator()->isLastElement<LocatorPathElt::RValueAdjustment>())
-    return false;
-
   if (getLocator()
       ->isLastElement<LocatorPathElt::UnresolvedMemberChainResult>())
     return false;

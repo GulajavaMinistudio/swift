@@ -103,6 +103,31 @@ AsyncContextLayout irgen::getAsyncContextLayout(
   auto parameters = substitutedType->getParameters();
   SILFunctionConventions fnConv(substitutedType, IGF.getSILModule());
 
+  // AsyncContext * __ptrauth_swift_async_context_parent Parent;
+  {
+    auto ty = SILType();
+    auto &ti = IGF.IGM.getSwiftContextPtrTypeInfo();
+    valTypes.push_back(ty);
+    typeInfos.push_back(&ti);
+  }
+
+  // TaskContinuationFunction * __ptrauth_swift_async_context_resume
+  //     ResumeParent;
+  {
+    auto ty = SILType();
+    auto &ti = IGF.IGM.getTaskContinuationFunctionPtrTypeInfo();
+    valTypes.push_back(ty);
+    typeInfos.push_back(&ti);
+  }
+
+  // ExecutorRef ResumeParentExecutor;
+  {
+    auto ty = SILType();
+    auto &ti = IGF.IGM.getSwiftExecutorPtrTypeInfo();
+    valTypes.push_back(ty);
+    typeInfos.push_back(&ti);
+  }
+
   //   SwiftError *errorResult;
   auto errorCanType = IGF.IGM.Context.getExceptionType();
   auto errorType = SILType::getPrimitiveObjectType(errorCanType);
@@ -268,9 +293,25 @@ static Alignment getAsyncContextAlignment(IRGenModule &IGM) {
   return IGM.getPointerAlignment();
 }
 
-static llvm::Value *getAsyncTask(IRGenFunction &IGF) {
-  // TODO: Return the appropriate task.
-  return llvm::Constant::getNullValue(IGF.IGM.SwiftTaskPtrTy);
+llvm::Value *IRGenFunction::getAsyncTask() {
+  assert(isAsync());
+  auto *value = CurFn->getArg((unsigned)AsyncFunctionArgumentIndex::Task);
+  assert(value->getType() == IGM.SwiftTaskPtrTy);
+  return value;
+}
+
+llvm::Value *IRGenFunction::getAsyncExecutor() {
+  assert(isAsync());
+  auto *value = CurFn->getArg((unsigned)AsyncFunctionArgumentIndex::Executor);
+  assert(value->getType() == IGM.SwiftExecutorPtrTy);
+  return value;
+}
+
+llvm::Value *IRGenFunction::getAsyncContext() {
+  assert(isAsync());
+  auto *value = CurFn->getArg((unsigned)AsyncFunctionArgumentIndex::Context);
+  assert(value->getType() == IGM.SwiftContextPtrTy);
+  return value;
 }
 
 llvm::Type *ExplosionSchema::getScalarResultType(IRGenModule &IGM) const {
@@ -690,9 +731,12 @@ void SignatureExpansion::expandCoroutineContinuationParameters() {
 }
 
 void SignatureExpansion::addAsyncParameters() {
+  // using TaskContinuationFunction =
+  //   SWIFT_CC(swift)
+  //   void (AsyncTask *, ExecutorRef, AsyncContext *);
+  ParamIRTypes.push_back(IGM.SwiftTaskPtrTy);
+  ParamIRTypes.push_back(IGM.SwiftExecutorPtrTy);
   ParamIRTypes.push_back(IGM.SwiftContextPtrTy);
-  // TODO: Add actor.
-  // TODO: Add task.
   if (FnType->getRepresentation() == SILFunctionTypeRepresentation::Thick) {
     IGM.addSwiftSelfAttributes(Attrs, ParamIRTypes.size());
     ParamIRTypes.push_back(IGM.RefCountedPtrTy);
@@ -1757,6 +1801,8 @@ llvm::Value *irgen::getDynamicAsyncContextSize(IRGenFunction &IGF,
                                                AsyncContextLayout layout,
                                                CanSILFunctionType functionType,
                                                llvm::Value *thickContext) {
+  // TODO: This calculation should be extracted out into a standalone function
+  //       emitted on-demand per-module to improve codesize.
   switch (functionType->getRepresentation()) {
   case SILFunctionTypeRepresentation::Thick: {
     // If the called function is thick, the size of the called function's
@@ -2074,11 +2120,15 @@ class AsyncCallEmission final : public CallEmission {
   Size contextSize;
   Address context;
   llvm::Value *thickContext = nullptr;
+  Optional<AsyncContextLayout> asyncContextLayout;
 
   AsyncContextLayout getAsyncContextLayout() {
-    return ::getAsyncContextLayout(IGF, getCallee().getOrigFunctionType(),
-                                   getCallee().getSubstFunctionType(),
-                                   getCallee().getSubstitutions());
+    if (!asyncContextLayout) {
+      asyncContextLayout.emplace(::getAsyncContextLayout(
+          IGF, getCallee().getOrigFunctionType(),
+          getCallee().getSubstFunctionType(), getCallee().getSubstitutions()));
+    }
+    return *asyncContextLayout;
   }
 
   void saveValue(ElementLayout layout, Explosion &explosion, bool isOutlined) {
@@ -2135,6 +2185,8 @@ public:
   void setArgs(Explosion &llArgs, bool isOutlined,
                WitnessMetadata *witnessMetadata) override {
     Explosion asyncExplosion;
+    asyncExplosion.add(IGF.getAsyncTask());
+    asyncExplosion.add(IGF.getAsyncExecutor());
     asyncExplosion.add(contextBuffer.getAddress());
     if (getCallee().getRepresentation() ==
         SILFunctionTypeRepresentation::Thick) {
@@ -2143,9 +2195,22 @@ public:
     super::setArgs(asyncExplosion, false, witnessMetadata);
     SILFunctionConventions fnConv(getCallee().getSubstFunctionType(),
                                   IGF.getSILModule());
-
-    // Move all the arguments into the context.
     auto layout = getAsyncContextLayout();
+
+    // Set caller info into the context.
+    { // caller context
+      Explosion explosion;
+      explosion.add(IGF.getAsyncContext());
+      auto fieldLayout = layout.getParentLayout();
+      saveValue(fieldLayout, explosion, isOutlined);
+    }
+    { // caller executor
+      Explosion explosion;
+      explosion.add(IGF.getAsyncExecutor());
+      auto fieldLayout = layout.getResumeParentExecutorLayout();
+      saveValue(fieldLayout, explosion, isOutlined);
+    }
+    // Move all the arguments into the context.
     for (unsigned index = 0, count = layout.getIndirectReturnCount();
          index < count; ++index) {
       auto fieldLayout = layout.getIndirectReturnLayout(index);
@@ -3321,7 +3386,7 @@ void irgen::emitDeallocYieldManyCoroutineBuffer(IRGenFunction &IGF,
 Address irgen::emitTaskAlloc(IRGenFunction &IGF, llvm::Value *size,
                              Alignment alignment) {
   auto *call = IGF.Builder.CreateCall(IGF.IGM.getTaskAllocFn(),
-                                      {getAsyncTask(IGF), size});
+                                      {IGF.getAsyncTask(), size});
   call->setDoesNotThrow();
   call->setCallingConv(IGF.IGM.SwiftCC);
   call->addAttribute(llvm::AttributeList::FunctionIndex,
@@ -3333,7 +3398,7 @@ Address irgen::emitTaskAlloc(IRGenFunction &IGF, llvm::Value *size,
 void irgen::emitTaskDealloc(IRGenFunction &IGF, Address address,
                             llvm::Value *size) {
   auto *call = IGF.Builder.CreateCall(
-      IGF.IGM.getTaskDeallocFn(), {getAsyncTask(IGF), address.getAddress()});
+      IGF.IGM.getTaskDeallocFn(), {IGF.getAsyncTask(), address.getAddress()});
   call->setDoesNotThrow();
   call->setCallingConv(IGF.IGM.SwiftCC);
   call->addAttribute(llvm::AttributeList::FunctionIndex,
