@@ -211,10 +211,9 @@ namespace {
 
     ImportResult VisitType(const Type*) = delete;
 
+    // TODO: Add support for dependent types (SR-13809).
 #define DEPENDENT_TYPE(Class, Base)                                            \
-  ImportResult Visit##Class##Type(const clang::Class##Type *) {                \
-    llvm_unreachable("Dependent types cannot be converted");                   \
-  }
+  ImportResult Visit##Class##Type(const clang::Class##Type *) { return Type(); }
 #define TYPE(Class, Base)
 #include "clang/AST/TypeNodes.inc"
 
@@ -506,6 +505,8 @@ namespace {
       Type pointeeType =
           Impl.importTypeIgnoreIUO(pointeeQualType, ImportTypeKind::Value,
                                    AllowNSUIntegerAsInt, Bridgeability::None);
+      if (!pointeeType)
+        return Type();
 
       if (pointeeQualType->isFunctionType()) {
         return importFunctionPointerLikeType(*type, pointeeType);

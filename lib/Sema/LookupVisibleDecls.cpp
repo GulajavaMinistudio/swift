@@ -1095,8 +1095,8 @@ static void lookupVisibleDynamicMemberLookupDecls(
       { ctx, DeclBaseName::createSubscript(), { ctx.Id_dynamicMember} });
 
   SmallVector<ValueDecl *, 2> subscripts;
-  dc->lookupQualified(baseType, subscriptName, NL_QualifiedDefault,
-                      subscripts);
+  dc->lookupQualified(baseType, subscriptName,
+                      NL_QualifiedDefault | NL_ProtocolMembers, subscripts);
 
   for (ValueDecl *VD : subscripts) {
     auto *subscript = dyn_cast<SubscriptDecl>(VD);
@@ -1303,7 +1303,7 @@ void swift::lookupVisibleDecls(VisibleDeclConsumer &Consumer,
     return;
   }
   UsableFilteringDeclConsumer FilteringConsumer(DC->getASTContext().SourceMgr,
-                                                Loc, Consumer);
+                                                DC, Loc, Consumer);
   lookupVisibleDeclsImpl(FilteringConsumer, DC, IncludeTopLevel, Loc);
 }
 
