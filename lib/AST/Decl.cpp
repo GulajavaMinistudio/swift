@@ -684,7 +684,7 @@ Expr *AbstractFunctionDecl::getSingleExpressionBody() const {
   assert(hasSingleExpressionBody() && "Not a single-expression body");
   auto braceStmt = getBody();
   assert(braceStmt != nullptr && "No body currently available.");
-  auto body = getBody()->getFirstElement();
+  auto body = getBody()->getLastElement();
   if (auto *stmt = body.dyn_cast<Stmt *>()) {
     if (auto *returnStmt = dyn_cast<ReturnStmt>(stmt)) {
       return returnStmt->getResult();
@@ -701,7 +701,7 @@ Expr *AbstractFunctionDecl::getSingleExpressionBody() const {
 
 void AbstractFunctionDecl::setSingleExpressionBody(Expr *NewBody) {
   assert(hasSingleExpressionBody() && "Not a single-expression body");
-  auto body = getBody()->getFirstElement();
+  auto body = getBody()->getLastElement();
   if (auto *stmt = body.dyn_cast<Stmt *>()) {
     if (auto *returnStmt = dyn_cast<ReturnStmt>(stmt)) {
       returnStmt->setResult(NewBody);
@@ -717,7 +717,7 @@ void AbstractFunctionDecl::setSingleExpressionBody(Expr *NewBody) {
       return;
     }
   }
-  getBody()->setFirstElement(NewBody);
+  getBody()->setLastElement(NewBody);
 }
 
 bool AbstractStorageDecl::isTransparent() const {
@@ -1543,6 +1543,13 @@ StaticSpellingKind PatternBindingDecl::getCorrectStaticSpelling() const {
     return getStaticSpelling();
 
   return getCorrectStaticSpellingForDecl(this);
+}
+
+bool PatternBindingDecl::isAsyncLet() const {
+  if (auto var = getAnchoringVarDecl(0))
+    return var->isAsyncLet();
+
+  return false;
 }
 
 
@@ -5738,6 +5745,10 @@ bool VarDecl::isMemberwiseInitialized(bool preferDeclaredProperties) const {
     return false;
 
   return true;
+}
+
+bool VarDecl::isAsyncLet() const {
+  return getAttrs().hasAttribute<AsyncAttr>();
 }
 
 void ParamDecl::setSpecifier(Specifier specifier) {

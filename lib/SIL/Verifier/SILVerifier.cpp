@@ -1595,8 +1595,6 @@ public:
     verifySILFunctionType(resultInfo);
     require(resultInfo->getExtInfo().hasContext(),
             "result of closure cannot have a thin function type");
-    require(!resultInfo->isAsync() || PAI->getFunction()->isAsync(),
-            "cannot call an async function from a non async function");
 
     checkApplyTypeDependentArguments(PAI);
 
@@ -1738,6 +1736,14 @@ public:
       verifyLLVMIntrinsic(BI, BI->getIntrinsicInfo().ID);
       return;
     }
+
+    // Check that 'getCurrentAsyncTask' only occurs within an async function.
+    if (BI->getBuiltinKind() &&
+        *BI->getBuiltinKind() == BuiltinValueKind::GetCurrentAsyncTask) {
+      require(F.isAsync(),
+          "getCurrentAsyncTask builtin can only be used in an async function");
+      return;
+    }
   }
   
   void checkFunctionRefBaseInst(FunctionRefBaseInst *FRI) {
@@ -1745,8 +1751,6 @@ public:
                                     "result of function_ref");
     require(!fnType->getExtInfo().hasContext(),
             "function_ref should have a context-free function result");
-    require(!fnType->isAsync() || FRI->getFunction()->isAsync(),
-            "cannot call an async function from a non-async function");
 
     // Note: in SingleFunction mode, we relax some of these checks because
     // we may not have linked everything yet.
@@ -2921,8 +2925,6 @@ public:
   void checkWitnessMethodInst(WitnessMethodInst *AMI) {
     auto methodType = requireObjectType(SILFunctionType, AMI,
                                         "result of witness_method");
-    require(!methodType->isAsync() || AMI->getFunction()->isAsync(),
-            "cannot call an async function from a non-async function");
 
     auto *protocol
       = dyn_cast<ProtocolDecl>(AMI->getMember().getDecl()->getDeclContext());
@@ -3078,8 +3080,6 @@ public:
                                         "result of class_method");
     require(!methodType->getExtInfo().hasContext(),
             "result method must be of a context-free function type");
-    require(!methodType->isAsync() || CMI->getFunction()->isAsync(),
-            "cannot call an async function from a non-async function");
 
     SILType operandType = CMI->getOperand()->getType();
     require(operandType.isClassOrClassMetatype(),

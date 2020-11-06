@@ -4366,13 +4366,18 @@ public:
 
   void getUnresolvedMemberCompletions(ArrayRef<Type> Types) {
     NeedLeadingDot = !HaveDot;
+
+    SmallPtrSet<CanType, 4> seenTypes;
     for (auto T : Types) {
-      if (!T)
+      if (!T || !seenTypes.insert(T->getCanonicalType()).second)
         continue;
+
       if (auto objT = T->getOptionalObjectType()) {
         // If this is optional type, perform completion for the object type.
         // i.e. 'let _: Enum??? = .enumMember' is legal.
-        getUnresolvedMemberCompletions(objT->lookThroughAllOptionalTypes());
+        objT = objT->lookThroughAllOptionalTypes();
+        if (seenTypes.insert(objT->getCanonicalType()).second)
+          getUnresolvedMemberCompletions(objT);
 
         // Add 'nil' keyword with erasing '.' instruction.
         unsigned bytesToErase = 0;
@@ -6166,13 +6171,13 @@ bool CodeCompletionCallbacksImpl::trySolverCompletion(bool MaybeFuncBody) {
 // to work via TypeCheckCompletionCallback.
 static void undoSingleExpressionReturn(DeclContext *DC) {
   auto updateBody = [](BraceStmt *BS, ASTContext &Ctx) -> bool {
-    ASTNode FirstElem = BS->getFirstElement();
-    auto *RS = dyn_cast_or_null<ReturnStmt>(FirstElem.dyn_cast<Stmt*>());
+    ASTNode LastElem = BS->getLastElement();
+    auto *RS = dyn_cast_or_null<ReturnStmt>(LastElem.dyn_cast<Stmt*>());
 
     if (!RS || !RS->isImplicit())
       return false;
 
-    BS->setFirstElement(RS->getResult());
+    BS->setLastElement(RS->getResult());
     return true;
   };
 
