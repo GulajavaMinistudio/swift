@@ -1554,10 +1554,13 @@ ERROR(observingprop_requires_initializer,none,
       "non-member observing properties require an initializer", ())
 ERROR(global_requires_initializer,none,
       "global '%select{var|let}0' declaration requires an initializer expression"
-      "%select{ or getter/setter specifier|}0", (bool))
+      "%select{ or an explicitly stated getter|}0", (bool))
 ERROR(static_requires_initializer,none,
-      "%select{ERROR|'static var'|'class var'|}0 declaration requires an initializer "
-      "expression or getter/setter specifier", (StaticSpellingKind))
+      "'%select{ERROR|static|class|}0 %select{var|let}1' declaration requires "
+      "an initializer expression or an explicitly stated getter",
+      (StaticSpellingKind, bool))
+NOTE(static_requires_initializer_add_init,none,
+      "add an initializer to silence this error", ())
 ERROR(pattern_type_access,none,
       "%select{%select{variable|constant}0|property}1 "
       "%select{must be declared %select{"
@@ -2758,12 +2761,8 @@ ERROR(conformance_from_implementation_only_module,none,
       "the conformance is declared as SPI in %3|"
       "the conformance is declared as SPI}4",
       (Type, Identifier, unsigned, Identifier, unsigned))
-ERROR(assoc_conformance_from_implementation_only_module,none,
-      "cannot use conformance of %0 to %1 in associated type %3 (inferred as "
-      "%4); %select{%2 has been imported as implementation-only|"
-      "the conformance is declared as SPI in %2|"
-      "the conformance is declared as SPI}5",
-      (Type, Identifier, Identifier, Type, Type, unsigned))
+NOTE(assoc_conformance_from_implementation_only_module,none,
+     "in associated type %0 (inferred as %1)", (Type, Type))
 ERROR(unexportable_clang_function_type,none,
       "cannot export the underlying C type of the function type %0; "
       "it may use anonymous types or types defined outside of a module",

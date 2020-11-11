@@ -675,8 +675,6 @@ Pattern *resolvePattern(Pattern *P, DeclContext *dc, bool isStmtCondition);
 /// unbound generic types.
 Type typeCheckPattern(ContextualPattern pattern);
 
-bool typeCheckCatchPattern(CaseStmt *S, DeclContext *dc);
-
 /// Coerce a pattern to the given type.
 ///
 /// \param pattern The contextual pattern.
@@ -1066,10 +1064,10 @@ void diagnoseIfDeprecated(SourceRange SourceRange,
                           const ApplyExpr *Call);
 
 /// Emits a diagnostic for a reference to a conformnace that is deprecated.
-void diagnoseIfDeprecated(SourceLoc Loc,
-                          const RootProtocolConformance *DeprecatedConf,
-                          const ExtensionDecl *Ext,
-                          const ExportContext &Where);
+bool diagnoseIfDeprecated(SourceLoc loc,
+                          const RootProtocolConformance *rootConf,
+                          const ExtensionDecl *ext,
+                          const ExportContext &where);
 /// @}
 
 /// If LangOptions::DebugForbidTypecheckPrefix is set and the given decl
