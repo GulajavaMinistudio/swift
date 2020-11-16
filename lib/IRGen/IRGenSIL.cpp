@@ -856,42 +856,6 @@ public:
     }
   }
 
-  llvm::Value *getAsyncTask() override {
-    // FIXME: (1) Remove this override, (2) mark the IRGenFunction::getAsyncTask
-    //        declaration as non-virtual, and (3) mark IRGenFunction's
-    //        destructor non-virtual once Task.runDetached is available.
-    //        rdar://problem/70597390*/
-    if (CurSILFn->getLoweredFunctionType()->getRepresentation() ==
-        SILFunctionTypeRepresentation::CFunctionPointer) {
-      return llvm::Constant::getNullValue(IGM.SwiftTaskPtrTy);
-    }
-    return IRGenFunction::getAsyncTask();
-  }
-
-  llvm::Value *getAsyncExecutor() override {
-    // FIXME: (1) Remove this override, (2) mark the
-    //        IRGenFunction::getAsyncExecutor declaration as non-virtual, and
-    //        (3) mark IRGenFunction's destructor non-virtual once
-    //        Task.runDetached is available.  rdar://problem/70597390*/
-    if (CurSILFn->getLoweredFunctionType()->getRepresentation() ==
-        SILFunctionTypeRepresentation::CFunctionPointer) {
-      return llvm::Constant::getNullValue(IGM.SwiftExecutorPtrTy);
-    }
-    return IRGenFunction::getAsyncExecutor();
-  }
-
-  llvm::Value *getAsyncContext() override {
-    // FIXME: (1) Remove this override, (2) mark the
-    //        IRGenFunction::getAsyncContext declaration as non-virtual, and
-    //        (3) mark IRGenFunction's destructor non-virtual once
-    //        Task.runDetached is available.  rdar://problem/70597390*/
-    if (CurSILFn->getLoweredFunctionType()->getRepresentation() ==
-        SILFunctionTypeRepresentation::CFunctionPointer) {
-      return llvm::Constant::getNullValue(IGM.SwiftContextPtrTy);
-    }
-    return IRGenFunction::getAsyncContext();
-  }
-
   //===--------------------------------------------------------------------===//
   // SIL instruction lowering
   //===--------------------------------------------------------------------===//
@@ -1262,6 +1226,42 @@ public:
   llvm::Value *getCoroutineBuffer() override {
     return allParamValues.claimNext();
   }
+  Explosion
+  explosionForObject(IRGenFunction &IGF, unsigned index, SILArgument *param,
+                     SILType paramTy, const LoadableTypeInfo &loadableParamTI,
+                     const LoadableTypeInfo &loadableArgTI,
+                     std::function<Explosion(unsigned index, unsigned size)>
+                         explosionForArgument) override {
+    Explosion paramValues;
+    // If the explosion must be passed indirectly, load the value from the
+    // indirect address.
+    auto &nativeSchema = loadableArgTI.nativeParameterValueSchema(IGF.IGM);
+    if (nativeSchema.requiresIndirect()) {
+      Explosion paramExplosion = explosionForArgument(index, 1);
+      Address paramAddr =
+          loadableParamTI.getAddressForPointer(paramExplosion.claimNext());
+      if (loadableParamTI.getStorageType() != loadableArgTI.getStorageType())
+        paramAddr =
+            loadableArgTI.getAddressForPointer(IGF.Builder.CreateBitCast(
+                paramAddr.getAddress(),
+                loadableArgTI.getStorageType()->getPointerTo()));
+      loadableArgTI.loadAsTake(IGF, paramAddr, paramValues);
+    } else {
+      if (!nativeSchema.empty()) {
+        // Otherwise, we map from the native convention to the type's explosion
+        // schema.
+        Explosion nativeParam;
+        unsigned size = nativeSchema.size();
+        Explosion paramExplosion = explosionForArgument(index, size);
+        paramExplosion.transferInto(nativeParam, size);
+        paramValues = nativeSchema.mapFromNative(IGF.IGM, IGF, nativeParam,
+                                                 param->getType());
+      } else {
+        assert(loadableParamTI.getSchema().empty());
+      }
+    }
+    return paramValues;
+  };
 
 public:
   using SyncEntryPointArgumentEmission::requiresIndirectResult;
@@ -1312,10 +1312,8 @@ public:
     return loadValue(contextLayout);
   }
   Explosion getArgumentExplosion(unsigned index, unsigned size) override {
-    assert(size > 0);
     auto argumentLayout = layout.getArgumentLayout(index);
     auto result = loadExplosion(argumentLayout);
-    assert(result.size() == size);
     return result;
   }
   bool requiresIndirectResult(SILType retType) override { return false; }
@@ -1380,6 +1378,14 @@ public:
     llvm_unreachable(
         "async functions do not use a fixed size coroutine buffer");
   }
+  Explosion
+  explosionForObject(IRGenFunction &IGF, unsigned index, SILArgument *param,
+                     SILType paramTy, const LoadableTypeInfo &loadableParamTI,
+                     const LoadableTypeInfo &loadableArgTI,
+                     std::function<Explosion(unsigned index, unsigned size)>
+                         explosionForArgument) override {
+    return explosionForArgument(index, 1);
+  };
 };
 
 std::unique_ptr<NativeCCEntryPointArgumentEmission>
@@ -1398,11 +1404,7 @@ std::unique_ptr<COrObjCEntryPointArgumentEmission>
 getCOrObjCEntryPointArgumentEmission(IRGenSILFunction &IGF,
                                      SILBasicBlock &entry,
                                      Explosion &allParamValues) {
-  if (IGF.CurSILFn->isAsync() &&
-      !(/*FIXME: Remove this condition once Task.runDetached is
-                            available.  rdar://problem/70597390*/
-        IGF.CurSILFn->getLoweredFunctionType()->getRepresentation() ==
-        SILFunctionTypeRepresentation::CFunctionPointer)) {
+  if (IGF.CurSILFn->isAsync()) {
     llvm_unreachable("unsupported");
   } else {
     return std::make_unique<SyncCOrObjCEntryPointArgumentEmission>(
@@ -1654,8 +1656,9 @@ static ArrayRef<SILArgument *> emitEntryPointIndirectReturn(
 }
 
 template <typename ExplosionForArgument>
-static void bindParameter(IRGenSILFunction &IGF, unsigned index,
-                          SILArgument *param, SILType paramTy,
+static void bindParameter(IRGenSILFunction &IGF,
+                          NativeCCEntryPointArgumentEmission &emission,
+                          unsigned index, SILArgument *param, SILType paramTy,
                           ExplosionForArgument explosionForArgument) {
   // Pull out the parameter value and its formal type.
   auto &paramTI = IGF.getTypeInfo(IGF.CurSILFn->mapTypeIntoContext(paramTy));
@@ -1664,36 +1667,11 @@ static void bindParameter(IRGenSILFunction &IGF, unsigned index,
   // If the SIL parameter isn't passed indirectly, we need to map it
   // to an explosion.
   if (param->getType().isObject()) {
-    Explosion paramValues;
     auto &loadableParamTI = cast<LoadableTypeInfo>(paramTI);
-    auto &loadableArgTI = cast<LoadableTypeInfo>(paramTI);
-    // If the explosion must be passed indirectly, load the value from the
-    // indirect address.
-    auto &nativeSchema = argTI.nativeParameterValueSchema(IGF.IGM);
-    if (nativeSchema.requiresIndirect()) {
-      Explosion paramExplosion = explosionForArgument(index, 1);
-      Address paramAddr =
-          loadableParamTI.getAddressForPointer(paramExplosion.claimNext());
-      if (paramTI.getStorageType() != argTI.getStorageType())
-        paramAddr =
-            loadableArgTI.getAddressForPointer(IGF.Builder.CreateBitCast(
-                paramAddr.getAddress(),
-                loadableArgTI.getStorageType()->getPointerTo()));
-      loadableArgTI.loadAsTake(IGF, paramAddr, paramValues);
-    } else {
-      if (!nativeSchema.empty()) {
-        // Otherwise, we map from the native convention to the type's explosion
-        // schema.
-        Explosion nativeParam;
-        unsigned size = nativeSchema.size();
-        Explosion paramExplosion = explosionForArgument(index, size);
-        paramExplosion.transferInto(nativeParam, size);
-        paramValues = nativeSchema.mapFromNative(IGF.IGM, IGF, nativeParam,
-                                                 param->getType());
-      } else {
-        assert(paramTI.getSchema().empty());
-      }
-    }
+    auto &loadableArgTI = cast<LoadableTypeInfo>(argTI);
+    auto paramValues =
+        emission.explosionForObject(IGF, index, param, paramTy, loadableParamTI,
+                                    loadableArgTI, explosionForArgument);
     IGF.setLoweredExplosion(param, paramValues);
     return;
   }
@@ -1751,6 +1729,10 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
     break;
   }
 
+  if (funcTy->isAsync()) {
+    emitAsyncFunctionEntry(IGF, IGF.CurSILFn);
+  }
+
   SILFunctionConventions conv(funcTy, IGF.getSILModule());
 
   // The 'self' argument might be in the context position, which is
@@ -1760,7 +1742,7 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
     params = params.drop_back();
 
     bindParameter(
-        IGF, 0, selfParam,
+        IGF, *emission, 0, selfParam,
         conv.getSILArgumentType(conv.getNumSILArguments() - 1,
                                 IGF.IGM.getMaximalTypeExpansionContext()),
         [&](unsigned startIndex, unsigned size) {
@@ -1784,7 +1766,7 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
   unsigned i = 0;
   for (SILArgument *param : params) {
     auto argIdx = conv.getSILArgIndexOfFirstParam() + i;
-    bindParameter(IGF, i, param,
+    bindParameter(IGF, *emission, i, param,
                   conv.getSILArgumentType(
                       argIdx, IGF.IGM.getMaximalTypeExpansionContext()),
                   [&](unsigned index, unsigned size) {
@@ -3182,7 +3164,7 @@ void IRGenSILFunction::visitUnreachableInst(swift::UnreachableInst *i) {
   Builder.CreateUnreachable();
 }
 
-static void emitCoroutineExit(IRGenSILFunction &IGF) {
+static void emitCoroutineOrAsyncExit(IRGenSILFunction &IGF) {
   // The LLVM coroutine representation demands that there be a
   // unique call to llvm.coro.end.
 
@@ -3208,12 +3190,13 @@ static void emitCoroutineExit(IRGenSILFunction &IGF) {
 
 static void emitReturnInst(IRGenSILFunction &IGF,
                            SILType resultTy,
-                           Explosion &result) {
+                           Explosion &result,
+                           CanSILFunctionType fnType) {
   // If we're generating a coroutine, just call coro.end.
-  if (IGF.isCoroutine()) {
+  if (IGF.isCoroutine() && !IGF.isAsync()) {
     assert(result.empty() &&
            "coroutines do not currently support non-void returns");
-    emitCoroutineExit(IGF);
+    emitCoroutineOrAsyncExit(IGF);
     return;
   }
 
@@ -3227,12 +3210,7 @@ static void emitReturnInst(IRGenSILFunction &IGF,
     auto &retTI = cast<LoadableTypeInfo>(IGF.getTypeInfo(resultTy));
     retTI.initialize(IGF, result, IGF.IndirectReturn, false);
     IGF.Builder.CreateRetVoid();
-  } else if (IGF.isAsync() &&
-             !(/*FIXME: Remove this condition once Task.runDetached is
-                  available.  rdar://problem/70597390*/
-               IGF.CurSILFn->getLoweredFunctionType()
-                   ->getRepresentation() ==
-               SILFunctionTypeRepresentation::CFunctionPointer)) {
+  } else if (IGF.isAsync()) {
     // If we're generating an async function, store the result into the buffer.
     assert(!IGF.IndirectReturn.isValid() &&
            "Formally direct results should stay direct results for async "
@@ -3249,7 +3227,8 @@ static void emitReturnInst(IRGenSILFunction &IGF,
       cast<LoadableTypeInfo>(fieldLayout.getType())
           .initialize(IGF, result, fieldAddr, /*isOutlined*/ false);
     }
-    IGF.Builder.CreateRetVoid();
+    emitAsyncReturn(IGF, layout, fnType);
+    emitCoroutineOrAsyncExit(IGF);
   } else {
     auto funcLang = IGF.CurSILFn->getLoweredFunctionType()->getLanguage();
     auto swiftCCReturn = funcLang == SILFunctionLanguage::Swift;
@@ -3278,7 +3257,8 @@ void IRGenSILFunction::visitReturnInst(swift::ReturnInst *i) {
     result = std::move(temp);
   }
 
-  emitReturnInst(*this, i->getOperand()->getType(), result);
+  emitReturnInst(*this, i->getOperand()->getType(), result,
+                 i->getFunction()->getLoweredFunctionType());
 }
 
 void IRGenSILFunction::visitThrowInst(swift::ThrowInst *i) {
@@ -3286,6 +3266,14 @@ void IRGenSILFunction::visitThrowInst(swift::ThrowInst *i) {
   llvm::Value *exn = getLoweredSingletonExplosion(i->getOperand());
 
   Builder.CreateStore(exn, getCallerErrorResultSlot());
+
+  // Async functions just return to the continuation.
+  if (isAsync()) {
+    auto layout = getAsyncContextLayout(*this);
+    emitAsyncReturn(*this, layout, i->getFunction()->getLoweredFunctionType());
+    emitCoroutineOrAsyncExit(*this);
+    return;
+  }
 
   // Create a normal return, but leaving the return value undefined.
   auto fnTy = CurFn->getType()->getPointerElementType();
@@ -3300,7 +3288,7 @@ void IRGenSILFunction::visitThrowInst(swift::ThrowInst *i) {
 void IRGenSILFunction::visitUnwindInst(swift::UnwindInst *i) {
   // Just call coro.end; there's no need to distinguish 'unwind'
   // and 'return' at the LLVM level.
-  emitCoroutineExit(*this);
+  emitCoroutineOrAsyncExit(*this);
 }
 
 void IRGenSILFunction::visitYieldInst(swift::YieldInst *i) {

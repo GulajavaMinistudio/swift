@@ -18,32 +18,51 @@ import Swift
 import PrintShims
 import _Concurrency
 
-sil public_external @printInt64 : $@convention(thin) (Int64) -> ()
+sil public_external @printGeneric : $@convention(thin) <T> (@in_guaranteed T) -> ()
 
-// CHECK-LL: @int64AndInt64ToVoidAD =
-// CHECK-LL: define{{( dllexport)?}}{{( protected)?}} swiftcc void @int64AndInt64ToVoid(%swift.task* {{%[0-9]+}}, %swift.executor* {{%[0-9]+}}, %swift.context* {{%[0-9]+}}) {{#[0-9]*}} {
-sil @int64AndInt64ToVoid : $@async @convention(thin) (Int64, Int64) -> () {
-entry(%int1: $Int64, %int2: $Int64):
-  %print = function_ref @printInt64 : $@convention(thin) (Int64) -> ()
-  %result1 = apply %print(%int1) : $@convention(thin) (Int64) -> ()  // CHECK: 42
-  %result2 = apply %print(%int2) : $@convention(thin) (Int64) -> ()  // CHECK: 13
-  return %result2 : $()
+struct Pack {
+  public let a: Bool
+  public let b: Bool
+  public let c: Bool
+  public let d: Bool
+  public let e: Bool
+}
+
+// CHECK-LL: @test_caseAD =
+
+sil @structPackToVoid : $@async @convention(thin) (Pack) -> () {
+entry(%pack : $Pack):
+  %pack_addr = alloc_stack $Pack
+  store %pack to %pack_addr : $*Pack
+  %printGeneric = function_ref @printGeneric : $@convention(thin) <T> (@in_guaranteed T) -> ()
+  %printGeneric_result1 = apply %printGeneric<Pack>(%pack_addr) : $@convention(thin) <T> (@in_guaranteed T) -> () //CHECK: Pack(a: true, b: false, c: true, d: false, e: true)
+  dealloc_stack %pack_addr : $*Pack
+  
+  return %printGeneric_result1 : $()
 }
 
 // Defined in _Concurrency
 sil public_external @$s12_Concurrency8runAsyncyyyyYcF : $@convention(thin) (@guaranteed @async @callee_guaranteed () -> ()) -> ()
 
-sil @test_case : $@convention(thin) @async () -> () {
-  %int_literal1 = integer_literal $Builtin.Int64, 42
-  %int1 = struct $Int64 (%int_literal1 : $Builtin.Int64)
-  %int_literal2 = integer_literal $Builtin.Int64, 13
-  %int2 = struct $Int64 (%int_literal2 : $Builtin.Int64)
+// CHECK-LL: define{{( dllexport)?}}{{( protected)?}} swiftcc void @test_case(%swift.task* {{%[0-9]+}}, %swift.executor* {{%[0-9]+}}, %swift.context* {{%[0-9]+}}) {{#[0-9]*}} {
+sil @test_case : $@async @convention(thin) () -> () {
+  
+  %a_literal = integer_literal $Builtin.Int1, -1
+  %a = struct $Bool (%a_literal : $Builtin.Int1)
+  %b_literal = integer_literal $Builtin.Int1, 0
+  %b = struct $Bool (%b_literal : $Builtin.Int1)
+  %c_literal = integer_literal $Builtin.Int1, -1
+  %c = struct $Bool (%c_literal : $Builtin.Int1)
+  %d_literal = integer_literal $Builtin.Int1, 0
+  %d = struct $Bool (%d_literal : $Builtin.Int1)
+  %e_literal = integer_literal $Builtin.Int1, -1
+  %e = struct $Bool (%a_literal : $Builtin.Int1)
 
-  %int64AndInt64ToVoid = function_ref @int64AndInt64ToVoid : $@async @convention(thin) (Int64, Int64) -> ()
-  %result = apply %int64AndInt64ToVoid(%int1, %int2) : $@async @convention(thin) (Int64, Int64) -> ()
+  %pack = struct $Pack (%a : $Bool, %b : $Bool, %c : $Bool, %d : $Bool, %e : $Bool)
 
-  %void = tuple()
-  return %void : $()
+  %structPackToVoid = function_ref @structPackToVoid : $@async @convention(thin) (Pack) -> ()
+  %result = apply %structPackToVoid(%pack) : $@async @convention(thin) (Pack) -> ()
+  return %result : $()
 }
 
 sil @main : $@convention(c) (Int32, UnsafeMutablePointer<Optional<UnsafeMutablePointer<Int8>>>) -> Int32 {
