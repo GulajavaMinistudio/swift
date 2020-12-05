@@ -908,6 +908,7 @@ public:
   const LoadableTypeInfo &getUnknownObjectTypeInfo();
   const LoadableTypeInfo &getBridgeObjectTypeInfo();
   const LoadableTypeInfo &getRawPointerTypeInfo();
+  const LoadableTypeInfo &getRawUnsafeContinuationTypeInfo();
   llvm::Type *getStorageTypeForUnlowered(Type T);
   llvm::Type *getStorageTypeForLowered(CanType T);
   llvm::Type *getStorageType(SILType T);
@@ -1282,6 +1283,7 @@ public:
   llvm::InlineAsm *getObjCRetainAutoreleasedReturnValueMarker();
   ClassDecl *getObjCRuntimeBaseForSwiftRootClass(ClassDecl *theClass);
   ClassDecl *getObjCRuntimeBaseClass(Identifier name, Identifier objcName);
+  ClassDecl *getSwiftNativeNSObjectDecl();
   llvm::Module *getModule() const;
   llvm::AttributeList getAllocAttrs();
 
