@@ -1,3 +1,6 @@
+// XFAIL: *
+// REQUIRES: rdar72554270
+// REQUIRES: rdar72550007
 // REQUIRES: shell
 // RUN: %empty-directory(%t)
 // RUN: cp -r %S/Inputs/bindings-build-record/* %t
