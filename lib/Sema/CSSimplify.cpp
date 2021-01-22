@@ -7490,11 +7490,11 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyMemberConstraint(
           if (!paramDecl)
             continue;
 
-          auto descriptor = UnqualifiedLookupDescriptor(
+          auto descriptor = UnqualifiedLookupDescriptor{
               DeclNameRef(param->getName()),
-              paramDecl->getDeclContext()->getParentSourceFile(),
+              paramDecl->getDeclContext()->getModuleScopeContext(),
               SourceLoc(),
-              UnqualifiedLookupFlags::TypeLookup);
+              UnqualifiedLookupFlags::TypeLookup};
           auto lookup = evaluateOrDefault(
               Context.evaluator, UnqualifiedLookupRequest{descriptor}, {});
           for (auto &result : lookup) {
@@ -8919,6 +8919,7 @@ bool ConstraintSystem::simplifyAppliedOverloads(
   auto *applicableFn = result->first;
   auto *fnTypeVar = applicableFn->getSecondType()->castTo<TypeVariableType>();
   auto argFnType = applicableFn->getFirstType()->castTo<FunctionType>();
+  AppliedDisjunctions[disjunction->getLocator()] = argFnType;
   return simplifyAppliedOverloadsImpl(disjunction, fnTypeVar, argFnType,
                                       /*numOptionalUnwraps*/ result->second,
                                       locator);
@@ -8938,6 +8939,8 @@ bool ConstraintSystem::simplifyAppliedOverloads(
       getUnboundBindOverloadDisjunction(fnTypeVar, &numOptionalUnwraps);
   if (!disjunction)
     return false;
+
+  AppliedDisjunctions[disjunction->getLocator()] = argFnType;
   return simplifyAppliedOverloadsImpl(disjunction, fnTypeVar, argFnType,
                                       numOptionalUnwraps, locator);
 }
