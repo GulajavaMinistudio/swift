@@ -99,13 +99,10 @@ transferNodesFromList(llvm::ilist_traits<SILInstruction> &L2,
 
 // Assert that all subclasses of ValueBase implement classof.
 #define NODE(CLASS, PARENT) \
-  ASSERT_IMPLEMENTS_STATIC(CLASS, PARENT, classof, bool(const SILNode*));
+  ASSERT_IMPLEMENTS_STATIC(CLASS, PARENT, classof, bool(SILNodePointer));
 #include "swift/SIL/SILNodes.def"
 
-SILFunction *SILInstruction::getFunction() {
-  return getParent()->getParent();
-}
-const SILFunction *SILInstruction::getFunction() const {
+SILFunction *SILInstruction::getFunction() const {
   return getParent()->getParent();
 }
 
@@ -1126,6 +1123,8 @@ bool SILInstruction::mayRelease() const {
   case SILInstructionKind::YieldInst:
   case SILInstructionKind::DestroyAddrInst:
   case SILInstructionKind::StrongReleaseInst:
+#define UNCHECKED_REF_STORAGE(Name, ...)                                       \
+  case SILInstructionKind::Name##ReleaseValueInst:
 #define ALWAYS_OR_SOMETIMES_LOADABLE_CHECKED_REF_STORAGE(Name, ...) \
   case SILInstructionKind::Name##ReleaseInst:
 #include "swift/AST/ReferenceStorage.def"
@@ -1540,7 +1539,7 @@ MultipleValueInstruction::getIndexOfResult(SILValue Target) const {
 MultipleValueInstructionResult::MultipleValueInstructionResult(
     ValueKind valueKind, unsigned index, SILType type,
     ValueOwnershipKind ownershipKind)
-    : ValueBase(valueKind, type, IsRepresentative::No) {
+    : ValueBase(valueKind, type) {
   setOwnershipKind(ownershipKind);
   setIndex(index);
 }

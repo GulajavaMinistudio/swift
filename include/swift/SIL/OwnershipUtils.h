@@ -448,7 +448,6 @@ struct BorrowedValue {
   /// borrow scopes if needed.
   bool areUsesWithinScope(ArrayRef<Operand *> uses,
                           SmallVectorImpl<Operand *> &scratchSpace,
-                          SmallPtrSetImpl<SILBasicBlock *> &visitedBlocks,
                           DeadEndBlocks &deadEndBlocks) const;
 
   /// Given a local borrow scope introducer, visit all non-forwarding consuming
@@ -472,13 +471,14 @@ struct BorrowedValue {
   /// reborrows, place them in BorrowingOperand form into \p
   /// foundReborrows. Returns true if we appended any such reborrows to
   /// foundReborrows... false otherwise.
-  bool
-  gatherReborrows(SmallVectorImpl<BorrowingOperand> &foundReborrows) const {
+  bool gatherReborrows(SmallVectorImpl<std::pair<SILBasicBlock *, unsigned>>
+                           &foundReborrows) const {
     bool foundAnyReborrows = false;
     for (auto *op : value->getUses()) {
       if (auto borrowingOperand = BorrowingOperand::get(op)) {
         if (borrowingOperand.isReborrow()) {
-          foundReborrows.push_back(*borrowingOperand);
+          foundReborrows.push_back(
+              {value->getParentBlock(), op->getOperandNumber()});
           foundAnyReborrows = true;
         }
       }

@@ -82,6 +82,9 @@ namespace swift {
     /// The target variant SDK version, if known.
     Optional<llvm::VersionTuple> VariantSDKVersion;
 
+    /// The alternate name to use for the entry point instead of main.
+    std::string entryPointFunctionName = "main";
+
     ///
     /// Language features
     ///
@@ -367,6 +370,20 @@ namespace swift {
     // FrontendOptions.
     bool AllowModuleWithCompilerErrors = false;
 
+    /// A helper enum to represent whether or not we customized the default
+    /// ASTVerifier behavior via a frontend flag. By default, we do not
+    /// customize.
+    ///
+    /// NOTE: The default behavior is to run the ASTVerifier only when asserts
+    /// are enabled. This just allows for one to customize that behavior.
+    enum class ASTVerifierOverrideKind {
+      NoOverride = 0,
+      EnableVerifier = 1,
+      DisableVerifier = 2,
+    };
+    ASTVerifierOverrideKind ASTVerifierOverride =
+        ASTVerifierOverrideKind::NoOverride;
+
     /// Sets the target we are building for and updates platform conditions
     /// to match.
     ///
@@ -547,6 +564,9 @@ namespace swift {
     /// Enable experimental support for one-way constraints for the
     /// parameters of closures.
     bool EnableOneWayClosureParameters = false;
+
+    /// See \ref FrontendOptions.PrintFullConvention
+    bool PrintFullConvention = false;
   };
 
   /// Options for controlling the behavior of the Clang importer.

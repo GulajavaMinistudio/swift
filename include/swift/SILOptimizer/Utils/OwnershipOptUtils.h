@@ -39,7 +39,7 @@ struct OwnershipFixupContext {
   JointPostDominanceSetComputer &jointPostDomSetComputer;
 
   SmallVector<Operand *, 8> transitiveBorrowedUses;
-  SmallVector<BorrowingOperand, 8> recursiveReborrows;
+  SmallVector<std::pair<SILBasicBlock *, unsigned>, 8> recursiveReborrows;
 
   /// Extra state initialized by OwnershipRAUWFixupHelper::get() that we use
   /// when RAUWing addresses. This ensures we do not need to recompute this
@@ -121,7 +121,8 @@ public:
   /// "forwarding" transformation must be performed upon \p newValue at \p
   /// oldValue's insertion point so that we can then here RAUW the transformed
   /// \p newValue.
-  SILBasicBlock::iterator perform();
+  SILBasicBlock::iterator
+  perform(SingleValueInstruction *maybeTransformedNewValue = nullptr);
 
 private:
   SILBasicBlock::iterator replaceAddressUses(SingleValueInstruction *oldValue,
