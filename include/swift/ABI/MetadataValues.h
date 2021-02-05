@@ -1179,6 +1179,7 @@ namespace SpecialPointerAuthDiscriminators {
   const uint16_t JobInvokeFunction = 0xcc64; // = 52324
   const uint16_t TaskResumeFunction = 0x2c42; // = 11330
   const uint16_t TaskResumeContext = 0x753a; // = 30010
+  const uint16_t AsyncRunAndBlockFunction = 0x0f08; // 3848
   const uint16_t AsyncContextParent = 0xbda2; // = 48546
   const uint16_t AsyncContextResume = 0xd707; // = 55047
   const uint16_t AsyncContextYield = 0xe207; // = 57863
@@ -1186,7 +1187,7 @@ namespace SpecialPointerAuthDiscriminators {
   const uint16_t EscalationNotificationFunction = 0x5be4; // = 23524
 
   /// Swift async context parameter stored in the extended frame info.
-  const uint16_t SwiftAsyncContextExtendedFrameEntry = 0xc31a;
+  const uint16_t SwiftAsyncContextExtendedFrameEntry = 0xc31a; // = 49946
 }
 
 /// The number of arguments that will be passed directly to a generic

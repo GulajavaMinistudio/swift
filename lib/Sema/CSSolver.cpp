@@ -2135,7 +2135,9 @@ void ConstraintSystem::partitionGenericOperators(ArrayRef<Constraint *> constrai
   // overload choices first.
   for (auto arg : argFnType->getParams()) {
     auto argType = arg.getPlainType();
-    if (!argType || argType->hasTypeVariable())
+    argType = getFixedTypeRecursive(argType, /*wantRValue=*/true);
+
+    if (argType->isTypeVariableOrMember())
       continue;
 
     if (conformsToKnownProtocol(DC, argType, KnownProtocolKind::AdditiveArithmetic)) {
@@ -2285,28 +2287,39 @@ Constraint *ConstraintSystem::selectDisjunction() {
   auto cs = this;
   auto minDisjunction = std::min_element(disjunctions.begin(), disjunctions.end(),
       [&](Constraint *first, Constraint *second) -> bool {
+        unsigned firstActive = first->countActiveNestedConstraints();
+        unsigned secondActive = second->countActiveNestedConstraints();
         unsigned firstFavored = first->countFavoredNestedConstraints();
         unsigned secondFavored = second->countFavoredNestedConstraints();
 
         if (!isOperatorBindOverload(first->getNestedConstraints().front()) ||
             !isOperatorBindOverload(second->getNestedConstraints().front()))
-          return first->countActiveNestedConstraints() < second->countActiveNestedConstraints();
+          return firstActive < secondActive;
 
         if (firstFavored == secondFavored) {
-          // Look for additional choices to favor
+          // Look for additional choices that are "favored"
           SmallVector<unsigned, 4> firstExisting;
           SmallVector<unsigned, 4> secondExisting;
 
           existingOperatorBindingsForDisjunction(*cs, first->getNestedConstraints(), firstExisting);
-          firstFavored = firstExisting.size() ? firstExisting.size() : first->countActiveNestedConstraints();
+          firstFavored += firstExisting.size();
           existingOperatorBindingsForDisjunction(*cs, second->getNestedConstraints(), secondExisting);
-          secondFavored = secondExisting.size() ? secondExisting.size() : second->countActiveNestedConstraints();
-
-          return firstFavored < secondFavored;
+          secondFavored += secondExisting.size();
         }
 
-        firstFavored = firstFavored ? firstFavored : first->countActiveNestedConstraints();
-        secondFavored = secondFavored ? secondFavored : second->countActiveNestedConstraints();
+        // Everything else equal, choose the disjunction with the greatest
+        // number of resoved argument types. The number of resolved argument
+        // types is always zero for disjunctions that don't represent applied
+        // overloads.
+        if (firstFavored == secondFavored) {
+          if (firstActive != secondActive)
+            return firstActive < secondActive;
+
+          return (first->countResolvedArgumentTypes(*this) > second->countResolvedArgumentTypes(*this));
+        }
+
+        firstFavored = firstFavored ? firstFavored : firstActive;
+        secondFavored = secondFavored ? secondFavored : secondActive;
         return firstFavored < secondFavored;
       });
 
