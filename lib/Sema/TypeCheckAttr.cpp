@@ -128,7 +128,6 @@ public:
   IGNORED_ATTR(OriginallyDefinedIn)
   IGNORED_ATTR(NoDerivative)
   IGNORED_ATTR(SpecializeExtension)
-  IGNORED_ATTR(Concurrent)
 #undef IGNORED_ATTR
 
   void visitAlignmentAttr(AlignmentAttr *attr) {
@@ -419,6 +418,22 @@ public:
         break;
       }
     }
+  }
+
+  void visitConcurrentAttr(ConcurrentAttr *attr) {
+    auto VD = dyn_cast<ValueDecl>(D);
+    if (!VD)
+      return;
+
+    auto innermostDC = VD->getInnermostDeclContext();
+    SubstitutionMap subs;
+    if (auto genericEnv = innermostDC->getGenericEnvironmentOfContext()) {
+      subs = genericEnv->getForwardingSubstitutionMap();
+    }
+
+    (void)diagnoseNonConcurrentTypesInReference(
+        ConcreteDeclRef(VD, subs), innermostDC, VD->getLoc(),
+        ConcurrentReferenceKind::ConcurrentFunction);
   }
 };
 } // end anonymous namespace
@@ -852,14 +867,8 @@ void AttributeChecker::visitLazyAttr(LazyAttr *attr) {
 
   // 'lazy' is not allowed on a global variable or on a static property (which
   // are already lazily initialized).
-  // TODO: we can't currently support lazy properties on non-type-contexts.
-  if (VD->isStatic() ||
-      (varDC->isModuleScopeContext() &&
-       !varDC->getParentSourceFile()->isScriptMode())) {
+  if (VD->isStatic() || varDC->isModuleScopeContext())
     diagnoseAndRemoveAttr(attr, diag::lazy_on_already_lazy_global);
-  } else if (!VD->getDeclContext()->isTypeContext()) {
-    diagnoseAndRemoveAttr(attr, diag::lazy_must_be_property);
-  }
 }
 
 bool AttributeChecker::visitAbstractAccessControlAttr(
