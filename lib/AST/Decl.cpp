@@ -3298,7 +3298,7 @@ getAccessScopeForFormalAccess(const ValueDecl *VD,
     return AccessScope(resultDC->getParentModule());
   case AccessLevel::Public:
   case AccessLevel::Open:
-    return AccessScope::getPublic(VD->isSPI());
+    return AccessScope::getPublic();
   }
 
   llvm_unreachable("unknown access level");
@@ -4932,26 +4932,6 @@ bool ProtocolDecl::isAvailableInExistential(const ValueDecl *decl) const {
 bool ProtocolDecl::existentialTypeSupported() const {
   return evaluateOrDefault(getASTContext().evaluator,
     ExistentialTypeSupportedRequest{const_cast<ProtocolDecl *>(this)}, true);
-}
-
-void swift::simple_display(llvm::raw_ostream &out, const ProtocolRethrowsRequirementList list) {
-  for (auto entry : list) {
-    simple_display(out, entry.first);
-    simple_display(out, entry.second);
-  }
-}
-
-
-ProtocolRethrowsRequirementList 
-ProtocolDecl::getRethrowingRequirements() const {
-  return evaluateOrDefault(getASTContext().evaluator,
-    ProtocolRethrowsRequirementsRequest{const_cast<ProtocolDecl *>(this)}, 
-    ProtocolRethrowsRequirementList());
-}
-
-bool 
-ProtocolDecl::isRethrowingProtocol() const {
-  return getRethrowingRequirements().size() > 0;
 }
 
 StringRef ProtocolDecl::getObjCRuntimeName(
@@ -6800,12 +6780,6 @@ bool AbstractFunctionDecl::canBeAsyncHandler() const {
                            false);
 }
 
-FunctionRethrowingKind AbstractFunctionDecl::getRethrowingKind() const {
-  return evaluateOrDefault(getASTContext().evaluator,
-    FunctionRethrowingKindRequest{const_cast<AbstractFunctionDecl *>(this)}, 
-    FunctionRethrowingKind::Invalid);
-}
-
 BraceStmt *AbstractFunctionDecl::getBody(bool canSynthesize) const {
   if ((getBodyKind() == BodyKind::Synthesize ||
        getBodyKind() == BodyKind::Unparsed) &&
@@ -7012,7 +6986,7 @@ AbstractFunctionDecl::getObjCSelector(DeclName preferredName,
     }
 
     // For the first selector piece, attach either the first parameter,
-    // "withCompletionHandker", or "AndReturnError" to the base name,
+    // "withCompletionHandler", or "AndReturnError" to the base name,
     // if appropriate.
     auto firstPiece = baseName;
     llvm::SmallString<32> scratch;
@@ -8025,7 +7999,8 @@ ActorIsolation swift::getActorIsolationOfContext(DeclContext *dc) {
     return getActorIsolation(vd);
 
   if (auto *init = dyn_cast<PatternBindingInitializer>(dc)) {
-    if (auto *var = init->getBinding()->getSingleVar())
+    if (auto *var = init->getBinding()->getAnchoringVarDecl(
+            init->getBindingIndex()))
       return getActorIsolation(var);
   }
 
