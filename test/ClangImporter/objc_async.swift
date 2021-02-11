@@ -45,7 +45,6 @@ func testSlowServer(slowServer: SlowServer) async throws {
 
   slowServer.repeatTrick("jump") // expected-error{{missing argument for parameter 'completionHandler' in call}}
 
-  _ = try await slowServer.oldAPI(); // expected-error{{'oldAPI()' is unavailable in macOS: APIs deprecated as of macOS 10.14 and earlier are not imported as 'async'}}
   _ = try await slowServer.someAsyncMethod()
 }
 
@@ -71,7 +70,7 @@ func testSlowServerOldSchool(slowServer: SlowServer) {
 // Check import of attributes
 func globalAsync() async { }
 
-actor class MySubclassCheckingSwiftAttributes : ProtocolWithSwiftAttributes {
+actor MySubclassCheckingSwiftAttributes : ProtocolWithSwiftAttributes {
   func syncMethod() { } // expected-note 2{{calls to instance method 'syncMethod()' from outside of its actor context are implicitly asynchronous}}
 
   func independentMethod() {

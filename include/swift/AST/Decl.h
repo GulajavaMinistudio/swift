@@ -546,7 +546,7 @@ protected:
     NumRequirementsInSignature : 16
   );
 
-  SWIFT_INLINE_BITFIELD(ClassDecl, NominalTypeDecl, 1+1+2+1+1+1+1+1,
+  SWIFT_INLINE_BITFIELD(ClassDecl, NominalTypeDecl, 1+1+2+1+1+1+1+1+1,
     /// Whether this class inherits its superclass's convenience initializers.
     InheritsSuperclassInits : 1,
     ComputedInheritsSuperclassInits : 1,
@@ -562,7 +562,10 @@ protected:
 
     /// Whether instances of this class are incompatible
     /// with weak and unowned references.
-    IsIncompatibleWithWeakReferences : 1
+    IsIncompatibleWithWeakReferences : 1,
+
+    /// Set when the class represents an actor
+    IsActor : 1
   );
 
   SWIFT_INLINE_BITFIELD(
@@ -2321,10 +2324,8 @@ public:
   /// dynamic methods on generic classes (see above).
   bool isNativeMethodReplacement() const;
 
-  bool isEffectiveLinkageMoreVisibleThan(ValueDecl *other) const {
-    return (std::min(getEffectiveAccess(), AccessLevel::Public) >
-            std::min(other->getEffectiveAccess(), AccessLevel::Public));
-  }
+  /// Returns if this declaration has more visible formal access than 'other'.
+  bool isMoreVisibleThan(ValueDecl *other) const;
 
   /// Set whether this type is 'dynamic' or not.
   void setIsDynamic(bool value);
@@ -3589,7 +3590,8 @@ class ClassDecl final : public NominalTypeDecl {
 public:
   ClassDecl(SourceLoc ClassLoc, Identifier Name, SourceLoc NameLoc,
             ArrayRef<TypeLoc> Inherited,
-            GenericParamList *GenericParams, DeclContext *DC);
+            GenericParamList *GenericParams, DeclContext *DC,
+            bool isActor);
 
   SourceLoc getStartLoc() const { return ClassLoc; }
   SourceRange getSourceRange() const {
@@ -3688,6 +3690,9 @@ public:
   /// Whether the class is known to be a *root* default actor,
   /// i.e. the first class in its hierarchy that is a default actor.
   bool isRootDefaultActor() const;
+
+  /// Whether the class was explicitly declared with the `actor` keyword.
+  bool isExplicitActor() const { return Bits.ClassDecl.IsActor; }
 
   /// Does this class explicitly declare any of the methods that
   /// would prevent it from being a default actor?
