@@ -116,13 +116,22 @@ static bool checkAsyncHandler(FuncDecl *func, bool diagnose) {
 
 void swift::addAsyncNotes(AbstractFunctionDecl const* func) {
   assert(func);
-  if (!isa<DestructorDecl>(func))
-    func->diagnose(diag::note_add_async_to_function, func->getName());
-    // TODO: we need a source location for effects attributes so that we 
-    // can also emit a fix-it that inserts 'async' in the right place for func.
-    // It's possibly a bit tricky to get the right source location from
-    // just the AbstractFunctionDecl, but it's important to circle-back
-    // to this.
+  if (!isa<DestructorDecl>(func)) {
+    auto note =
+        func->diagnose(diag::note_add_async_to_function, func->getName());
+
+    if (func->hasThrows()) {
+      auto replacement = func->getAttrs().hasAttribute<RethrowsAttr>()
+                        ? "async rethrows"
+                        : "async throws";
+
+      note.fixItReplace(SourceRange(func->getThrowsLoc()), replacement);
+
+    } else {
+      note.fixItInsert(func->getParameters()->getRParenLoc().getAdvancedLoc(1),
+                       " async");
+    }
+  }
 
   if (func->canBeAsyncHandler()) {
     func->diagnose(
@@ -520,14 +529,8 @@ ActorIsolationRestriction ActorIsolationRestriction::forDeclaration(
   case DeclKind::Constructor:
   case DeclKind::Func:
   case DeclKind::Subscript: {
-    // Local captures can only be referenced in their local context or a
-    // context that is guaranteed not to run concurrently with it.
+    // Local captures are checked separately.
     if (cast<ValueDecl>(decl)->isLocalCapture()) {
-      // Local functions are safe to capture; their bodies are checked based on
-      // where that capture is used.
-      if (isa<FuncDecl>(decl))
-        return forUnrestricted();
-
       return forLocalCapture(decl->getDeclContext());
     }
 
@@ -911,7 +914,9 @@ bool swift::diagnoseNonConcurrentTypesInReference(
   }
 
   if (auto var = dyn_cast<VarDecl>(declRef.getDecl())) {
-    Type propertyType = var->getValueInterfaceType().subst(subs);
+    Type propertyType = var->isLocalCapture()
+        ? var->getType()
+        : var->getValueInterfaceType().subst(subs);
     if (!isConcurrentValueType(dc, propertyType)) {
       return diagnoseNonConcurrentProperty(loc, refKind, var, propertyType);
     }
@@ -938,68 +943,13 @@ bool swift::diagnoseNonConcurrentTypesInReference(
   return false;
 }
 
-bool swift::diagnoseNonConcurrentTypesInFunctionType(
-    const AnyFunctionType *fnType, const DeclContext *dc, SourceLoc loc,
-    bool isClosure) {
-  ASTContext &ctx = dc->getASTContext();
-  // Bail out immediately if we aren't supposed to do this checking.
-  if (!dc->getASTContext().LangOpts.EnableExperimentalConcurrentValueChecking)
-    return false;
-
-  // Check parameter types.
-  for (const auto &param : fnType->getParams()) {
-    Type paramType = param.getParameterType();
-    if (!isConcurrentValueType(dc, paramType)) {
-      ctx.Diags.diagnose(
-          loc, diag::non_concurrent_function_type, isClosure, false, paramType);
-      return true;
-    }
-  }
-
-  // Check result type.
-  if (!isConcurrentValueType(dc, fnType->getResult())) {
-    ctx.Diags.diagnose(
-        loc, diag::non_concurrent_function_type, isClosure, true,
-        fnType->getResult());
-    return true;
-  }
-
-  return false;
-}
-
 namespace {
-  /// Check whether a particular context may execute concurrently within
-  /// another context.
-  class ConcurrentExecutionChecker {
-    /// Keeps track of the first location at which a given local function is
-    /// referenced from a context that may execute concurrently with the
-    /// context in which it was introduced.
-    llvm::SmallDenseMap<const FuncDecl *, SourceLoc, 4> concurrentRefs;
-
-  public:
-    /// Determine whether (and where) a given local function is referenced
-    /// from a context that may execute concurrently with the context in
-    /// which it is declared.
-    ///
-    /// \returns the source location of the first reference to the local
-    /// function that may be concurrent. If the result is an invalid
-    /// source location, there are no such references.
-    SourceLoc getConcurrentReferenceLoc(const FuncDecl *localFunc);
-
-    /// Determine whether code in the given use context might execute
-    /// concurrently with code in the definition context.
-    bool mayExecuteConcurrentlyWith(
-      const DeclContext *useContext, const DeclContext *defContext);
-  };
-
   /// Check for adherence to the actor isolation rules, emitting errors
   /// when actor-isolated declarations are used in an unsafe manner.
   class ActorIsolationChecker : public ASTWalker {
     ASTContext &ctx;
     SmallVector<const DeclContext *, 4> contextStack;
     SmallVector<ApplyExpr*, 4> applyStack;
-
-    ConcurrentExecutionChecker concurrentExecutionChecker;
 
     using MutableVarSource = llvm::PointerUnion<DeclRefExpr *, InOutExpr *>;
     using MutableVarParent = llvm::PointerUnion<InOutExpr *, LoadExpr *>;
@@ -1016,10 +966,7 @@ namespace {
     /// Determine whether code in the given use context might execute
     /// concurrently with code in the definition context.
     bool mayExecuteConcurrentlyWith(
-      const DeclContext *useContext, const DeclContext *defContext) {
-      return concurrentExecutionChecker.mayExecuteConcurrentlyWith(
-          useContext, defContext);
-    }
+        const DeclContext *useContext, const DeclContext *defContext);
 
     /// If the subexpression is a reference to a mutable local variable from a
     /// different context, record its parent. We'll query this as part of
@@ -1148,18 +1095,6 @@ namespace {
       if (auto *closure = dyn_cast<AbstractClosureExpr>(expr)) {
         closure->setActorIsolation(determineClosureIsolation(closure));
         contextStack.push_back(closure);
-
-        
-        // Concurrent closures must be composed of concurrent-safe parameter
-        // and result types.
-        if (isConcurrentClosure(closure)) {
-          if (auto fnType = closure->getType()->getAs<FunctionType>()) {
-            (void)diagnoseNonConcurrentTypesInFunctionType(
-                 fnType, getDeclContext(), closure->getLoc(),
-                 /*isClosure=*/true);
-          }
-        }
-
         return { true, expr };
       }
 
@@ -1670,22 +1605,45 @@ namespace {
           return false;
 
         // Check whether this is a local variable, in which case we can
-        // determine whether it was captured by value.
+        // determine whether it was safe to access concurrently.
         if (auto var = dyn_cast<VarDecl>(value)) {
           auto parent = mutableLocalVarParent[declRefExpr];
 
-          // If we have an immediate load of this variable, or it's a let,
-          // we will separately ensure that this variable is not modified.
-          if (!var->supportsMutation() || parent.dyn_cast<LoadExpr *>()) {
+          // If the variable is immutable, it's fine so long as it involves
+          // ConcurrentValue types.
+          //
+          // When flow-sensitive concurrent captures are enabled, we also
+          // allow reads, depending on a SIL diagnostic pass to identify the
+          // remaining race conditions.
+          if (!var->supportsMutation() ||
+              (ctx.LangOpts.EnableExperimentalFlowSensitiveConcurrentCaptures &&
+               parent.dyn_cast<LoadExpr *>())) {
             return diagnoseNonConcurrentTypesInReference(
                 valueRef, getDeclContext(), loc,
                 ConcurrentReferenceKind::LocalCapture);
           }
 
-          // Otherwise, we have concurrent mutation. Complain.
+          // Otherwise, we have concurrent access. Complain.
           ctx.Diags.diagnose(
-              loc, diag::concurrent_mutation_of_local_capture,
+              loc, diag::concurrent_access_of_local_capture,
+              parent.dyn_cast<LoadExpr *>(),
               var->getDescriptiveKind(), var->getName());
+          return true;
+        }
+
+        if (auto func = dyn_cast<FuncDecl>(value)) {
+          if (func->isConcurrent())
+            return false;
+
+          func->diagnose(
+              diag::local_function_executed_concurrently,
+              func->getDescriptiveKind(), func->getName())
+            .fixItInsert(func->getAttributeInsertionLoc(false), "@concurrent ");
+
+          // Add the @concurrent attribute implicitly, so we don't diagnose
+          // again.
+          const_cast<FuncDecl *>(func)->getAttrs().add(
+              new (ctx) ConcurrentAttr(true));
           return true;
         }
 
@@ -1910,111 +1868,7 @@ namespace {
   };
 }
 
-SourceLoc ConcurrentExecutionChecker::getConcurrentReferenceLoc(
-    const FuncDecl *localFunc) {
-
-  // If we've already computed a result, we're done.
-  auto known = concurrentRefs.find(localFunc);
-  if (known != concurrentRefs.end())
-    return known->second;
-
-  // Record that there are no concurrent references to this local function. This
-  // prevents infinite recursion if two local functions call each other.
-  concurrentRefs[localFunc] = SourceLoc();
-
-  class ConcurrentLocalRefWalker : public ASTWalker {
-    ConcurrentExecutionChecker &checker;
-    const FuncDecl *targetFunc;
-    SmallVector<const DeclContext *, 4> contextStack;
-
-    const DeclContext *getDeclContext() const {
-      return contextStack.back();
-    }
-
-  public:
-    ConcurrentLocalRefWalker(
-      ConcurrentExecutionChecker &checker, const FuncDecl *targetFunc
-    ) : checker(checker), targetFunc(targetFunc) {
-      contextStack.push_back(targetFunc->getDeclContext());
-    }
-
-    std::pair<bool, Expr *> walkToExprPre(Expr *expr) override {
-      if (auto *closure = dyn_cast<AbstractClosureExpr>(expr)) {
-        contextStack.push_back(closure);
-        return { true, expr };
-      }
-
-      if (auto *declRef = dyn_cast<DeclRefExpr>(expr)) {
-        // If this is a reference to the target function from a context
-        // that may execute concurrently with the context where the target
-        // function was declared, record the location.
-        if (declRef->getDecl() == targetFunc &&
-            checker.mayExecuteConcurrentlyWith(
-              getDeclContext(), contextStack.front())) {
-          SourceLoc &loc = checker.concurrentRefs[targetFunc];
-          if (loc.isInvalid())
-            loc = declRef->getLoc();
-
-          return { false, expr };
-        }
-
-        return { true, expr };
-      }
-
-      return { true, expr };
-    }
-
-    Expr *walkToExprPost(Expr *expr) override {
-      if (auto *closure = dyn_cast<AbstractClosureExpr>(expr)) {
-        assert(contextStack.back() == closure);
-        contextStack.pop_back();
-      }
-
-      return expr;
-    }
-
-    bool walkToDeclPre(Decl *decl) override {
-      if (isa<NominalTypeDecl>(decl) || isa<ExtensionDecl>(decl))
-        return false;
-
-      if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
-        contextStack.push_back(func);
-      }
-
-      return true;
-    }
-
-    bool walkToDeclPost(Decl *decl) override {
-      if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
-        assert(contextStack.back() == func);
-        contextStack.pop_back();
-      }
-
-      return true;
-    }
-  };
-
-  // Walk the body of the enclosing function, where all references to the
-  // given local function would occur.
-  Stmt *enclosingBody = nullptr;
-  DeclContext *enclosingDC = localFunc->getDeclContext();
-  if (auto enclosingFunc = dyn_cast<AbstractFunctionDecl>(enclosingDC))
-    enclosingBody = enclosingFunc->getBody();
-  else if (auto enclosingClosure = dyn_cast<ClosureExpr>(enclosingDC))
-    enclosingBody = enclosingClosure->getBody();
-  else if (auto enclosingTopLevelCode = dyn_cast<TopLevelCodeDecl>(enclosingDC))
-    enclosingBody = enclosingTopLevelCode->getBody();
-  else
-    return SourceLoc();
-
-  assert(enclosingBody && "Cannot have a local function here");
-  ConcurrentLocalRefWalker walker(*this, localFunc);
-  enclosingBody->walk(walker);
-
-  return concurrentRefs[localFunc];
-}
-
-bool ConcurrentExecutionChecker::mayExecuteConcurrentlyWith(
+bool ActorIsolationChecker::mayExecuteConcurrentlyWith(
     const DeclContext *useContext, const DeclContext *defContext) {
   // Walk the context chain from the use to the definition.
   while (useContext != defContext) {
@@ -2029,25 +1883,6 @@ bool ConcurrentExecutionChecker::mayExecuteConcurrentlyWith(
         // If the function is @concurrent... it can be run concurrently.
         if (func->isConcurrent())
           return true;
-
-        // If we find a local function that was referenced in code that can be
-        // executed concurrently with where the local function was declared, the
-        // local function can be run concurrently.
-        SourceLoc concurrentLoc = getConcurrentReferenceLoc(func);
-        if (concurrentLoc.isValid()) {
-          ASTContext &ctx = func->getASTContext();
-          func->diagnose(
-              diag::local_function_executed_concurrently,
-              func->getDescriptiveKind(), func->getName())
-            .fixItInsert(func->getAttributeInsertionLoc(false), "@concurrent ");
-          ctx.Diags.diagnose(concurrentLoc, diag::concurrent_access_here);
-
-          // Add the @concurrent attribute implicitly, so we don't diagnose
-          // again.
-          const_cast<FuncDecl *>(func)->getAttrs().add(
-              new (ctx) ConcurrentAttr(true));
-          return true;
-        }
       }
     }
 
@@ -2479,10 +2314,12 @@ void swift::checkConcurrentValueConformance(ProtocolConformance *conformance) {
   if (!nominal)
     return;
 
-  // Actors implicitly conform to ConcurrentValue and protect their state.
   auto classDecl = dyn_cast<ClassDecl>(nominal);
-  if (classDecl && classDecl->isActor())
-    return;
+  if (classDecl) {
+    // Actors implicitly conform to ConcurrentValue and protect their state.
+    if (classDecl->isActor())
+      return;
+  }
 
   // ConcurrentValue can only be used in the same source file.
   auto conformanceDecl = conformanceDC->getAsDecl();
@@ -2492,6 +2329,29 @@ void swift::checkConcurrentValueConformance(ProtocolConformance *conformance) {
         diag::concurrent_value_outside_source_file,
         nominal->getDescriptiveKind(), nominal->getName());
     return;
+  }
+
+  if (classDecl) {
+    // An open class cannot conform to `ConcurrentValue`.
+    if (classDecl->getFormalAccess() == AccessLevel::Open) {
+      classDecl->diagnose(
+          diag::concurrent_value_open_class, classDecl->getName());
+      return;
+    }
+
+    // A 'ConcurrentValue' class cannot inherit from another class, although
+    // we allow `NSObject` for Objective-C interoperability.
+    if (!isa<InheritedProtocolConformance>(conformance)) {
+      if (auto superclassDecl = classDecl->getSuperclassDecl()) {
+        if (!superclassDecl->isNSObject()) {
+          classDecl->diagnose(
+              diag::concurrent_value_inherit,
+              nominal->getASTContext().LangOpts.EnableObjCInterop,
+              classDecl->getName());
+          return;
+        }
+      }
+    }
   }
 
   // Stored properties of structs and classes must have

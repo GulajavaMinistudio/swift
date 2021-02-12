@@ -118,7 +118,7 @@ func testConcurrency() {
   }
   acceptConcurrent {
     print(x) // expected-warning{{cannot use let 'x' with a non-concurrent-value type 'NotConcurrent' from concurrently-executed code}}
-    print(y) // expected-warning{{cannot use var 'y' with a non-concurrent-value type 'NotConcurrent' from concurrently-executed code}}
+    print(y) // expected-error{{reference to captured var 'y' in concurrently-executing code}}
   }
 }
 
@@ -147,17 +147,16 @@ class SomeClass: MainActorProto {
 // ConcurrentValue restriction on concurrent functions.
 // ----------------------------------------------------------------------
 
-// FIXME: poor diagnostic
-@concurrent func concurrentFunc() -> NotConcurrent? { nil } // expected-warning{{cannot call function returning non-concurrent-value type 'NotConcurrent?' across actors}}
+@concurrent func concurrentFunc() -> NotConcurrent? { nil }
 
 // ----------------------------------------------------------------------
-// ConcurrentValue restriction on @concurrent types.
+// No ConcurrentValue restriction on @concurrent function types.
 // ----------------------------------------------------------------------
-typealias CF = @concurrent () -> NotConcurrent? // expected-warning{{`@concurrent` function type has non-concurrent-value result type 'NotConcurrent?'}}
-typealias BadGenericCF<T> = @concurrent () -> T? // expected-warning{{`@concurrent` function type has non-concurrent-value result type 'T?'}}
+typealias CF = @concurrent () -> NotConcurrent?
+typealias BadGenericCF<T> = @concurrent () -> T?
 typealias GoodGenericCF<T: ConcurrentValue> = @concurrent () -> T? // okay
 
-var concurrentFuncVar: (@concurrent (NotConcurrent) -> Void)? = nil // expected-warning{{`@concurrent` function type has non-concurrent-value parameter type 'NotConcurrent'}}
+var concurrentFuncVar: (@concurrent (NotConcurrent) -> Void)? = nil
 
 // ----------------------------------------------------------------------
 // ConcurrentValue restriction on @concurrent closures.
@@ -165,8 +164,9 @@ var concurrentFuncVar: (@concurrent (NotConcurrent) -> Void)? = nil // expected-
 func acceptConcurrentUnary<T>(_: @concurrent (T) -> T) { }
 
 func concurrentClosures<T>(_: T) {
-  acceptConcurrentUnary { (x: T) in // expected-warning{{`@concurrent` closure has non-concurrent-value parameter type 'T'}}
-    x
+  acceptConcurrentUnary { (x: T) in
+    _ = x // ok
+    acceptConcurrentUnary { _ in x } // expected-warning{{cannot use parameter 'x' with a non-concurrent-value type 'T' from concurrently-executed code}}
   }
 }
 
@@ -221,9 +221,20 @@ class C5: UnsafeConcurrentValue {
 }
 
 class C6: C5 {
-  var y: Int = 0 // still okay
+  var y: Int = 0 // still okay, it's unsafe
 }
 
+class C7<T>: ConcurrentValue { }
+
+class C8: C7<Int> { } // okay
+
+open class C9: ConcurrentValue { } // expected-error{{open class 'C9' cannot conform to `ConcurrentValue`; use `UnsafeConcurrentValue`}}
+
+public class C10: ConcurrentValue { }
+// expected-note@-1{{superclass is declared here}}
+open class C11: C10 { }
+// expected-error@-1{{superclass 'C10' of open class must be open}}
+// expected-error@-2{{open class 'C11' cannot conform to `ConcurrentValue`; use `UnsafeConcurrentValue`}}
 
 // ----------------------------------------------------------------------
 // UnsafeConcurrentValue disabling checking
