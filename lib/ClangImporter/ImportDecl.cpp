@@ -3473,6 +3473,12 @@ namespace {
           }
         }
 
+        // If we've already imported this decl, skip it so we don't add the same
+        // member twice.
+        if (Impl.ImportedDecls.find({nd->getCanonicalDecl(), getVersion()}) !=
+            Impl.ImportedDecls.end())
+          continue;
+
         auto member = Impl.importDecl(nd, getActiveSwiftVersion());
         if (!member) {
           if (!isa<clang::TypeDecl>(nd) && !isa<clang::FunctionDecl>(nd)) {
@@ -3485,11 +3491,6 @@ namespace {
         }
 
         if (auto nestedType = dyn_cast<TypeDecl>(member)) {
-          // Only import definitions. Otherwise, we might add the same member
-          // twice.
-          if (auto tagDecl = dyn_cast<clang::TagDecl>(nd))
-            if (tagDecl->getDefinition() != tagDecl)
-              continue;
           nestedTypes.push_back(nestedType);
           continue;
         }
@@ -8133,9 +8134,10 @@ void ClangImporter::Implementation::importAttributes(
     // __attribute__((swift_attr("attribute")))
     //
     if (auto swiftAttr = dyn_cast<clang::SwiftAttrAttr>(*AI)) {
-      // FIXME: Hard-core @MainActor, because we don't have a point at which to
-      // do name lookup for imported entities.
-      if (swiftAttr->getAttribute() == "@MainActor") {
+      // FIXME: Hard-core @MainActor and @UIActor, because we don't have a
+      // point at which to do name lookup for imported entities.
+      if (swiftAttr->getAttribute() == "@MainActor" ||
+          swiftAttr->getAttribute() == "@UIActor") {
         if (Type mainActorType = getMainActorType()) {
           auto typeExpr = TypeExpr::createImplicit(mainActorType, SwiftContext);
           auto attr = CustomAttr::create(SwiftContext, SourceLoc(), typeExpr);
@@ -9067,8 +9069,8 @@ ClangImporter::Implementation::createConstant(Identifier name, DeclContext *dc,
   func->getAttrs().add(new (C) TransparentAttr(/*implicit*/ true));
   // If we're in concurrency mode, mark the constant as @actorIndependent
   if (SwiftContext.LangOpts.EnableExperimentalConcurrency) {
-    auto actorIndependentAttr = new (C) ActorIndependentAttr(SourceLoc(),
-        SourceRange(), ActorIndependentKind::Safe);
+    auto actorIndependentAttr = new (C) ActorIndependentAttr(
+        ActorIndependentKind::Unsafe, /*IsImplicit=*/true);
     var->getAttrs().add(actorIndependentAttr);
   }
   // Set the function up as the getter.
