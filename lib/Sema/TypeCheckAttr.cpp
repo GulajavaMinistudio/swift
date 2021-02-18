@@ -1825,7 +1825,6 @@ synthesizeMainBody(AbstractFunctionDecl *fn, void *arg) {
 
   auto *callExpr = CallExpr::createImplicit(context, memberRefExpr, {}, {});
   callExpr->setImplicit(true);
-  callExpr->setThrows(mainFunction->hasThrows());
   callExpr->setType(context.TheEmptyTupleType);
 
   Expr *returnedExpr;
@@ -2057,7 +2056,8 @@ void AttributeChecker::visitRethrowsAttr(RethrowsAttr *attr) {
   // 'rethrows' only applies to functions that take throwing functions
   // as parameters.
   auto fn = dyn_cast<AbstractFunctionDecl>(D);
-  if (fn && fn->getRethrowingKind() != FunctionRethrowingKind::Invalid) {
+  if (fn->getPolymorphicEffectKind(EffectKind::Throws)
+        != PolymorphicEffectKind::Invalid) {
     return;
   }
 
@@ -5476,3 +5476,34 @@ void AttributeChecker::visitReasyncAttr(ReasyncAttr *attr) {
 }
 
 void AttributeChecker::visitAtReasyncAttr(AtReasyncAttr *attr) {}
+
+namespace {
+
+class ClosureAttributeChecker
+    : public AttributeVisitor<ClosureAttributeChecker> {
+  ASTContext &ctx;
+public:
+  ClosureAttributeChecker(ClosureExpr *closure)
+    : ctx(closure->getASTContext()) { }
+
+  void visitDeclAttribute(DeclAttribute *attr) {
+    ctx.Diags.diagnose(
+        attr->getLocation(), diag::unsupported_closure_attr,
+        attr->isDeclModifier(), attr->getAttrName())
+      .fixItRemove(attr->getRangeWithAt());
+    attr->setInvalid();
+  }
+
+  void visitConcurrentAttr(ConcurrentAttr *attr) {
+    // Nothing else to check.
+  }
+};
+
+}
+
+void TypeChecker::checkClosureAttributes(ClosureExpr *closure) {
+  ClosureAttributeChecker checker(closure);
+  for (auto attr : closure->getAttrs()) {
+    checker.visit(attr);
+  }
+}
