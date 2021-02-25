@@ -802,8 +802,10 @@ enum ScoreKind {
   SK_KeyPathSubscript,
   /// A conversion from a string, array, or inout to a pointer.
   SK_ValueToPointerConversion,
+  /// A closure/function conversion to an autoclosure parameter.
+  SK_FunctionToAutoClosureConversion,
 
-  SK_LastScoreKind = SK_ValueToPointerConversion,
+  SK_LastScoreKind = SK_FunctionToAutoClosureConversion,
 };
 
 /// The number of score kinds.
@@ -1460,7 +1462,11 @@ struct MemberLookupResult {
     UR_ReferenceWritableKeyPathOnMutatingMember,
 
     /// This is a KeyPath whose root type is AnyObject
-    UR_KeyPathWithAnyObjectRootType
+    UR_KeyPathWithAnyObjectRootType,
+
+    /// This is a static member being access through a protocol metatype
+    /// but its result type doesn't conform to this protocol.
+    UR_InvalidStaticMemberOnProtocolMetatype,
   };
 
   /// This is a list of considered (but rejected) candidates, along with a
@@ -4568,6 +4574,12 @@ private:
                                         TypeMatchOptions flags,
                                         ConstraintLocatorBuilder locator);
 
+  /// Simplify an equality constraint between result and base types of
+  /// an unresolved member chain.
+  SolutionKind simplifyUnresolvedMemberChainBaseConstraint(
+      Type first, Type second, TypeMatchOptions flags,
+      ConstraintLocatorBuilder locator);
+
   /// Simplify a conversion constraint by applying the given
   /// reduction rule, which is known to apply at the outermost level.
   SolutionKind simplifyRestrictedConstraintImpl(
@@ -5528,6 +5540,11 @@ bool hasExplicitResult(ClosureExpr *closure);
 /// application target.
 void performSyntacticDiagnosticsForTarget(
     const SolutionApplicationTarget &target, bool isExprStmt);
+
+/// Given a member of a protocol, check whether `Self` type of that
+/// protocol is contextually bound to some concrete type via same-type
+/// generic requirement and if so return that type or null type otherwise.
+Type getConcreteReplacementForProtocolSelfType(ValueDecl *member);
 
 } // end namespace constraints
 

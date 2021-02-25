@@ -1902,6 +1902,12 @@ ERROR(type_does_not_conform_owner,none,
 ERROR(type_does_not_conform_in_decl_ref,none,
       "referencing %0 %1 on %2 requires that %3 conform to %4",
       (DescriptiveDeclKind, DeclName, Type, Type, Type))
+ERROR(contextual_member_ref_on_protocol_requires_self_requirement,none,
+      "contextual member reference to %0 %1 requires "
+      "'Self' constraint in the protocol extension",
+      (DescriptiveDeclKind, DeclName))
+NOTE(missing_sametype_requirement_on_self,none,
+      "missing same-type requirement on 'Self'", ())
 ERROR(type_does_not_conform_anyobject_in_decl_ref,none,
       "referencing %0 %1 on %2 requires that %3 be a class type",
       (DescriptiveDeclKind, DeclName, Type, Type, Type))
@@ -2869,16 +2875,16 @@ WARNING(differentiable_nondiff_type_implicit_noderivative_fixit,none,
       (/*propName*/ Identifier, /*propType*/ Type, /*nominalName*/ Identifier,
        /*nominalCanDeriveAdditiveArithmetic*/ bool))
 WARNING(differentiable_immutable_wrapper_implicit_noderivative_fixit,none,
-      "synthesis of the 'Differentiable.move(along:)' requirement for %1 "
+      "synthesis of the 'Differentiable.move(by:)' requirement for %1 "
       "requires 'wrappedValue' in property wrapper %0 to be mutable or have a "
-      "non-mutating 'move(along:)'; add an explicit '@noDerivative' attribute"
+      "non-mutating 'move(by:)'; add an explicit '@noDerivative' attribute"
       "%select{|, or conform %1 to 'AdditiveArithmetic'}2",
       (/*wrapperType*/ Identifier, /*nominalName*/ Identifier,
        /*nominalCanDeriveAdditiveArithmetic*/ bool))
 WARNING(differentiable_let_property_implicit_noderivative_fixit,none,
-      "synthesis of the 'Differentiable.move(along:)' requirement for %0 "
+      "synthesis of the 'Differentiable.move(by:)' requirement for %0 "
       "requires all stored properties not marked with `@noDerivative` to be "
-      "mutable or have a non-mutating 'move(along:)'; use 'var' instead, or "
+      "mutable or have a non-mutating 'move(by:)'; use 'var' instead, or "
       "add an explicit '@noDerivative' attribute "
       "%select{|, or conform %0 to 'AdditiveArithmetic'}1",
       (/*nominalName*/ Identifier, /*nominalCanDeriveAdditiveArithmetic*/ bool))

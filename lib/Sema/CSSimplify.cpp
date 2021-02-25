@@ -986,8 +986,35 @@ constraints::matchCallArguments(
   };
 }
 
-static Optional<unsigned>
-getCompletionArgIndex(ASTNode anchor, ConstraintSystem &CS) {
+struct CompletionArgInfo {
+  unsigned completionIdx;
+  Optional<unsigned> firstTrailingIdx;
+
+  bool isAllowableMissingArg(unsigned argInsertIdx,
+                             AnyFunctionType::Param param) {
+    // If the argument is before or at the index of the argument containing the
+    // completion, the user would likely have already written it if they
+    // intended this overload.
+    if (completionIdx >= argInsertIdx)
+      return false;
+
+    // If the argument is after the first trailing closure, the user can only
+    // continue on to write more trailing arguments, so only allow this overload
+    // if the missing argument is of function type.
+    if (firstTrailingIdx && argInsertIdx > *firstTrailingIdx) {
+      if (param.isInOut())
+        return false;
+
+      Type expectedTy = param.getPlainType()->lookThroughAllOptionalTypes();
+      return expectedTy->is<FunctionType>() || expectedTy->isAny() ||
+          expectedTy->isTypeVariableOrMember();
+    }
+    return true;
+  }
+};
+
+static Optional<CompletionArgInfo>
+getCompletionArgInfo(ASTNode anchor, ConstraintSystem &CS) {
   Expr *arg = nullptr;
   if (auto *CE = getAsExpr<CallExpr>(anchor))
     arg = CE->getArg();
@@ -999,16 +1026,15 @@ getCompletionArgIndex(ASTNode anchor, ConstraintSystem &CS) {
   if (!arg)
     return None;
 
-  if (auto *TE = dyn_cast<TupleExpr>(arg)) {
-    auto elems = TE->getElements();
-    auto idx = llvm::find_if(elems, [&](Expr *elem) {
-      return CS.containsCodeCompletionLoc(elem);
-    });
-    if (idx != elems.end())
-      return std::distance(elems.begin(), idx);
-  } else if (auto *PE = dyn_cast<ParenExpr>(arg)) {
+  auto trailingIdx = arg->getUnlabeledTrailingClosureIndexOfPackedArgument();
+  if (auto *PE = dyn_cast<ParenExpr>(arg)) {
     if (CS.containsCodeCompletionLoc(PE->getSubExpr()))
-      return 0;
+      return CompletionArgInfo{ 0, trailingIdx };
+  } else if (auto *TE = dyn_cast<TupleExpr>(arg)) {
+    for (unsigned i: indices(TE->getElements())) {
+      if (CS.containsCodeCompletionLoc(TE->getElement(i)))
+        return CompletionArgInfo{ i, trailingIdx };
+    }
   }
   return None;
 }
@@ -1021,7 +1047,7 @@ class ArgumentFailureTracker : public MatchCallArgumentListener {
 
   SmallVector<SynthesizedArg, 4> MissingArguments;
   SmallVector<std::pair<unsigned, AnyFunctionType::Param>, 4> ExtraArguments;
-  Optional<unsigned> CompletionArgIdx;
+  Optional<CompletionArgInfo> CompletionArgInfo;
 
 public:
   ArgumentFailureTracker(ConstraintSystem &cs,
@@ -1048,10 +1074,19 @@ public:
     const auto &param = Parameters[paramIdx];
 
     unsigned newArgIdx = Arguments.size();
+
+    bool isAfterCodeCompletionLoc = false;
+    if (CS.isForCodeCompletion()) {
+      if (!CompletionArgInfo)
+        CompletionArgInfo = getCompletionArgInfo(Locator.getAnchor(), CS);
+      isAfterCodeCompletionLoc = CompletionArgInfo &&
+        CompletionArgInfo->isAllowableMissingArg(argInsertIdx, param);
+    }
+
     auto *argLoc = CS.getConstraintLocator(
         Locator, {LocatorPathElt::ApplyArgToParam(newArgIdx, paramIdx,
                                                   param.getParameterFlags()),
-                  LocatorPathElt::SynthesizedArgument(newArgIdx)});
+                  LocatorPathElt::SynthesizedArgument(newArgIdx, isAfterCodeCompletionLoc)});
 
     auto *argType =
         CS.createTypeVariable(argLoc, TVO_CanBindToInOut | TVO_CanBindToLValue |
@@ -1060,16 +1095,12 @@ public:
     auto synthesizedArg = param.withType(argType);
     Arguments.push_back(synthesizedArg);
 
-    if (CS.isForCodeCompletion()) {
-      // When solving for code completion, if any argument contains the
-      // completion location, later arguments shouldn't be considered missing
-      // (causing the solution to have a worse score) as the user just hasn't
-      // written them yet. Early exit to avoid recording them in this case.
-      if (!CompletionArgIdx)
-        CompletionArgIdx = getCompletionArgIndex(Locator.getAnchor(), CS);
-      if (CompletionArgIdx && *CompletionArgIdx < argInsertIdx)
-        return newArgIdx;
-    }
+    // When solving for code completion, if any argument contains the
+    // completion location, later arguments shouldn't be considered missing
+    // (causing the solution to have a worse score) as the user just hasn't
+    // written them yet. Early exit to avoid recording them in this case.
+    if (isAfterCodeCompletionLoc)
+      return newArgIdx;
 
     MissingArguments.push_back(SynthesizedArg{paramIdx, synthesizedArg});
 
@@ -1347,6 +1378,17 @@ ConstraintSystem::TypeMatchResult constraints::matchCallArguments(
         auto *fnType = paramTy->castTo<FunctionType>();
         auto *argExpr = getArgumentExpr(locator.getAnchor(), argIdx);
 
+        // If this is a call to a function with a closure argument and the
+        // parameter is an autoclosure, let's just increment the score here
+        // so situations like bellow are not ambiguous.
+        //    func f<T>(_: () -> T) {}
+        //    func f<T>(_: @autoclosure () -> T) {}
+        //
+        //    f { } // OK
+        if (isExpr<ClosureExpr>(argExpr)) {
+          cs.increaseScore(SK_FunctionToAutoClosureConversion);
+        }
+
         // If the argument is not marked as @autoclosure or
         // this is Swift version >= 5 where forwarding is not allowed,
         // argument would always be wrapped into an implicit closure
@@ -1510,6 +1552,7 @@ ConstraintSystem::matchTupleTypes(TupleType *tuple1, TupleType *tuple2,
   case ConstraintKind::OneWayEqual:
   case ConstraintKind::OneWayBindParam:
   case ConstraintKind::DefaultClosureType:
+  case ConstraintKind::UnresolvedMemberChainBase:
     llvm_unreachable("Not a conversion");
   }
 
@@ -1647,6 +1690,7 @@ static bool matchFunctionRepresentations(FunctionType::ExtInfo einfo1,
   case ConstraintKind::OneWayEqual:
   case ConstraintKind::OneWayBindParam:
   case ConstraintKind::DefaultClosureType:
+  case ConstraintKind::UnresolvedMemberChainBase:
     return true;
   }
 
@@ -2001,6 +2045,7 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
   case ConstraintKind::OneWayEqual:
   case ConstraintKind::OneWayBindParam:
   case ConstraintKind::DefaultClosureType:
+  case ConstraintKind::UnresolvedMemberChainBase:
     llvm_unreachable("Not a relational constraint");
   }
 
@@ -2210,6 +2255,26 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
   for (unsigned i : indices(func1Params)) {
     auto func1Param = func1Params[i];
     auto func2Param = func2Params[i];
+
+    // Increase the score if matching an autoclosure parameter to an function
+    // type, so we enforce that non-autoclosure overloads are preferred.
+    //
+    //   func autoclosure(f: () -> Int) { }
+    //   func autoclosure(f: @autoclosure () -> Int) { }
+    //
+    //   let _ = autoclosure as (() -> (Int)) -> () // non-autoclosure preferred
+    //
+    auto isAutoClosureFunctionMatch = [](AnyFunctionType::Param &param1,
+                                         AnyFunctionType::Param &param2) {
+      return param1.isAutoClosure() &&
+             (!param2.isAutoClosure() &&
+              param2.getPlainType()->is<FunctionType>());
+    };
+
+    if (isAutoClosureFunctionMatch(func1Param, func2Param) ||
+        isAutoClosureFunctionMatch(func2Param, func1Param)) {
+      increaseScore(SK_FunctionToAutoClosureConversion);
+    }
 
     // Variadic bit must match.
     if (func1Param.isVariadic() != func2Param.isVariadic()) {
@@ -4522,6 +4587,10 @@ bool ConstraintSystem::repairFailures(
   }
 
   case ConstraintLocator::UnresolvedMemberChainResult: {
+    // Ignore this mismatch if result is already a hole.
+    if (rhs->isPlaceholder())
+      return true;
+
     if (repairViaOptionalUnwrap(*this, lhs, rhs, matchKind, conversionsOrFixes,
                                 locator))
       break;
@@ -4865,6 +4934,7 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
     case ConstraintKind::OneWayEqual:
     case ConstraintKind::OneWayBindParam:
     case ConstraintKind::DefaultClosureType:
+    case ConstraintKind::UnresolvedMemberChainBase:
       llvm_unreachable("Not a relational constraint");
     }
   }
@@ -5752,20 +5822,27 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
     return SolutionKind::Solved;
   }
 
-  // If we hit a type variable without a fixed type, we can't
-  // solve this yet.
-  if (type->isTypeVariableOrMember()) {
+  auto formUnsolved = [&](bool activate = false) {
     // If we're supposed to generate constraints, do so.
     if (flags.contains(TMF_GenerateConstraints)) {
-      addUnsolvedConstraint(
-        Constraint::create(*this, kind, type,
-                           protocol->getDeclaredInterfaceType(),
-                           getConstraintLocator(locator)));
+      auto *conformance = Constraint::create(
+          *this, kind, type, protocol->getDeclaredInterfaceType(),
+          getConstraintLocator(locator));
+
+      addUnsolvedConstraint(conformance);
+      if (activate)
+        activateConstraint(conformance);
+
       return SolutionKind::Solved;
     }
 
     return SolutionKind::Unsolved;
-  }
+  };
+
+  // If we hit a type variable without a fixed type, we can't
+  // solve this yet.
+  if (type->isTypeVariableOrMember())
+    return formUnsolved();
 
   auto *loc = getConstraintLocator(locator);
 
@@ -5887,7 +5964,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
       return recordFix(fix) ? SolutionKind::Error : SolutionKind::Solved;
     }
 
-    if (path.back().is<LocatorPathElt::AnyRequirement>()) {
+    if (auto req = path.back().getAs<LocatorPathElt::AnyRequirement>()) {
       // If this is a requirement associated with `Self` which is bound
       // to `Any`, let's consider this "too incorrect" to continue.
       //
@@ -5902,6 +5979,42 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
             auto *DC = GPD->getDeclContext();
             if (DC->isTypeContext() && DC->getSelfInterfaceType()->isEqual(GP))
               return SolutionKind::Error;
+          }
+        }
+      }
+
+      auto anchor = locator.getAnchor();
+
+      if (isExpr<UnresolvedMemberExpr>(anchor) &&
+          req->is<LocatorPathElt::TypeParameterRequirement>()) {
+        auto signature = path[path.size() - 2]
+                             .castTo<LocatorPathElt::OpenedGeneric>()
+                             .getSignature();
+        auto requirement = signature->getRequirements()[req->getIndex()];
+
+        auto *memberLoc = getConstraintLocator(anchor, path.front());
+        auto *memberRef = findResolvedMemberRef(memberLoc);
+
+        // To figure out what is going on here we need to wait until
+        // member overload is set in the constraint system.
+        if (!memberRef)
+          return formUnsolved(/*activate=*/true);
+
+        // If this is a `Self` conformance requirement from a static member
+        // reference on a protocol metatype, let's produce a tailored diagnostic.
+        if (memberRef->isStatic()) {
+          if (hasFixFor(memberLoc,
+                        FixKind::AllowInvalidStaticMemberRefOnProtocolMetatype))
+            return SolutionKind::Solved;
+
+          if (auto *protocolDecl =
+                  memberRef->getDeclContext()->getSelfProtocolDecl()) {
+            auto selfTy = protocolDecl->getProtocolSelfType();
+            if (selfTy->isEqual(requirement.getFirstType())) {
+              auto *fix = AllowInvalidStaticMemberRefOnProtocolMetatype::create(
+                *this, memberLoc);
+              return recordFix(fix) ? SolutionKind::Error : SolutionKind::Solved;
+            }
           }
         }
       }
@@ -6677,9 +6790,12 @@ performMemberLookup(ConstraintKind constraintKind, DeclNameRef memberName,
         hasStaticMembers = true;
       } else if (instanceTy->isExistentialType()) {
         // A protocol metatype has instance methods with type P -> T -> U, but
-        // not instance properties or static members -- the metatype value itself
+        // not instance properties or static members, unless result type of a
+        // member conforms to this protocol -- the metatype value itself
         // doesn't give us a witness so there's no static method to bind.
         hasInstanceMethods = true;
+        hasStaticMembers |=
+            memberLocator->isLastElement<LocatorPathElt::UnresolvedMember>();
       } else {
         // Metatypes of nominal types and archetypes have instance methods and
         // static members, but not instance properties.
@@ -6769,7 +6885,37 @@ performMemberLookup(ConstraintKind constraintKind, DeclNameRef memberName,
                     ->hasTypeParameter()) {
 
       /* We're OK */
+    } else if (hasStaticMembers && baseObjTy->is<MetatypeType>() &&
+               instanceTy->isExistentialType()) {
+      // Static member lookup on protocol metatype in generic context
+      // requires `Self` of the protocol to be bound to some concrete
+      // type via same-type requirement, otherwise it would be
+      // impossible to find a witness for this member.
 
+      if (!isa<ExtensionDecl>(decl->getDeclContext())) {
+        result.addUnviable(candidate,
+                           MemberLookupResult::UR_TypeMemberOnInstance);
+        return;
+      }
+
+      // Cannot instantiate a protocol or reference a member on
+      // protocol composition type.
+      if (isa<ConstructorDecl>(decl) ||
+          instanceTy->is<ProtocolCompositionType>()) {
+        result.addUnviable(candidate,
+                           MemberLookupResult::UR_TypeMemberOnInstance);
+        return;
+      }
+
+      if (getConcreteReplacementForProtocolSelfType(decl)) {
+        result.addViable(candidate);
+      } else {
+        result.addUnviable(
+            candidate,
+            MemberLookupResult::UR_InvalidStaticMemberOnProtocolMetatype);
+      }
+
+      return;
     } else {
       if (!hasStaticMembers) {
         result.addUnviable(candidate,
@@ -7299,7 +7445,10 @@ fixMemberRef(ConstraintSystem &cs, Type baseTy,
       break;
     case MemberLookupResult::UR_KeyPathWithAnyObjectRootType:
       return AllowAnyObjectKeyPathRoot::create(cs, locator);
-   }
+
+    case MemberLookupResult::UR_InvalidStaticMemberOnProtocolMetatype:
+      return AllowInvalidStaticMemberRefOnProtocolMetatype::create(cs, locator);
+    }
   }
 
   return nullptr;
@@ -7887,6 +8036,46 @@ ConstraintSystem::simplifyOneWayConstraint(
   assert(kind == ConstraintKind::OneWayBindParam);
   return matchTypes(
       secondSimplified, first, ConstraintKind::BindParam, flags, locator);
+}
+
+ConstraintSystem::SolutionKind
+ConstraintSystem::simplifyUnresolvedMemberChainBaseConstraint(
+    Type first, Type second, TypeMatchOptions flags,
+    ConstraintLocatorBuilder locator) {
+  auto resultTy = getFixedTypeRecursive(first, flags, /*wantRValue=*/true);
+  auto baseTy = getFixedTypeRecursive(second, flags, /*wantRValue=*/true);
+
+  if (baseTy->isTypeVariableOrMember() || resultTy->isTypeVariableOrMember()) {
+    if (flags.contains(TMF_GenerateConstraints)) {
+      addUnsolvedConstraint(
+          Constraint::create(*this, ConstraintKind::UnresolvedMemberChainBase,
+                             first, second, getConstraintLocator(locator)));
+      return SolutionKind::Solved;
+    }
+
+    return SolutionKind::Unsolved;
+  }
+
+  if (baseTy->is<ProtocolType>()) {
+    auto *baseExpr =
+        castToExpr<UnresolvedMemberChainResultExpr>(locator.getAnchor())
+            ->getChainBase();
+    auto *memberLoc =
+        getConstraintLocator(baseExpr, ConstraintLocator::UnresolvedMember);
+
+    if (shouldAttemptFixes() && hasFixFor(memberLoc))
+      return SolutionKind::Solved;
+
+    auto *memberRef = findResolvedMemberRef(memberLoc);
+    if (memberRef && memberRef->isStatic()) {
+      return simplifyConformsToConstraint(
+          resultTy, baseTy, ConstraintKind::ConformsTo,
+          getConstraintLocator(memberLoc, ConstraintLocator::MemberRefBase),
+          flags);
+    }
+  }
+
+  return matchTypes(baseTy, resultTy, ConstraintKind::Equal, flags, locator);
 }
 
 static Type getOpenedResultBuilderTypeFor(ConstraintSystem &cs,
@@ -10459,7 +10648,8 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyFixConstraint(
   case FixKind::SpecifyBaseTypeForOptionalUnresolvedMember:
   case FixKind::AllowCheckedCastCoercibleOptionalType:
   case FixKind::AllowUnsupportedRuntimeCheckedCast:
-  case FixKind::AllowAlwaysSucceedCheckedCast: {
+  case FixKind::AllowAlwaysSucceedCheckedCast:
+  case FixKind::AllowInvalidStaticMemberRefOnProtocolMetatype: {
     return recordFix(fix) ? SolutionKind::Error : SolutionKind::Solved;
   }
 
@@ -10693,6 +10883,10 @@ ConstraintSystem::addConstraintImpl(ConstraintKind kind, Type first,
   case ConstraintKind::OneWayEqual:
   case ConstraintKind::OneWayBindParam:
     return simplifyOneWayConstraint(kind, first, second, subflags, locator);
+
+  case ConstraintKind::UnresolvedMemberChainBase:
+    return simplifyUnresolvedMemberChainBaseConstraint(first, second, subflags,
+                                                       locator);
 
   case ConstraintKind::ValueMember:
   case ConstraintKind::UnresolvedValueMember:
@@ -11213,6 +11407,11 @@ ConstraintSystem::simplifyConstraint(const Constraint &constraint) {
                                     constraint.getFirstType(),
                                     constraint.getSecondType(),
                                     /*flags*/ None, constraint.getLocator());
+
+  case ConstraintKind::UnresolvedMemberChainBase:
+    return simplifyUnresolvedMemberChainBaseConstraint(
+        constraint.getFirstType(), constraint.getSecondType(),
+        /*flags=*/None, constraint.getLocator());
   }
 
   llvm_unreachable("Unhandled ConstraintKind in switch.");
