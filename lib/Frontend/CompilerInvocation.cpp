@@ -388,6 +388,9 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   Opts.EnableExperimentalFlowSensitiveConcurrentCaptures |=
     Args.hasArg(OPT_enable_experimental_flow_sensitive_concurrent_captures);
 
+  Opts.EnableExperimentalEnumCodableDerivation |=
+      Args.hasArg(OPT_enable_experimental_enum_codable_derivation);
+
   Opts.DisableImplicitConcurrencyModuleImport |=
     Args.hasArg(OPT_disable_implicit_concurrency_module_import);
 
@@ -712,9 +715,6 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
           "Should have found one of enable/disable ast verifier?!");
     }
   }
-
-  Opts.EnableExperimentalHasAsyncAlternative |=
-      Args.hasArg(OPT_experimental_has_async_alternative_attribute);
 
   return HadError || UnsupportedOS || UnsupportedArch;
 }

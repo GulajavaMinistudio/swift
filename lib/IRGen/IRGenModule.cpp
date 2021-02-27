@@ -549,7 +549,8 @@ IRGenModule::IRGenModule(IRGenerator &irgen,
   SwiftCC = llvm::CallingConv::Swift;
 
   bool isAsynCCSupported =
-      clangASTContext.getTargetInfo().isSwiftAsyncCCSupported();
+    clangASTContext.getTargetInfo().checkCallingConvention(clang::CC_SwiftAsync)
+    == clang::TargetInfo::CCCR_OK;
   SwiftAsyncCC = (opts.UseAsyncLowering && isAsynCCSupported)
                      ? llvm::CallingConv::SwiftTail
                      : SwiftCC;
@@ -615,6 +616,7 @@ IRGenModule::IRGenModule(IRGenerator &irgen,
   AsyncFunctionPointerPtrTy = AsyncFunctionPointerTy->getPointerTo(DefaultAS);
   SwiftContextPtrTy = SwiftContextTy->getPointerTo(DefaultAS);
   SwiftTaskPtrTy = SwiftTaskTy->getPointerTo(DefaultAS);
+  SwiftTaskGroupPtrTy = Int8PtrTy; // we pass it opaquely (TaskGroup*)
   SwiftExecutorPtrTy = SwiftExecutorTy->getPointerTo(DefaultAS);
   SwiftJobTy = createStructType(*this, "swift.job", {
     SizeTy,               // flags

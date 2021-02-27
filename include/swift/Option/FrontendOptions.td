@@ -222,6 +222,10 @@ def enable_experimental_flow_sensitive_concurrent_captures :
   Flag<["-"], "enable-experimental-flow-sensitive-concurrent-captures">,
   HelpText<"Enable flow-sensitive concurrent captures">;
 
+def enable_experimental_enum_codable_derivation :
+  Flag<["-"], "enable-experimental-enum-codable-derivation">,
+  HelpText<"Enable experimental derivation of Codable for enums">;
+
 def enable_resilience : Flag<["-"], "enable-resilience">,
      HelpText<"Deprecated, use -enable-library-evolution instead">;
 }
@@ -796,9 +800,5 @@ def enable_ossa_modules : Flag<["-"], "enable-ossa-modules">,
 def new_driver_path
   : Separate<["-"], "new-driver-path">, MetaVarName<"<path>">,
   HelpText<"Path of the new driver to be used">;
-
-def experimental_has_async_alternative_attribute:
-  Flag<["-"], "experimental-has-async-alternative-attribute">,
-  HelpText<"Allow use of @hasAsyncAlternative">;
 
 } // end let Flags = [FrontendOption, NoDriverOption, HelpHidden]

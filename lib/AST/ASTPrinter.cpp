@@ -2533,8 +2533,7 @@ static bool usesFeatureRethrowsProtocol(
           ->getGenericSignatureOfContext()) {
     for (const auto &req : genericSig->getRequirements()) {
       if (req.getKind() == RequirementKind::Conformance &&
-          usesFeatureRethrowsProtocol(
-            req.getSecondType()->getAs<ProtocolType>()->getDecl(), checked))
+          usesFeatureRethrowsProtocol(req.getProtocolDecl(), checked))
         return true;
     }
   }
@@ -4216,6 +4215,10 @@ public:
   }
 
   void visit(Type T) {
+    #if SWIFT_BUILD_ONLY_SYNTAXPARSERLIB
+      return; // not needed for the parser library.
+    #endif
+
     Printer.printTypePre(TypeLoc::withoutLoc(T));
     SWIFT_DEFER { Printer.printTypePost(TypeLoc::withoutLoc(T)); };
 

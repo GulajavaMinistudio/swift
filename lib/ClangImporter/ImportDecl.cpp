@@ -3738,13 +3738,6 @@ namespace {
       if (isSpecializationDepthGreaterThan(def, 8))
         return nullptr;
 
-      // FIXME: This will instantiate all members of the specialization (and detect
-      // instantiation failures in them), which can be more than is necessary
-      // and is more than what Clang does. As a result we reject some C++
-      // programs that Clang accepts.
-      Impl.getClangSema().InstantiateClassTemplateSpecializationMembers(
-          def->getLocation(), def, clang::TSK_ExplicitInstantiationDefinition);
-
       return VisitCXXRecordDecl(def);
     }
 
@@ -8159,10 +8152,16 @@ void ClangImporter::Implementation::importAttributes(
       // FIXME: Hard-core @MainActor and @UIActor, because we don't have a
       // point at which to do name lookup for imported entities.
       if (swiftAttr->getAttribute() == "@MainActor" ||
+          swiftAttr->getAttribute() == "@MainActor(unsafe)" ||
           swiftAttr->getAttribute() == "@UIActor") {
+        bool isUnsafe = swiftAttr->getAttribute() == "@MainActor(unsafe)" ||
+            !C.LangOpts.isSwiftVersionAtLeast(6);
         if (Type mainActorType = getMainActorType()) {
           auto typeExpr = TypeExpr::createImplicit(mainActorType, SwiftContext);
           auto attr = CustomAttr::create(SwiftContext, SourceLoc(), typeExpr);
+          attr->setArgIsUnsafe(isUnsafe);
+          if (isUnsafe)
+            attr->setImplicit();
           MappedDecl->getAttrs().add(attr);
         }
 
