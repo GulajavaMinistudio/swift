@@ -392,12 +392,9 @@ extension Task {
   @discardableResult
   public static func runDetached<T>(
     priority: Priority = .default,
-    startingOn executor: ExecutorRef? = nil,
     operation: @concurrent @escaping () async -> T
     // TODO: Allow inheriting task-locals?
   ) -> Handle<T, Never> {
-    assert(executor == nil, "Custom executor support is not implemented yet.") // FIXME
-
     // Set up the job flags for a new task.
     var flags = JobFlags()
     flags.kind = .task
@@ -448,11 +445,8 @@ extension Task {
   @discardableResult
   public static func runDetached<T, Failure>(
     priority: Priority = .default,
-    startingOn executor: ExecutorRef? = nil,
     operation: @concurrent @escaping () async throws -> T
   ) -> Handle<T, Failure> {
-    assert(executor == nil, "Custom executor support is not implemented yet.") // FIXME
-
     // Set up the job flags for a new task.
     var flags = JobFlags()
     flags.kind = .task
@@ -476,22 +470,6 @@ public func _runAsyncHandler(operation: @escaping () async -> ()) {
   Task.runDetached(
     operation: unsafeBitCast(operation, to: ConcurrentFunctionType.self)
   )
-}
-
-// ==== Voluntary Suspension -----------------------------------------------------
-
-extension Task {
-
-  /// Explicitly suspend the current task, potentially giving up execution actor
-  /// of current actor/task, allowing other tasks to execute.
-  ///
-  /// This is not a perfect cure for starvation;
-  /// if the task is the highest-priority task in the system, it might go
-  /// immediately back to executing.
-  @available(*, deprecated, message: "Not implemented yet.")
-  public static func yield() async {
-    fatalError("\(#function) not implemented yet.")
-  }
 }
 
 // ==== UnsafeCurrentTask ------------------------------------------------------
@@ -601,6 +579,7 @@ public func runAsyncAndBlock(_ asyncFun: @escaping () async -> ())
 public func _asyncMainDrainQueue() -> Never
 
 public func _runAsyncMain(_ asyncFun: @escaping () async throws -> ()) {
+#if os(Windows)
   Task.runDetached {
     do {
       try await asyncFun()
@@ -609,6 +588,21 @@ public func _runAsyncMain(_ asyncFun: @escaping () async throws -> ()) {
       _errorInMain(error)
     }
   }
+#else
+  @MainActor @concurrent
+  func _doMain(_ asyncFun: @escaping () async throws -> ()) async {
+    do {
+      try await asyncFun()
+    } catch {
+      _errorInMain(error)
+    }
+  }
+
+  Task.runDetached {
+    await _doMain(asyncFun)
+    exit(0)
+  }
+#endif
   _asyncMainDrainQueue()
 }
 
