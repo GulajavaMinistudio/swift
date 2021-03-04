@@ -453,6 +453,8 @@ bool Decl::isInvalid() const {
   llvm_unreachable("Unknown decl kind");
 }
 
+void Decl::setInvalidBit() { Bits.Decl.Invalid = true; }
+
 void Decl::setInvalid() {
   switch (getKind()) {
 #define VALUE_DECL(ID, PARENT)
@@ -8083,7 +8085,8 @@ ActorIsolation swift::getActorIsolationOfContext(DeclContext *dc) {
       return ActorIsolation::forIndependent(ActorIndependentKind::Safe);
 
     case ClosureActorIsolation::GlobalActor: {
-      return ActorIsolation::forGlobalActor(isolation.getGlobalActor());
+      return ActorIsolation::forGlobalActor(
+          isolation.getGlobalActor(), /*unsafe=*/false);
     }
 
     case ClosureActorIsolation::ActorInstance: {
