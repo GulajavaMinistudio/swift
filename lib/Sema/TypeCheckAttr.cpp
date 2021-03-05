@@ -131,6 +131,8 @@ public:
   IGNORED_ATTR(NoDerivative)
   IGNORED_ATTR(SpecializeExtension)
   IGNORED_ATTR(Concurrent)
+  IGNORED_ATTR(AtRethrows)
+  IGNORED_ATTR(AtReasync)
 #undef IGNORED_ATTR
 
   void visitAlignmentAttr(AlignmentAttr *attr) {
@@ -225,7 +227,6 @@ public:
   void visitNSCopyingAttr(NSCopyingAttr *attr);
   void visitRequiredAttr(RequiredAttr *attr);
   void visitRethrowsAttr(RethrowsAttr *attr);
-  void visitAtRethrowsAttr(AtRethrowsAttr *attr);
 
   void checkApplicationMainAttribute(DeclAttribute *attr,
                                      Identifier Id_ApplicationDelegate,
@@ -280,7 +281,6 @@ public:
   void visitMarkerAttr(MarkerAttr *attr);
 
   void visitReasyncAttr(ReasyncAttr *attr);
-  void visitAtReasyncAttr(AtReasyncAttr *attr);
 };
 } // end anonymous namespace
 
@@ -2064,8 +2064,8 @@ void AttributeChecker::visitRequiredAttr(RequiredAttr *attr) {
 }
 
 void AttributeChecker::visitRethrowsAttr(RethrowsAttr *attr) {
-  // 'rethrows' only applies to functions that take throwing functions
-  // as parameters.
+  // Make sure the function takes a 'throws' function argument or a
+  // conformance to a '@rethrows' protocol.
   auto fn = dyn_cast<AbstractFunctionDecl>(D);
   if (fn->getPolymorphicEffectKind(EffectKind::Throws)
         != PolymorphicEffectKind::Invalid) {
@@ -2075,8 +2075,6 @@ void AttributeChecker::visitRethrowsAttr(RethrowsAttr *attr) {
   diagnose(attr->getLocation(), diag::rethrows_without_throwing_parameter);
   attr->setInvalid();
 }
-
-void AttributeChecker::visitAtRethrowsAttr(AtRethrowsAttr *attr) {}
 
 /// Collect all used generic parameter types from a given type.
 static void collectUsedGenericParameters(
@@ -4845,10 +4843,12 @@ static bool typeCheckDerivativeAttr(ASTContext &Ctx, Decl *D,
   // Diagnose if original function and derivative differ in terms of static declaration.
   if (!compatibleStaticDecls()) {
     bool derivativeMustBeStatic = !derivative->isStatic();
-    diags.diagnose(attr->getOriginalFunctionName().Loc.getBaseNameLoc(),
-                   diag::derivative_attr_static_method_mismatch_original,
-                   originalAFD->getName(), derivative->getName(),
-                   derivativeMustBeStatic);
+    diags
+        .diagnose(attr->getOriginalFunctionName().Loc.getBaseNameLoc(),
+                  diag::derivative_attr_static_method_mismatch_original,
+                  originalAFD->getName(), derivative->getName(),
+                  derivativeMustBeStatic)
+        .highlight(attr->getOriginalFunctionName().Loc.getSourceRange());
     diags.diagnose(originalAFD->getNameLoc(),
                    diag::derivative_attr_static_method_mismatch_original_note,
                    originalAFD->getName(), derivativeMustBeStatic);
@@ -5395,7 +5395,8 @@ void AttributeChecker::visitTransposeAttr(TransposeAttr *attr) {
     diagnose(attr->getOriginalFunctionName().Loc.getBaseNameLoc(),
              diag::transpose_attr_static_method_mismatch_original,
              originalAFD->getName(), transpose->getName(),
-             transposeMustBeStatic);
+             transposeMustBeStatic)
+        .highlight(attr->getOriginalFunctionName().Loc.getSourceRange());
     diagnose(originalAFD->getNameLoc(),
              diag::transpose_attr_static_method_mismatch_original_note,
              originalAFD->getName(), transposeMustBeStatic);
@@ -5566,19 +5567,27 @@ void AttributeChecker::visitMarkerAttr(MarkerAttr *attr) {
 }
 
 void AttributeChecker::visitReasyncAttr(ReasyncAttr *attr) {
-  // FIXME
-}
+  // Make sure the function takes a 'throws' function argument or a
+  // conformance to a '@rethrows' protocol.
+  auto fn = dyn_cast<AbstractFunctionDecl>(D);
+  if (fn->getPolymorphicEffectKind(EffectKind::Async)
+        != PolymorphicEffectKind::Invalid) {
+    return;
+  }
 
-void AttributeChecker::visitAtReasyncAttr(AtReasyncAttr *attr) {}
+  diagnose(attr->getLocation(), diag::reasync_without_async_parameter);
+  attr->setInvalid();
+}
 
 namespace {
 
 class ClosureAttributeChecker
     : public AttributeVisitor<ClosureAttributeChecker> {
   ASTContext &ctx;
+  ClosureExpr *closure;
 public:
   ClosureAttributeChecker(ClosureExpr *closure)
-    : ctx(closure->getASTContext()) { }
+    : ctx(closure->getASTContext()), closure(closure) { }
 
   void visitDeclAttribute(DeclAttribute *attr) {
     ctx.Diags.diagnose(
@@ -5590,6 +5599,29 @@ public:
 
   void visitConcurrentAttr(ConcurrentAttr *attr) {
     // Nothing else to check.
+  }
+
+  void visitCustomAttr(CustomAttr *attr) {
+    // Check whether this custom attribute is the global actor attribute.
+    auto globalActorAttr = evaluateOrDefault(
+        ctx.evaluator, GlobalActorAttributeRequest{closure}, None);
+    if (globalActorAttr && globalActorAttr->first == attr)
+      return;
+
+    // Otherwise, it's an error.
+    std::string typeName;
+    if (auto typeRepr = attr->getTypeRepr()) {
+      llvm::raw_string_ostream out(typeName);
+      typeRepr->print(out);
+    } else {
+      typeName = attr->getType().getString();
+    }
+
+    ctx.Diags.diagnose(
+        attr->getLocation(), diag::unsupported_closure_attr,
+        attr->isDeclModifier(), typeName)
+      .fixItRemove(attr->getRangeWithAt());
+    attr->setInvalid();
   }
 };
 
