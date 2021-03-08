@@ -1724,61 +1724,36 @@ namespace {
       }
 
       case ActorIsolation::Unspecified: {
-        // NOTE: we must always inspect for implicitlyAsync
         auto result = tryMarkImplicitlyAsync(loc, valueRef, context);
-        bool implicitlyAsyncExpr = (result == AsyncMarkingResult::FoundAsync);
-        bool didEmitDiagnostic = false;
+        if (result == AsyncMarkingResult::FoundAsync)
+          return false;
 
-        auto emitError = [&](bool justNote = false) {
-          didEmitDiagnostic = true;
-          if (!justNote) {
-            auto useKind = static_cast<unsigned>(
-                kindOfUsage(value, context).getValueOr(VarRefUseEnv::Read));
-            ctx.Diags.diagnose(
-              loc, diag::global_actor_from_nonactor_context,
-              value->getDescriptiveKind(), value->getName(), globalActor,
-              /*actorIndependent=*/false, useKind,
-              result == AsyncMarkingResult::SyncContext);
-          }
-          noteIsolatedActorMember(value, context);
-        };
+        // Diagnose the reference.
+        auto useKind = static_cast<unsigned>(
+            kindOfUsage(value, context).getValueOr(VarRefUseEnv::Read));
+        ctx.Diags.diagnose(
+          loc, diag::global_actor_from_nonactor_context,
+          value->getDescriptiveKind(), value->getName(), globalActor,
+          /*actorIndependent=*/false, useKind,
+          result == AsyncMarkingResult::SyncContext);
 
-        if (AbstractFunctionDecl const* fn =
-            dyn_cast_or_null<AbstractFunctionDecl>(declContext->getAsDecl())) {
-          bool isAsyncContext = fn->isAsyncContext();
-
-          if (implicitlyAsyncExpr && isAsyncContext)
-            return didEmitDiagnostic; // definitely an OK reference.
-
-          // otherwise, there's something wrong.
-          
-          // if it's an implicitly-async call in a non-async context,
-          // then we know later type-checking will raise an error,
-          // so we just emit a note pointing out that callee of the call is
-          // implicitly async.
-          emitError(/*justNote=*/implicitlyAsyncExpr);
-
-          // otherwise, if it's any kind of global-actor reference within
-          // this synchronous function, we'll additionally suggest becoming
-          // part of the global actor associated with the reference,
-          // since this function is not associated with an actor.
-          if (isa<FuncDecl>(fn) && !isAsyncContext) {
-            didEmitDiagnostic = true;
-            fn->diagnose(diag::note_add_globalactor_to_function, 
+        // If we are in a synchronous function on the global actor,
+        // suggest annotating with the global actor itself.
+        if (auto fn = dyn_cast<FuncDecl>(declContext)) {
+          if (!isa<AccessorDecl>(fn) && !fn->isAsyncContext()) {
+            fn->diagnose(diag::note_add_globalactor_to_function,
                 globalActor->getWithoutParens().getString(),
                 fn->getDescriptiveKind(),
                 fn->getName(),
                 globalActor)
-              .fixItInsert(fn->getAttributeInsertionLoc(false), 
+              .fixItInsert(fn->getAttributeInsertionLoc(false),
                 diag::insert_globalactor_attr, globalActor);
           }
-
-        } else {
-          // just the generic error with note.
-          emitError();
         }
 
-        return didEmitDiagnostic;
+        noteIsolatedActorMember(value, context);
+
+        return true;
       } // end Unspecified case
       } // end switch
       llvm_unreachable("unhandled actor isolation kind!");
@@ -2241,13 +2216,16 @@ static Optional<ActorIsolation> getIsolationFromAttributes(
   // Look up attributes on the declaration that can affect its actor isolation.
   // If any of them are present, use that attribute.
   auto independentAttr = decl->getAttrs().getAttribute<ActorIndependentAttr>();
+  auto nonisolatedAttr = decl->getAttrs().getAttribute<NonisolatedAttr>();
   auto globalActorAttr = decl->getGlobalActorAttr();
   unsigned numIsolationAttrs =
-    (independentAttr ? 1 : 0) + (globalActorAttr ? 1 : 0);
+    (nonisolatedAttr ? 1 : 0) + (independentAttr ? 1 : 0) +
+    (globalActorAttr ? 1 : 0);
   if (numIsolationAttrs == 0)
     return None;
 
-  // Only one such attribute is valid.
+  // Only one such attribute is valid, but we only actually care of one of
+  // them is a global actor.
   if (numIsolationAttrs > 1) {
     DeclName name;
     if (auto value = dyn_cast<ValueDecl>(decl)) {
@@ -2257,15 +2235,33 @@ static Optional<ActorIsolation> getIsolationFromAttributes(
         name = selfTypeDecl->getName();
     }
 
-    if (shouldDiagnose) {
-      decl->diagnose(
-          diag::actor_isolation_multiple_attr, decl->getDescriptiveKind(),
-          name, independentAttr->getAttrName(),
-          globalActorAttr->second->getName().str())
-        .highlight(independentAttr->getRangeWithAt())
-        .highlight(globalActorAttr->first->getRangeWithAt());
+    if (globalActorAttr) {
+      StringRef nonisolatedAttrName;
+      SourceRange nonisolatedRange;
+      if (independentAttr) {
+        nonisolatedAttrName = independentAttr->getAttrName();
+        nonisolatedRange = independentAttr->getRangeWithAt();
+      } else {
+        nonisolatedAttrName = nonisolatedAttr->getAttrName();
+        nonisolatedRange = nonisolatedAttr->getRangeWithAt();
+      }
+
+      if (shouldDiagnose) {
+        decl->diagnose(
+            diag::actor_isolation_multiple_attr, decl->getDescriptiveKind(),
+            name, nonisolatedAttrName,
+            globalActorAttr->second->getName().str())
+          .highlight(nonisolatedRange)
+          .highlight(globalActorAttr->first->getRangeWithAt());
+      }
     }
   }
+
+    // If the declaration is explicitly marked 'nonisolated', report it as
+    // independent.
+    if (nonisolatedAttr) {
+      return ActorIsolation::forIndependent(ActorIndependentKind::Safe);
+    }
 
   // If the declaration is explicitly marked @actorIndependent, report it as
   // independent.
