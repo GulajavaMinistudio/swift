@@ -2634,6 +2634,23 @@ void IRGenSILFunction::visitGlobalAddrInst(GlobalAddrInst *i) {
   setLoweredAddress(i, addr);
 }
 
+/// Returns true if \p val has no other uses than ref_element_addr or
+/// ref_tail_addr.
+static bool hasOnlyProjections(SILValue val) {
+  for (Operand *use : val->getUses()) {
+    SILInstruction *user = use->getUser();
+    if (auto *upCast = dyn_cast<UpcastInst>(user)) {
+      if (!hasOnlyProjections(upCast))
+        return false;
+      continue;
+    }
+    if (isa<RefElementAddrInst>(user) || isa<RefTailAddrInst>(user))
+      continue;
+    return false;
+  }
+  return true;
+}
+
 void IRGenSILFunction::visitGlobalValueInst(GlobalValueInst *i) {
   SILGlobalVariable *var = i->getReferencedGlobal();
   assert(var->isInitializedObject() &&
@@ -2645,17 +2662,19 @@ void IRGenSILFunction::visitGlobalValueInst(GlobalValueInst *i) {
 
   llvm::Value *Ref = IGM.getAddrOfSILGlobalVariable(var, ti,
                                                 NotForDefinition).getAddress();
-
-  auto ClassType = loweredTy.getASTType();
-  llvm::Value *Metadata =
-    emitClassHeapMetadataRef(*this, ClassType, MetadataValueType::TypeMetadata,
-                             MetadataState::Complete);
-  llvm::Value *CastAddr = Builder.CreateBitCast(Ref, IGM.RefCountedPtrTy);
-  llvm::Value *InitRef = emitInitStaticObjectCall(Metadata, CastAddr, "staticref");
-  InitRef = Builder.CreateBitCast(InitRef, Ref->getType());
-
+  // We don't need to initialize the global object if it's never used for
+  // something which can access the object header.
+  if (!hasOnlyProjections(i)) {
+    auto ClassType = loweredTy.getASTType();
+    llvm::Value *Metadata =
+      emitClassHeapMetadataRef(*this, ClassType, MetadataValueType::TypeMetadata,
+                               MetadataState::Complete);
+    llvm::Value *CastAddr = Builder.CreateBitCast(Ref, IGM.RefCountedPtrTy);
+    llvm::Value *InitRef = emitInitStaticObjectCall(Metadata, CastAddr, "staticref");
+    Ref = Builder.CreateBitCast(InitRef, Ref->getType());
+  }
   Explosion e;
-  e.add(InitRef);
+  e.add(Ref);
   setLoweredExplosion(i, e);
 }
 
@@ -3334,19 +3353,6 @@ void IRGenSILFunction::visitPartialApplyInst(swift::PartialApplyInst *i) {
   Explosion llArgs;
 
   auto &lv = getLoweredValue(i->getCallee());
-  if (i->getOrigCalleeType()->isAsync()) {
-    auto result = getPartialApplicationFunction(*this, i->getCallee(),
-                                                i->getSubstitutionMap(),
-                                                i->getSubstCalleeType());
-    llvm::Value *innerContext = std::get<1>(result);
-    llvm::Value *size;
-    llvm::Value *fnPtr;
-    std::tie(fnPtr, size) = getAsyncFunctionAndSize(
-        *this, i->getOrigCalleeType()->getRepresentation(), std::get<0>(result),
-        innerContext, {/*function*/ false, /*size*/ true});
-    assert(fnPtr == nullptr);
-    llArgs.add(size);
-  }
 
   // Lower the parameters in the callee's generic context.
   {
