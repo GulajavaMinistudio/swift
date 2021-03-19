@@ -43,6 +43,9 @@ SWIFT_REQUEST(TypeChecker, CodeCompletionFileRequest,
 SWIFT_REQUEST(TypeChecker, CompareDeclSpecializationRequest,
               bool (DeclContext *, ValueDecl *, ValueDecl *, bool), Cached,
               NoLocationInfo)
+SWIFT_REQUEST(TypeChecker, ConditionalRequirementsRequest,
+              ArrayRef<Requirement> (NormalProtocolConformance *),
+              Cached, NoLocationInfo)
 SWIFT_REQUEST(TypeChecker, IsDeclRefinementOfRequest,
               bool (ValueDecl *, ValueDecl *),
               Cached, NoLocationInfo)
@@ -317,6 +320,6 @@ SWIFT_REQUEST(TypeChecker, SimpleDidSetRequest,
               bool(AccessorDecl *), Cached, NoLocationInfo)
 SWIFT_REQUEST(TypeChecker, SynthesizeMainFunctionRequest,
               FuncDecl *(Decl *), Cached, NoLocationInfo)
-SWIFT_REQUEST(TypeChecker, GetImplicitConcurrentValueRequest,
+SWIFT_REQUEST(TypeChecker, GetImplicitSendableRequest,
               NormalProtocolConformance *(NominalTypeDecl *),
               Cached, NoLocationInfo)

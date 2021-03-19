@@ -939,7 +939,7 @@ RequirementSignatureRequest::evaluate(Evaluator &evaluator,
 
   auto reqSignature = std::move(builder).computeGenericSignature(
                         /*allowConcreteGenericParams=*/false,
-                        /*allowBuilderToMove=*/false);
+                        /*buildingRequirementSignature=*/true);
   return reqSignature->getRequirements();
 }
 
@@ -2381,7 +2381,7 @@ InterfaceTypeRequest::evaluate(Evaluator &eval, ValueDecl *D) const {
       AFD->getParameters()->getParams(argTy);
 
       infoBuilder = infoBuilder.withAsync(AFD->hasAsync());
-      infoBuilder = infoBuilder.withConcurrent(AFD->isConcurrent());
+      infoBuilder = infoBuilder.withConcurrent(AFD->isSendable());
       // 'throws' only applies to the innermost function.
       infoBuilder = infoBuilder.withThrows(AFD->hasThrows());
       // Defer bodies must not escape.

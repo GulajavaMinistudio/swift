@@ -2898,9 +2898,9 @@ public:
 };
 
 /// Retrieve the implicit conformance for the given nominal type to
-/// the ConcurrentValue protocol.
-class GetImplicitConcurrentValueRequest :
-    public SimpleRequest<GetImplicitConcurrentValueRequest,
+/// the Sendable protocol.
+class GetImplicitSendableRequest :
+    public SimpleRequest<GetImplicitSendableRequest,
                          NormalProtocolConformance *(NominalTypeDecl *),
                          RequestFlags::Cached> {
 public:
@@ -2914,6 +2914,25 @@ private:
 
 public:
   // Caching
+  bool isCached() const { return true; }
+};
+
+class ConditionalRequirementsRequest
+    : public SimpleRequest<ConditionalRequirementsRequest,
+                           llvm::ArrayRef<Requirement>(
+                               NormalProtocolConformance *),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  // Evaluation.
+  llvm::ArrayRef<Requirement> evaluate(Evaluator &evaluator,
+                                       NormalProtocolConformance *decl) const;
+
+public:
   bool isCached() const { return true; }
 };
 
