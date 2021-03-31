@@ -3,6 +3,12 @@
 // REQUIRES: executable_test
 // REQUIRES: concurrency
 
+// rdar://76038845
+// UNSUPPORTED: use_os_stdlib
+
+// https://bugs.swift.org/browse/SR-14333
+// UNSUPPORTED: OS=windows-msvc
+
 class X {
   init() {
     print("X: init")

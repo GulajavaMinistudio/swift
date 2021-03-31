@@ -1,5 +1,9 @@
 // RUN: %target-run-simple-swift(-Xfrontend -enable-experimental-concurrency %import-libdispatch)
 // REQUIRES: concurrency
+// REQUIRES: executable_test
+
+// rdar://76038845
+// UNSUPPORTED: use_os_stdlib
 
 class Canary {
   deinit {
