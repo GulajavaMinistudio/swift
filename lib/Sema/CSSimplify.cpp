@@ -5131,10 +5131,6 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
           nominal1->getDecl() != nominal2->getDecl() &&
           ((nominal1->isCGFloatType() || nominal2->isCGFloatType()) &&
            (nominal1->isDoubleType() || nominal2->isDoubleType()))) {
-        if (Options.contains(
-                ConstraintSystemFlags::DisableImplicitDoubleCGFloatConversion))
-          return getTypeMatchFailure(locator);
-
         // Support implicit Double<->CGFloat conversions only for
         // something which could be directly represented in the AST
         // e.g. argument-to-parameter, contextual conversions etc.
@@ -8216,7 +8212,12 @@ ConstraintSystem::simplifyPropertyWrapperConstraint(
   }
 
   auto resolvedType = wrapperType->getTypeOfMember(DC->getParentModule(), typeInfo.valueVar);
-  addConstraint(ConstraintKind::Equal, wrappedValueType, resolvedType, locator);
+  if (typeInfo.valueVar->isSettable(nullptr) && typeInfo.valueVar->isSetterAccessibleFrom(DC) &&
+      !typeInfo.valueVar->isSetterMutating()) {
+    resolvedType = LValueType::get(resolvedType);
+  }
+
+  addConstraint(ConstraintKind::Bind, wrappedValueType, resolvedType, locator);
 
   return SolutionKind::Solved;
 }
@@ -8394,7 +8395,8 @@ bool ConstraintSystem::resolveClosure(TypeVariableType *typeVar,
 
       if (paramDecl->hasImplicitPropertyWrapper()) {
         backingType = getContextualParamAt(i)->getPlainType();
-        wrappedValueType = createTypeVariable(getConstraintLocator(locator), TVO_CanBindToHole);
+        wrappedValueType = createTypeVariable(getConstraintLocator(locator),
+                                              TVO_CanBindToHole | TVO_CanBindToLValue);
       } else {
         auto *wrapperAttr = paramDecl->getAttachedPropertyWrappers().front();
         auto wrapperType = paramDecl->getAttachedPropertyWrapperType(0);

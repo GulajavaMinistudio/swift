@@ -237,19 +237,12 @@ def enable_experimental_flow_sensitive_concurrent_captures :
   Flag<["-"], "enable-experimental-flow-sensitive-concurrent-captures">,
   HelpText<"Enable flow-sensitive concurrent captures">;
 
-def enable_experimental_enum_codable_derivation :
-  Flag<["-"], "enable-experimental-enum-codable-derivation">,
-  HelpText<"Enable experimental derivation of Codable for enums">;
-
 def enable_resilience : Flag<["-"], "enable-resilience">,
      HelpText<"Deprecated, use -enable-library-evolution instead">;
 }
 
 // HIDDEN FLAGS
 let Flags = [FrontendOption, NoDriverOption, HelpHidden] in {
-
-def disable_implicit_double_cgfloat_conversion : Flag<["-"], "disable-implicit-double-cgfloat-conversion">,
-  HelpText<"Disable implicit conversion between Double and CGFloat types">;
 
 def debug_constraints : Flag<["-"], "debug-constraints">,
   HelpText<"Debug the constraint-based type checker">;

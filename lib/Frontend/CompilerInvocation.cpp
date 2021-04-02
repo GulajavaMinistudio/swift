@@ -179,8 +179,10 @@ setIRGenOutputOptsFromFrontendOptions(IRGenOptions &IRGenOpts,
   // Set the OutputKind for the given Action.
   IRGenOpts.OutputKind = [](FrontendOptions::ActionType Action) {
     switch (Action) {
+    case FrontendOptions::ActionType::EmitIRGen:
+      return IRGenOutputKind::LLVMAssemblyBeforeOptimization;
     case FrontendOptions::ActionType::EmitIR:
-      return IRGenOutputKind::LLVMAssembly;
+      return IRGenOutputKind::LLVMAssemblyAfterOptimization;
     case FrontendOptions::ActionType::EmitBC:
       return IRGenOutputKind::LLVMBitcode;
     case FrontendOptions::ActionType::EmitAssembly:
@@ -393,9 +395,6 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     Args.hasArg(OPT_enable_experimental_async_handler);
   Opts.EnableExperimentalFlowSensitiveConcurrentCaptures |=
     Args.hasArg(OPT_enable_experimental_flow_sensitive_concurrent_captures);
-
-  Opts.EnableExperimentalEnumCodableDerivation |=
-      Args.hasArg(OPT_enable_experimental_enum_codable_derivation);
 
   Opts.DisableImplicitConcurrencyModuleImport |=
     Args.hasArg(OPT_disable_implicit_concurrency_module_import);
@@ -829,9 +828,6 @@ static bool ParseTypeCheckerArgs(TypeCheckerOptions &Opts, ArgList &Args,
 
   Opts.DebugConstraintSolver |= Args.hasArg(OPT_debug_constraints);
   Opts.DebugGenericSignatures |= Args.hasArg(OPT_debug_generic_signatures);
-
-  Opts.DisableImplicitDoubleCGFloatConversion |=
-      Args.hasArg(OPT_disable_implicit_double_cgfloat_conversion);
 
   for (const Arg *A : Args.filtered(OPT_debug_constraints_on_line)) {
     unsigned line;

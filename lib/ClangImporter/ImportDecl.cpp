@@ -172,8 +172,8 @@ static FuncDecl *createFuncOrAccessor(ASTContext &ctx, SourceLoc funcLoc,
                                 accessorInfo->Kind, accessorInfo->Storage,
                                 /*StaticLoc*/ SourceLoc(),
                                 StaticSpellingKind::None,
-                                throws, /*ThrowsLoc=*/SourceLoc(),
                                 async, /*AsyncLoc=*/SourceLoc(),
+                                throws, /*ThrowsLoc=*/SourceLoc(),
                                 genericParams, bodyParams,
                                 resultTy, dc, clangNode);
   } else {
@@ -8289,35 +8289,6 @@ bool importer::isImportedAsStatic(const clang::OverloadedOperatorKind op) {
   }
 }
 
-Type ClangImporter::Implementation::getMainActorType() {
-  if (MainActorType)
-    return *MainActorType;
-
-  auto finish = [&](Type type) -> Type {
-    MainActorType = type;
-    return type;
-  };
-
-  if (!SwiftContext.LangOpts.EnableExperimentalConcurrency) {
-    return finish(Type());
-  }
-
-  auto module = SwiftContext.getLoadedModule(SwiftContext.Id_Concurrency);
-  if (!module)
-    return finish(Type());
-
-  SmallVector<ValueDecl *, 1> decls;
-  module->lookupValue(
-    SwiftContext.getIdentifier("MainActor"),
-    NLKind::QualifiedLookup, decls);
-  for (auto decl : decls) {
-    if (auto typeDecl = dyn_cast<TypeDecl>(decl))
-      return finish(typeDecl->getDeclaredInterfaceType());
-  }
-
-  return finish(Type());
-}
-
 unsigned ClangImporter::Implementation::getClangSwiftAttrSourceBuffer(
     StringRef attributeText) {
   auto known = ClangSwiftAttrSourceBuffers.find(attributeText);
@@ -8382,6 +8353,7 @@ void ClangImporter::Implementation::importAttributes(
   // Scan through Clang attributes and map them onto Swift
   // equivalents.
   PatternBindingInitializer *initContext = nullptr;
+  Optional<const clang::SwiftAttrAttr *> SeenMainActorAttr;
   bool AnyUnavailable = MappedDecl->getAttrs().isUnavailable(C);
   for (clang::NamedDecl::attr_iterator AI = ClangDecl->attr_begin(),
        AE = ClangDecl->attr_end(); AI != AE; ++AI) {
@@ -8525,15 +8497,32 @@ void ClangImporter::Implementation::importAttributes(
     // __attribute__((swift_attr("attribute")))
     //
     if (auto swiftAttr = dyn_cast<clang::SwiftAttrAttr>(*AI)) {
-      // FIXME: Hard-core @MainActor and @UIActor, because we don't have a
+      // FIXME: Hard-code @MainActor and @UIActor, because we don't have a
       // point at which to do name lookup for imported entities.
       if (auto isMainActor = isMainActorAttr(SwiftContext, swiftAttr)) {
         bool isUnsafe = *isMainActor;
-        if (Type mainActorType = getMainActorType()) {
+
+        if (SeenMainActorAttr) {
+          // Cannot add main actor annotation twice. We'll keep the first
+          // one and raise a warning about the duplicate.
+          auto &clangSrcMgr = getClangASTContext().getSourceManager();
+          ClangSourceBufferImporter &bufferImporter =
+              getBufferImporterForDiagnostics();
+          SourceLoc attrLoc = bufferImporter.resolveSourceLocation(
+              clangSrcMgr, swiftAttr->getLocation());
+
+          diagnose(attrLoc, diag::import_multiple_mainactor_attr,
+                   swiftAttr->getAttribute(),
+                   SeenMainActorAttr.getValue()->getAttribute());
+          continue;
+        }
+
+        if (Type mainActorType = SwiftContext.getMainActorType()) {
           auto typeExpr = TypeExpr::createImplicit(mainActorType, SwiftContext);
           auto attr = CustomAttr::create(SwiftContext, SourceLoc(), typeExpr);
           attr->setArgIsUnsafe(isUnsafe);
           MappedDecl->getAttrs().add(attr);
+          SeenMainActorAttr = swiftAttr;
         }
 
         continue;

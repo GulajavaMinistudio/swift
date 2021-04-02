@@ -273,9 +273,6 @@ namespace swift {
     /// Enable inference of Sendable conformances for public types.
     bool EnableInferPublicSendable = false;
 
-    /// Enable experimental derivation of `Codable` for enums.
-    bool EnableExperimentalEnumCodableDerivation = false;
-
     /// Disable the implicit import of the _Concurrency module.
     bool DisableImplicitConcurrencyModuleImport = false;
 
@@ -592,9 +589,6 @@ namespace swift {
 
     /// See \ref FrontendOptions.PrintFullConvention
     bool PrintFullConvention = false;
-
-    /// Disallow Double and CGFloat types from being used interchangeably.
-    bool DisableImplicitDoubleCGFloatConversion = false;
   };
 
   /// Options for controlling the behavior of the Clang importer.
