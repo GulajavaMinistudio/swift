@@ -147,7 +147,6 @@ Globals
   // TODO check this::
   global ::= mangled-name 'TA'                     // partial application forwarder
   global ::= mangled-name 'Ta'                     // ObjC partial application forwarder
-  global ::= mangled-name 'Tw' index               // async partial apply thunk for a non-constant function
   global ::= mangled-name 'TQ' index               // Async await continuation partial function
   global ::= mangled-name 'TY' index               // Async suspend continuation partial function
 
@@ -517,7 +516,7 @@ Types
   type ::= 'BB'                              // Builtin.UnsafeValueBuffer
   type ::= 'Bc'                              // Builtin.RawUnsafeContinuation
   type ::= 'BD'                              // Builtin.DefaultActorStorage
-  type ::= 'Be'                              // Builtin.ExecutorRef
+  type ::= 'Be'                              // Builtin.Executor
   type ::= 'Bf' NATURAL '_'                  // Builtin.Float<n>
   type ::= 'Bi' NATURAL '_'                  // Builtin.Int<n>
   type ::= 'BI'                              // Builtin.IntLiteral
@@ -571,19 +570,19 @@ Types
                                              // they are mangled separately as part of the entity.
   params-type ::= empty-list                 // shortcut for no parameters
 
-  sendable ::= 'J'                           // @Sendable on function types
-  async ::= 'Y'                              // 'async' annotation on function types
+  async ::= 'Ya'                             // 'async' annotation on function types
+  sendable ::= 'Yb'                          // @Sendable on function types
   throws ::= 'K'                             // 'throws' annotation on function types
-  differentiable ::= 'jf'                    // @differentiable(_forward) on function type
-  differentiable ::= 'jr'                    // @differentiable(reverse) on function type
-  differentiable ::= 'jd'                    // @differentiable on function type
-  differentiable ::= 'jl'                    // @differentiable(_linear) on function type
+  differentiable ::= 'Yjf'                   // @differentiable(_forward) on function type
+  differentiable ::= 'Yjr'                   // @differentiable(reverse) on function type
+  differentiable ::= 'Yjd'                   // @differentiable on function type
+  differentiable ::= 'Yjl'                   // @differentiable(_linear) on function type
 
   type-list ::= list-type '_' list-type*     // list of types
   type-list ::= empty-list
 
                                                   // FIXME: Consider replacing 'h' with a two-char code
-  list-type ::= type identifier? 'z'? 'h'? 'n'? 'd'?   // type with optional label, inout convention, shared convention, owned convention, and variadic specifier
+  list-type ::= type identifier? 'Yk'? 'z'? 'h'? 'n'? 'd'?  // type with optional label, '@noDerivative', inout convention, shared convention, owned convention, and variadic specifier
 
   METATYPE-REPR ::= 't'                      // Thin metatype representation
   METATYPE-REPR ::= 'T'                      // Thick metatype representation
@@ -667,7 +666,7 @@ mangled in to disambiguate.
   COROUTINE-KIND ::= 'A'                     // yield-once coroutine
   COROUTINE-KIND ::= 'G'                     // yield-many coroutine
 
-  SENDABLE ::= 'h'                         // @Sendable
+  SENDABLE ::= 'h'                           // @Sendable
   ASYNC ::= 'H'                              // @async
 
   PARAM-CONVENTION ::= 'i'                   // indirect in
