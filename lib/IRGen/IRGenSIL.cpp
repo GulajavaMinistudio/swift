@@ -32,7 +32,7 @@
 #include "swift/SIL/InstructionUtils.h"
 #include "swift/SIL/MemAccessUtils.h"
 #include "swift/SIL/PrettyStackTrace.h"
-#include "swift/SIL/BasicBlockDatastructures.h"
+#include "swift/SIL/BasicBlockBits.h"
 #include "swift/SIL/SILDebugScope.h"
 #include "swift/SIL/SILDeclRef.h"
 #include "swift/SIL/SILLinkage.h"
@@ -2242,7 +2242,7 @@ void IRGenSILFunction::emitSILFunction() {
   // Invariant: for every block in the work queue, we have visited all
   // of its dominators.
   // Start with the entry block, for which the invariant trivially holds.
-  BasicBlockWorklist workQueue(&*CurSILFn->getEntryBlock());
+  BasicBlockWorklist<32> workQueue(&*CurSILFn->getEntryBlock());
 
   while (SILBasicBlock *bb = workQueue.pop()) {
     // Emit the block.
@@ -3215,11 +3215,15 @@ static bool isSimplePartialApply(IRGenFunction &IGF, PartialApplyInst *i) {
   // The callee type must use the `method` convention.
   auto calleeTy = i->getCallee()->getType().castTo<SILFunctionType>();
   auto resultTy = i->getFunctionType();
-
-  if (calleeTy->isAsync())
-    return false;
   
   if (calleeTy->getRepresentation() != SILFunctionTypeRepresentation::Method)
+    return false;
+
+  // Partially applying a polymorphic function entails capturing its generic 
+  // arguments (it is not legal to leave any polymorphic arguments unbound)
+  // which means that both self and those generic arguments would need to be
+  // captured.
+  if (calleeTy->isPolymorphic())
     return false;
   
   // There should be one applied argument.
