@@ -125,16 +125,6 @@ StringRef InstallNameStore::getInstallName(LinkerPlatformId Id) const {
     return It->second;
 }
 
-void InstallNameStore::remark(ASTContext &Ctx, StringRef ModuleName) const {
-  Ctx.Diags.diagnose(SourceLoc(), diag::default_previous_install_name,
-                     ModuleName, InstallName);
-  for (auto Pair: PlatformInstallName) {
-    Ctx.Diags.diagnose(SourceLoc(), diag::platform_previous_install_name,
-                       ModuleName, getLinkerPlatformName(Pair.first),
-                       Pair.second);
-  }
-}
-
 static std::string getScalaNodeText(Node *N) {
   SmallString<32> Buffer;
   return cast<ScalarNode>(N)->getValue(Buffer).str();
@@ -214,11 +204,6 @@ TBDGenVisitor::parsePreviousModuleInstallNameMap() {
   std::unique_ptr<std::map<std::string, InstallNameStore>> pResult(
     new std::map<std::string, InstallNameStore>());
   auto &AllInstallNames = *pResult;
-  SWIFT_DEFER {
-    for (auto Pair: AllInstallNames) {
-      Pair.second.remark(Ctx, Pair.first);
-    }
-  };
 
   // Load the input file.
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> FileBufOrErr =
@@ -1186,9 +1171,6 @@ static bool hasLinkerDirective(Decl *D) {
 }
 
 void TBDGenVisitor::visitFile(FileUnit *file) {
-  if (file == SwiftModule->getFiles()[0])
-    addFirstFileSymbols();
-
   SmallVector<Decl *, 16> decls;
   file->getTopLevelDecls(decls);
 
@@ -1202,6 +1184,9 @@ void TBDGenVisitor::visitFile(FileUnit *file) {
 }
 
 void TBDGenVisitor::visit(const TBDGenDescriptor &desc) {
+  // Add any autolinking force_load symbols.
+  addFirstFileSymbols();
+  
   if (auto *singleFile = desc.getSingleFile()) {
     assert(SwiftModule == singleFile->getParentModule() &&
            "mismatched file and module");
@@ -1230,6 +1215,7 @@ void TBDGenVisitor::visit(const TBDGenDescriptor &desc) {
     // Diagnose module name that cannot be found
     ctx.Diags.diagnose(SourceLoc(), diag::unknown_swift_module_name, Name);
   }
+
   // Collect symbols in each module.
   llvm::for_each(Modules, [&](ModuleDecl *M) {
     for (auto *file : M->getFiles()) {

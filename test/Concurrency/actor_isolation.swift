@@ -70,7 +70,7 @@ actor MyActor: MySuperActor { // expected-error{{actor types do not support inhe
   class func synchronousClass() { }
   static func synchronousStatic() { }
 
-  func synchronous() -> String { text.first ?? "nothing" } // expected-note 19{{calls to instance method 'synchronous()' from outside of its actor context are implicitly asynchronous}}
+  func synchronous() -> String { text.first ?? "nothing" } // expected-note 5{{calls to instance method 'synchronous()' from outside of its actor context are implicitly asynchronous}}
   func asynchronous() async -> String {
     super.superState += 4
     return synchronous()
@@ -118,7 +118,7 @@ extension MyActor {
     _ = text[0] // expected-error{{actor-isolated property 'text' can not be referenced from a non-isolated context}}
     _ = synchronous() // expected-error{{actor-isolated instance method 'synchronous()' can not be referenced from a non-isolated context}}
 
-    // nonisolated
+    // @actorIndependent
     _ = actorIndependentFunc(otherActor: self)
     _ = actorIndependentVar
 
@@ -127,7 +127,7 @@ extension MyActor {
     _ = self.actorIndependentVar
     self.actorIndependentVar = 17
 
-    // nonisolated on another actor
+    // @actorIndependent on another actor
     _ = otherActor.actorIndependentFunc(otherActor: self)
     _ = otherActor.actorIndependentVar
     otherActor.actorIndependentVar = 17
@@ -538,7 +538,7 @@ func testGlobalRestrictions(actor: MyActor) async {
   // expected-note@-1{{subscript access is 'async'}}
   _ = await actor[0]
 
-  // nonisolated declarations are permitted.
+  // @actorIndependent declarations are permitted.
   _ = actor.actorIndependentFunc(otherActor: actor)
   _ = actor.actorIndependentVar
   actor.actorIndependentVar = 5
@@ -819,4 +819,18 @@ func test_conforming_actor_to_global_actor_protocol() {
   @available(SwiftStdlib 5.5, *)
   actor MyValue : GloballyIsolatedProto {}
   // expected-error@-1 {{actor 'MyValue' cannot conform to global actor isolated protocol 'GloballyIsolatedProto'}}
+}
+
+func test_invalid_reference_to_actor_member_without_a_call_note() {
+  actor A {
+    func partial() { }
+  }
+
+  actor Test {
+    func returnPartial(other: A) async -> () async -> () {
+      let a = other.partial
+      // expected-error@-1 {{actor-isolated instance method 'partial()' can only be referenced from inside the actor}}
+      return a
+    }
+  }
 }
