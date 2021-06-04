@@ -1193,12 +1193,6 @@ def user_module_version : Separate<["-"], "user-module-version">,
   HelpText<"Module version specified from Swift module authors">,
   MetaVarName<"<vers>">;
 
-// LLVM verification
-def skip_swifttailcc_musttail_check : Flag<["-"], "skip-swifttailcc-musttail-check">,
-  Flags<[HelpHidden, DoesNotAffectIncrementalBuild]>,
-  HelpText<"Skip additional LLVM verification that all tail calls from "
-           "swifttailcc->swifttailcc are marked musttail.">;
-
 // VFS
 
 def vfsoverlay : JoinedOrSeparate<["-"], "vfsoverlay">,
@@ -1257,6 +1251,11 @@ def skip_inherited_docs : Flag<["-"], "skip-inherited-docs">,
          NoInteractiveOption, SupplementaryOutput, HelpHidden]>,
   HelpText<"Skip emitting doc comments for members inherited through classes or "
            "default implementations">;
+
+def include_spi_symbols : Flag<["-"], "include-spi-symbols">,
+  Flags<[SwiftSymbolGraphExtractOption, FrontendOption,
+         NoInteractiveOption, SupplementaryOutput, HelpHidden]>,
+  HelpText<"Add symbols with SPI information to the symbol graph">;
 
 // swift-api-digester-only options
 def dump_sdk: Flag<["-", "--"], "dump-sdk">,
