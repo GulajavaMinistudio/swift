@@ -1420,6 +1420,15 @@ ParamDecl *PatternBindingInitializer::getImplicitSelfDecl() const {
       LazySelfParam->setImplicit();
       LazySelfParam->setSpecifier(specifier);
       LazySelfParam->setInterfaceType(DC->getSelfInterfaceType());
+
+      // Lazy members of actors have an isolated 'self', assuming there is
+      // no "nonisolated" attribute.
+      if (auto nominal = DC->getSelfNominalTypeDecl()) {
+        if (nominal->isActor() &&
+            !singleVar->getAttrs().hasAttribute<NonisolatedAttr>())
+          LazySelfParam->setIsolated();
+      }
+
       mutableThis->SelfParam = LazySelfParam;
     }
   }
@@ -6324,6 +6333,12 @@ ParamDecl *ParamDecl::cloneWithoutType(const ASTContext &Ctx, ParamDecl *PD) {
   return Clone;
 }
 
+ParamDecl *ParamDecl::clone(const ASTContext &Ctx, ParamDecl *PD) {
+  auto *Clone = ParamDecl::cloneWithoutType(Ctx, PD);
+  Clone->setInterfaceType(PD->getInterfaceType());
+  return Clone;
+}
+
 /// Retrieve the type of 'self' for the given context.
 Type DeclContext::getSelfTypeInContext() const {
   assert(isTypeContext());
@@ -6450,8 +6465,7 @@ AnyFunctionType::Param ParamDecl::toFunctionParam(Type type) const {
   auto internalLabel = getParameterName();
   auto flags = ParameterTypeFlags::fromParameterType(
       type, isVariadic(), isAutoClosure(), isNonEphemeral(),
-      getValueOwnership(),
-      /*isNoDerivative*/ false);
+      getValueOwnership(), isIsolated(), /*isNoDerivative*/ false);
   return AnyFunctionType::Param(type, label, flags, internalLabel);
 }
 
@@ -8313,6 +8327,7 @@ ActorIsolation swift::getActorIsolationOfContext(DeclContext *dc) {
       auto selfDecl = isolation.getActorInstance();
       auto actorClass = selfDecl->getType()->getRValueType()
           ->getClassOrBoundGenericClass();
+      // FIXME: Doesn't work properly with generics
       assert(actorClass && "Bad closure actor isolation?");
       return ActorIsolation::forActorInstance(actorClass);
     }
