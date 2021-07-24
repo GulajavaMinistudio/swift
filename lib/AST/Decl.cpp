@@ -965,18 +965,12 @@ GenericContext::GenericContext(DeclContextKind Kind, DeclContext *Parent,
 
 TypeArrayView<GenericTypeParamType>
 GenericContext::getInnermostGenericParamTypes() const {
-  if (auto sig = getGenericSignature())
-    return sig->getInnermostGenericParams();
-  else
-    return { };
+  return getGenericSignature().getInnermostGenericParams();
 }
 
 /// Retrieve the generic requirements.
 ArrayRef<Requirement> GenericContext::getGenericRequirements() const {
-  if (auto sig = getGenericSignature())
-    return sig->getRequirements();
-  else
-    return { };
+  return getGenericSignature().getRequirements();
 }
 
 GenericParamList *GenericContext::getGenericParams() const {
@@ -1007,10 +1001,7 @@ GenericSignature GenericContext::getGenericSignature() const {
 }
 
 GenericEnvironment *GenericContext::getGenericEnvironment() const {
-  if (auto genericSig = getGenericSignature())
-    return genericSig->getGenericEnvironment();
-
-  return nullptr;
+  return getGenericSignature().getGenericEnvironment();
 }
 
 void GenericContext::setGenericSignature(GenericSignature genericSig) {
@@ -2688,8 +2679,10 @@ static Type mapSignatureFunctionType(ASTContext &ctx, Type type,
   for (const auto &param : funcTy->getParams()) {
     auto newParamType = mapSignatureParamType(ctx, param.getPlainType());
 
-    // Don't allow overloading by @_nonEphemeral.
-    auto newFlags = param.getParameterFlags().withNonEphemeral(false);
+    // Don't allow overloading by @_nonEphemeral or isolated.
+    auto newFlags = param.getParameterFlags()
+        .withNonEphemeral(false)
+        .withIsolated(false);
 
     // For the 'self' of a method, strip off 'inout'.
     if (isMethod) {
@@ -2925,7 +2918,8 @@ bool ValueDecl::isObjCDynamicInGenericClass() const {
   if (!classDecl)
     return false;
 
-  return classDecl->isGenericContext() && !classDecl->usesObjCGenericsModel();
+  return classDecl->isGenericContext()
+             && !classDecl->isTypeErasedGenericClass();
 }
 
 bool ValueDecl::shouldUseObjCMethodReplacement() const {
@@ -4196,7 +4190,7 @@ bool NominalTypeDecl::isTypeErasedGenericClass() const {
   // ObjC classes are type erased.
   // TODO: Unless they have magic methods...
   if (auto clas = dyn_cast<ClassDecl>(this))
-    return clas->hasClangNode() && clas->isGenericContext();
+    return clas->isTypeErasedGenericClass();
   return false;
 }
 
