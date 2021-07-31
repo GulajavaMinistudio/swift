@@ -655,8 +655,8 @@ namespace {
                                                    ctx);
                     cs.setType(base, MetatypeType::get(baseTy));
 
-                    refExpr = new (ctx) DotSyntaxCallExpr(declRefExpr,
-                                                          SourceLoc(), base);
+                    refExpr = DotSyntaxCallExpr::create(ctx, declRefExpr,
+                                                        SourceLoc(), base);
                     auto refType = fullType->castTo<FunctionType>()->getResult();
                     cs.setType(refExpr, refType);
                   } else {
@@ -1175,8 +1175,8 @@ namespace {
       }
 
       // (Self) -> ...
-      ApplyExpr *selfCall = new (context) DotSyntaxCallExpr(
-          ref, SourceLoc(), selfOpenedRef);
+      ApplyExpr *selfCall =
+          DotSyntaxCallExpr::create(context, ref, SourceLoc(), selfOpenedRef);
       selfCall->setType(refTy->getResult());
       cs.cacheType(selfCall);
 
@@ -1254,7 +1254,7 @@ namespace {
                                        /*implicit=*/true);
       }
 
-      auto argTy = AnyFunctionType::composeInput(context, calleeParams,
+      auto argTy = AnyFunctionType::composeTuple(context, calleeParams,
                                                  /*canonical*/false);
       closureArg->setType(argTy);
       cs.cacheType(closureArg);
@@ -1743,7 +1743,7 @@ namespace {
       if (isa<ConstructorDecl>(member)) {
         // FIXME: Provide type annotation.
         ref = forceUnwrapIfExpected(ref, choice, memberLocator);
-        apply = new (context) ConstructorRefCallExpr(ref, base);
+        apply = ConstructorRefCallExpr::create(context, ref, base);
       } else if (isUnboundInstanceMember) {
         auto refType = cs.simplifyType(openedType);
         if (!cs.getType(ref)->isEqual(refType)) {
@@ -1762,7 +1762,7 @@ namespace {
         assert((!baseIsInstance || member->isInstanceMember()) &&
                "can't call a static method on an instance");
         ref = forceUnwrapIfExpected(ref, choice, memberLocator);
-        apply = new (context) DotSyntaxCallExpr(ref, dotLoc, base);
+        apply = DotSyntaxCallExpr::create(context, ref, dotLoc, base);
         if (Implicit) {
           apply->setImplicit();
         }
@@ -3152,8 +3152,8 @@ namespace {
       Expr *ctorRef = buildOtherConstructorRef(overload.openedFullType, callee,
                                                base, nameLoc, ctorLocator,
                                                implicit);
-      auto *call = new (cs.getASTContext()) DotSyntaxCallExpr(ctorRef, dotLoc,
-                                                              base);
+      auto *call =
+          DotSyntaxCallExpr::create(cs.getASTContext(), ctorRef, dotLoc, base);
 
       return finishApply(call, cs.getType(expr), locator, ctorLocator);
     }
@@ -5808,7 +5808,7 @@ Expr *ExprRewriter::coerceCallArguments(
   ParameterListInfo paramInfo(params, callee.getDecl(), skipCurriedSelf);
 
   SmallVector<AnyFunctionType::Param, 8> args;
-  AnyFunctionType::decomposeInput(cs.getType(arg), args);
+  AnyFunctionType::decomposeTuple(cs.getType(arg), args);
 
   // If this application is an init(wrappedValue:) call that needs an injected
   // wrapped value placeholder, the first non-defaulted argument must be
@@ -6057,7 +6057,7 @@ Expr *ExprRewriter::coerceCallArguments(
             cs.buildAutoClosureExpr(arg, closureType, dc,
                                     isDefaultWrappedValue),
             /*isAutoClosure=*/true);
-        arg = CallExpr::createImplicit(ctx, placeholder, {}, {});
+        arg = CallExpr::createImplicitEmpty(ctx, placeholder);
         arg->setType(closureType->getResult());
         cs.cacheType(arg);
       }
@@ -6101,7 +6101,7 @@ Expr *ExprRewriter::coerceCallArguments(
   }
 
   // Rebuild the argument list, sharing as much structure as possible.
-  auto paramType = AnyFunctionType::composeInput(ctx, newParams,
+  auto paramType = AnyFunctionType::composeTuple(ctx, newParams,
                                                  /*canonicalVararg=*/false);
   if (isa<ParenType>(paramType.getPointer())) {
     if (argParen) {
@@ -7639,7 +7639,7 @@ Expr *ExprRewriter::finishApply(ApplyExpr *apply, Type openedType,
                                                     {escapable}, {}, getType);
         cs.cacheSubExprTypes(callSubExpr);
         cs.setType(callSubExpr->getArg(),
-                   AnyFunctionType::composeInput(ctx,
+                   AnyFunctionType::composeTuple(ctx,
                                                  escapableParams, false));
         cs.setType(callSubExpr, resultType);
         
@@ -7891,6 +7891,15 @@ static std::pair<Expr *, unsigned> getPrecedenceParentAndIndex(Expr *expr,
   }
   Expr *parent = it->second;
 
+  // Look through an unresolved chain wrapper expr, as it has no effect on
+  // precedence.
+  if (isa<UnresolvedMemberChainResultExpr>(parent)) {
+    it = parentMap.find(parent);
+    if (it == parentMap.end())
+      return {nullptr, 0};
+    parent = it->second;
+  }
+
   // Handle all cases where the answer isn't just going to be { parent, 0 }.
   if (auto tuple = dyn_cast<TupleExpr>(parent)) {
     // Get index of expression in tuple.
@@ -7970,13 +7979,13 @@ bool swift::exprNeedsParensOutsideFollowingOperator(
   Expr *parent;
   unsigned index;
   std::tie(parent, index) = getPrecedenceParentAndIndex(expr, rootExpr);
-  if (!parent || isa<TupleExpr>(parent)) {
+  if (!parent)
     return false;
-  }
 
-  if (auto parenExp = dyn_cast<ParenExpr>(parent))
-    if (!parenExp->isImplicit())
+  if (isa<ParenExpr>(parent) || isa<TupleExpr>(parent)) {
+    if (!parent->isImplicit())
       return false;
+  }
 
   if (parent->isInfixOperator()) {
     auto parentPG = TypeChecker::lookupPrecedenceGroupForInfixOperator(DC,
@@ -8329,8 +8338,7 @@ static Expr *wrapAsyncLetInitializer(
 
   // Call the autoclosure so that the AST types line up. SILGen will ignore the
   // actual calls and translate them into a different mechanism.
-  auto autoclosureCall = CallExpr::createImplicit(
-      ctx, autoclosureExpr, { }, { });
+  auto autoclosureCall = CallExpr::createImplicitEmpty(ctx, autoclosureExpr);
   autoclosureCall->setType(initializerType);
   autoclosureCall->setThrows(throws);
 

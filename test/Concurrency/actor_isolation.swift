@@ -1,6 +1,6 @@
 // RUN: %empty-directory(%t)
 // RUN: %target-swift-frontend -emit-module -emit-module-path %t/OtherActors.swiftmodule -module-name OtherActors %S/Inputs/OtherActors.swift -disable-availability-checking
-// RUN: %target-typecheck-verify-swift -I %t -enable-experimental-concurrency -disable-availability-checking -warn-concurrency
+// RUN: %target-typecheck-verify-swift -I %t  -disable-availability-checking -warn-concurrency
 // REQUIRES: concurrency
 
 import OtherActors
@@ -970,7 +970,7 @@ actor Counter {
 class C2 { }
 
 @SomeGlobalActor
-class C3: C2 { } // expected-error{{global actor 'SomeGlobalActor'-isolated class 'C3' has different actor isolation from nonisolated superclass 'C2'}}
+class C3: C2 { } // it's okay to add a global actor to a nonisolated class.
 
 @GenericGlobalActor<U>
 class GenericSuper<U> { }

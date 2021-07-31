@@ -544,7 +544,21 @@ bool MissingConformanceFailure::diagnoseTypeCannotConform(
                  nonConformingType->isEqual(protocolType),
                  protocolType);
 
-  emitDiagnostic(diag::only_concrete_types_conform_to_protocols);
+  bool emittedSpecializedNote = false;
+  if (auto protoType = protocolType->getAs<ProtocolType>()) {
+    if (protoType->getDecl()->isSpecificProtocol(KnownProtocolKind::Sendable)) {
+      if (nonConformingType->is<FunctionType>()) {
+        emitDiagnostic(diag::nonsendable_function_type);
+        emittedSpecializedNote = true;
+      } else if (nonConformingType->is<TupleType>()) {
+        emitDiagnostic(diag::nonsendable_tuple_type);
+        emittedSpecializedNote = true;
+      }
+    }
+  }
+
+  if (!emittedSpecializedNote)
+    emitDiagnostic(diag::only_concrete_types_conform_to_protocols);
 
   if (auto *OTD = dyn_cast<OpaqueTypeDecl>(AffectedDecl)) {
     auto *namingDecl = OTD->getNamingDecl();
@@ -1146,6 +1160,7 @@ ASTNode MissingExplicitConversionFailure::getAnchor() const {
 bool MissingExplicitConversionFailure::diagnoseAsError() {
   auto *DC = getDC();
   auto *anchor = castToExpr(getAnchor());
+  auto *rawAnchor = castToExpr(getRawAnchor());
 
   auto fromType = getFromType();
   auto toType = getToType();
@@ -1171,7 +1186,7 @@ bool MissingExplicitConversionFailure::diagnoseAsError() {
   }
 
   bool needsParensInside = exprNeedsParensBeforeAddingAs(anchor);
-  bool needsParensOutside = exprNeedsParensAfterAddingAs(anchor, expr);
+  bool needsParensOutside = exprNeedsParensAfterAddingAs(anchor, rawAnchor);
 
   llvm::SmallString<2> insertBefore;
   llvm::SmallString<32> insertAfter;
@@ -1310,11 +1325,8 @@ void MissingOptionalUnwrapFailure::offerDefaultValueUnwrapFixIt(
   // Figure out what we need to parenthesize.
   bool needsParensInside =
       exprNeedsParensBeforeAddingNilCoalescing(DC, const_cast<Expr *>(expr));
-  auto parentExpr = findParentExpr(anchor);
-  if (parentExpr && isa<UnresolvedMemberChainResultExpr>(parentExpr))
-    parentExpr = findParentExpr(parentExpr);
   bool needsParensOutside = exprNeedsParensAfterAddingNilCoalescing(
-      DC, const_cast<Expr *>(expr), parentExpr);
+      DC, const_cast<Expr *>(expr), castToExpr(getRawAnchor()));
 
   llvm::SmallString<2> insertBefore;
   llvm::SmallString<32> insertAfter;
