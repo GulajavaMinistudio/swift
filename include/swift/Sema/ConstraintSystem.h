@@ -792,7 +792,7 @@ struct AppliedBuilderTransform {
   Type builderType;
 
   /// The result type of the body, to which the returned expression will be
-  /// converted.
+  /// converted. Opaque types should be unopened.
   Type bodyResultType;
 
   /// An expression whose value has been recorded for later use.
@@ -3318,9 +3318,8 @@ public:
                      bool isFavored = false);
 
   /// Add the appropriate constraint for a contextual conversion.
-  void addContextualConversionConstraint(
-      Expr *expr, Type conversionType, ContextualTypePurpose purpose,
-      bool isOpaqueReturnType);
+  void addContextualConversionConstraint(Expr *expr, Type conversionType,
+                                         ContextualTypePurpose purpose);
 
   /// Convenience function to pass an \c ArrayRef to \c addJoinConstraint
   Type addJoinConstraint(ConstraintLocator *locator,
@@ -3855,6 +3854,12 @@ public:
   ///
   /// \returns The opened type, or \c type if there are no archetypes in it.
   Type openType(Type type, OpenedTypeMap &replacements);
+
+  /// "Open" an opaque archetype type.
+  Type openOpaqueType(Type type, ConstraintLocatorBuilder locator);
+
+  /// Recurse over the given type and open any opaque archetype types.
+  Type openOpaqueTypeRec(Type type, ConstraintLocatorBuilder locator);
 
   /// "Open" the given function type.
   ///
@@ -4593,12 +4598,6 @@ private:
                                           TypeMatchOptions flags,
                                           ConstraintLocatorBuilder locator);
 
-  /// Attempt to simplify an OpaqueUnderlyingType constraint.
-  SolutionKind simplifyOpaqueUnderlyingTypeConstraint(Type type1,
-                                              Type type2,
-                                              TypeMatchOptions flags,
-                                              ConstraintLocatorBuilder locator);
-  
   /// Attempt to simplify the BridgingConversion constraint.
   SolutionKind simplifyBridgingConstraint(Type type1,
                                          Type type2,
@@ -4729,10 +4728,10 @@ public:
   ///
   /// \returns \c None when the result builder cannot be applied at all,
   /// otherwise the result of applying the result builder.
-  Optional<TypeMatchResult> matchResultBuilder(
-      AnyFunctionRef fn, Type builderType, Type bodyResultType,
-      ConstraintKind bodyResultConstraintKind,
-      ConstraintLocatorBuilder locator);
+  Optional<TypeMatchResult>
+  matchResultBuilder(AnyFunctionRef fn, Type builderType, Type bodyResultType,
+                     ConstraintKind bodyResultConstraintKind,
+                     ConstraintLocatorBuilder locator);
 
   /// Matches a wrapped or projected value parameter type to its backing
   /// property wrapper type by applying the property wrapper.
@@ -5774,9 +5773,9 @@ bool exprNeedsParensBeforeAddingNilCoalescing(DeclContext *DC,
 // Return true if, when replacing "<expr>" with "<expr> as T", parentheses need
 // to be added around the new expression in order to maintain the correct
 // precedence.
-bool exprNeedsParensAfterAddingNilCoalescing(DeclContext *DC,
-                                             Expr *expr,
-                                             Expr *rootExpr);
+bool exprNeedsParensAfterAddingNilCoalescing(
+    DeclContext *DC, Expr *expr,
+    llvm::function_ref<Expr *(const Expr *)> getParent);
 
 /// Return true if, when replacing "<expr>" with "<expr> op <something>",
 /// parentheses must be added around "<expr>" to allow the new operator
@@ -5785,13 +5784,12 @@ bool exprNeedsParensInsideFollowingOperator(DeclContext *DC,
                                             Expr *expr,
                                             PrecedenceGroupDecl *followingPG);
 
-/// Return true if, when replacing "<expr>" with "<expr> op <something>"
-/// within the given root expression, parentheses must be added around
-/// the new operator to prevent it from binding incorrectly in the
-/// surrounding context.
+/// Return true if, when replacing "<expr>" with "<expr> op <something>",
+/// parentheses must be added around the new operator to prevent it from binding
+/// incorrectly in the surrounding context.
 bool exprNeedsParensOutsideFollowingOperator(
-    DeclContext *DC, Expr *expr, Expr *rootExpr,
-    PrecedenceGroupDecl *followingPG);
+    DeclContext *DC, Expr *expr, PrecedenceGroupDecl *followingPG,
+    llvm::function_ref<Expr *(const Expr *)> getParent);
 
 /// Determine whether this is a SIMD operator.
 bool isSIMDOperator(ValueDecl *value);
