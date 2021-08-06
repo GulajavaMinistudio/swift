@@ -155,15 +155,24 @@ static Type getTypeFromSubstitutionSchema(Type schema,
   return schema.transformRec([&](Type t) -> Optional<Type> {
     if (t->is<GenericTypeParamType>()) {
       auto index = getGenericParamIndex(t);
+      auto substitution = substitutions[index];
 
-      // Prepend the prefix of the lookup key to the substitution, skipping
-      // creation of a new MutableTerm in the case where the prefix is empty.
+      // Prepend the prefix of the lookup key to the substitution.
       if (prefix.empty()) {
-        return ctx.getTypeForTerm(substitutions[index], genericParams, protos);
-      } else {
-        MutableTerm substitution(prefix);
-        substitution.append(substitutions[index]);
+        // Skip creation of a new MutableTerm in the case where the
+        // prefix is empty.
         return ctx.getTypeForTerm(substitution, genericParams, protos);
+      } else if (substitution.size() == 1 &&
+                 substitution[0].getKind() == Symbol::Kind::Protocol) {
+        // If the prefix is non-empty and the substitution is the
+        // protocol 'Self' type for some protocol, just use the prefix.
+        return ctx.getTypeForTerm(prefix, genericParams, protos);
+      } else {
+        // Otherwise build a new term by appending the substitution
+        // to the prefix.
+        MutableTerm result(prefix);
+        result.append(substitution);
+        return ctx.getTypeForTerm(result, genericParams, protos);
       }
     }
 
@@ -282,9 +291,8 @@ static MutableTerm getRelativeTermForType(CanType typeWitness,
   }
 
   // Add the member type names.
-  std::reverse(symbols.begin(), symbols.end());
-  for (auto symbol : symbols)
-    result.add(symbol);
+  for (auto iter = symbols.rbegin(), end = symbols.rend(); iter != end; ++iter)
+    result.add(*iter);
 
   return result;
 }
@@ -440,8 +448,8 @@ namespace {
 ///
 /// These lower to the following two rules:
 ///
-///   T.[concrete: Foo<τ_0_0, τ_0_1, String> with {X.Y, Z}]
-///   T.[concrete: Foo<Int, τ_0_0, τ_0_1> with {A.B, W}]
+///   T.[concrete: Foo<τ_0_0, τ_0_1, String> with {X.Y, Z}] => T
+///   T.[concrete: Foo<Int, τ_0_0, τ_0_1> with {A.B, W}] => T
 ///
 /// The two concrete type symbols will be added to the property bag of 'T',
 /// and we will eventually end up in this method, where we will generate three
@@ -1054,16 +1062,21 @@ RewriteSystem::buildPropertyMap(PropertyMap &map,
     if (rule.isDeleted())
       continue;
 
-    const auto &lhs = rule.getLHS();
+    auto lhs = rule.getLHS();
+    auto rhs = rule.getRHS();
 
     // Collect all rules of the form T.[p] => T where T is canonical.
     auto property = lhs.back();
     if (!property.isProperty())
       continue;
 
-    MutableTerm key(lhs.begin(), lhs.end() - 1);
-    if (key != rule.getRHS())
+    if (lhs.size() - 1 != rhs.size())
       continue;
+
+    if (!std::equal(rhs.begin(), rhs.end(), lhs.begin()))
+      continue;
+
+    MutableTerm key(rhs);
 
 #ifndef NDEBUG
     assert(!simplify(key) &&
