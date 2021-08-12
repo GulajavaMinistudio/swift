@@ -6636,8 +6636,12 @@ static ConstraintFix *maybeWarnAboutExtraneousCast(
   }
 
   // Except for forced cast expressions, if optionals are more than a single
-  // level difference, we don't need to record any fix.
-  if (!isExpr<ForcedCheckedCastExpr>(anchor) && extraOptionals > 1)
+  // level difference or there is a single level between the types but an extra
+  // level of optional is added to subexpr via OptionalEvaluationExpr, we don't
+  // need to record any fix.
+  if (!isExpr<ForcedCheckedCastExpr>(anchor) &&
+      (extraOptionals > 1 ||
+       isExpr<OptionalEvaluationExpr>(castExpr->getSubExpr())))
     return nullptr;
 
   // Always succeed
@@ -7032,8 +7036,7 @@ allFromConditionalConformances(DeclContext *DC, Type baseTy,
 
     if (auto *protocol = candidateDC->getSelfProtocolDecl()) {
       SmallVector<ProtocolConformance *, 4> conformances;
-      if (!NTD->lookupConformance(DC->getParentModule(), protocol,
-                                  conformances))
+      if (!NTD->lookupConformance(protocol, conformances))
         return false;
 
       // This is opportunistic, there should be a way to narrow the
