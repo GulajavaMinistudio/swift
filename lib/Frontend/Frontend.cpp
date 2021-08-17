@@ -779,12 +779,6 @@ bool CompilerInvocation::shouldImportSwiftConcurrency() const {
         FrontendOptions::ParseInputMode::SwiftModuleInterface;
 }
 
-bool CompilerInvocation::shouldImportSwiftDistributed() const {
-  return getLangOptions().EnableExperimentalDistributed &&
-      getFrontendOptions().InputMode !=
-        FrontendOptions::ParseInputMode::SwiftModuleInterface;
-}
-
 /// Implicitly import the SwiftOnoneSupport module in non-optimized
 /// builds. This allows for use of popular specialized functions
 /// from the standard library, which makes the non-optimized builds
@@ -975,6 +969,9 @@ ModuleDecl *CompilerInstance::getMainModule() const {
     }
     if (Invocation.getFrontendOptions().EnableLibraryEvolution)
       MainModule->setResilienceStrategy(ResilienceStrategy::Resilient);
+    if (Invocation.getLangOptions().WarnConcurrency ||
+        Invocation.getLangOptions().isSwiftVersionAtLeast(6))
+      MainModule->setIsConcurrencyChecked(true);
 
     // Register the main module with the AST context.
     Context->addLoadedModule(MainModule);
