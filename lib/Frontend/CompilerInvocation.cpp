@@ -657,11 +657,8 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   }
 
   Opts.EnableConcisePoundFile =
-      Args.hasArg(OPT_enable_experimental_concise_pound_file);
-  Opts.EnableFuzzyForwardScanTrailingClosureMatching =
-      Args.hasFlag(OPT_enable_fuzzy_forward_scan_trailing_closure_matching,
-                   OPT_disable_fuzzy_forward_scan_trailing_closure_matching,
-                   true);
+      Args.hasArg(OPT_enable_experimental_concise_pound_file) ||
+      Opts.EffectiveLanguageVersion.isVersionAtLeast(6);
 
   Opts.EnableCrossImportOverlays =
       Args.hasFlag(OPT_enable_cross_import_overlays,
@@ -1871,6 +1868,12 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
       Diags.diagnose(SourceLoc(), diag::remark_max_determinism_overriding,
                      "-num-threads");
     }
+  }
+
+  if (SWIFT_ENABLE_GLOBAL_ISEL_ARM64 &&
+      (Triple.getArch() == llvm::Triple::aarch64 ||
+       Triple.getArch() == llvm::Triple::aarch64_32)) {
+    Opts.EnableGlobalISel = true;
   }
 
   return false;
