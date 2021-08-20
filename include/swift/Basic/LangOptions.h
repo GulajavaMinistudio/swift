@@ -149,6 +149,9 @@ namespace swift {
     /// Should potential unavailability on enum cases be downgraded to a warning?
     bool WarnOnPotentiallyUnavailableEnumCase = false;
 
+    /// Should the editor placeholder error be downgraded to a warning?
+    bool WarnOnEditorPlaceholder = false;
+
     /// Maximum number of typo corrections we are allowed to perform.
     /// This is disabled by default until we can get typo-correction working within acceptable performance bounds.
     unsigned TypoCorrectionLimit = 0;
@@ -456,11 +459,14 @@ namespace swift {
     RequirementMachineMode EnableRequirementMachine =
         RequirementMachineMode::Disabled;
 
-    /// Enables debugging output from the requirement machine.
-    bool DebugRequirementMachine = false;
+    /// Enables dumping rewrite systems from the requirement machine.
+    bool DumpRequirementMachine = false;
 
     /// Enables statistics output from the requirement machine.
     bool AnalyzeRequirementMachine = false;
+
+    /// Enables fine-grained debug output from the requirement machine.
+    std::string DebugRequirementMachine;
 
     /// Maximum iteration count for requirement machine confluent completion
     /// algorithm.

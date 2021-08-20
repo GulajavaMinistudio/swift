@@ -44,6 +44,14 @@ else()
   set(SWIFT_BUILD_TEST_SUPPORT_MODULES_default FALSE)
 endif()
 
+if("${SWIFT_HOST_VARIANT_SDK}" MATCHES "(OSX|IOS*|TVOS*|WATCHOS*)")
+  set(SWIFT_STDLIB_ENABLE_PRESPECIALIZATION_default TRUE)
+elseif("${SWIFT_HOST_VARIANT_SDK}" STREQUAL "LINUX")
+  set(SWIFT_STDLIB_ENABLE_PRESPECIALIZATION_default TRUE)
+else()
+  set(SWIFT_STDLIB_ENABLE_PRESPECIALIZATION_default FALSE)
+endif()
+
 #
 # User-configurable options for the standard library.
 #
@@ -78,6 +86,13 @@ option(SWIFT_STDLIB_OS_VERSIONING
 option(SWIFT_BUILD_TEST_SUPPORT_MODULES
        "Whether to build StdlibUnittest and other test support modules. Defaults to On when SWIFT_BUILD_SDK_OVERLAY is On, or when SWIFT_INCLUDE_TESTS is On."
        "${SWIFT_BUILD_TEST_SUPPORT_MODULES_default}")
+
+option(SWIFT_FREESTANDING_FLAVOR
+       "When building the FREESTANDING stdlib, which build style to use (options: apple, linux)")
+
+option(SWIFT_STDLIB_ENABLE_PRESPECIALIZATION
+       "Should stdlib be built with generic metadata prespecialization enabled. Defaults to On on Darwin and on "
+       "${SWIFT_STDLIB_ENABLE_PRESPECIALIZATION_default}")
 
 set(SWIFT_STDLIB_ENABLE_LTO OFF CACHE STRING "Build Swift stdlib with LTO. One
     must specify the form of LTO by setting this to one of: 'full', 'thin'. This

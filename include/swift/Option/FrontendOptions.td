@@ -273,8 +273,11 @@ def debug_constraints_on_line_EQ : Joined<["-"], "debug-constraints-on-line=">,
 def disable_named_lazy_member_loading : Flag<["-"], "disable-named-lazy-member-loading">,
   HelpText<"Disable per-name lazy member loading">;
 
-def debug_requirement_machine : Flag<["-"], "debug-requirement-machine">,
-  HelpText<"Enables debugging output from the generics implementation">;
+def dump_requirement_machine : Flag<["-"], "dump-requirement-machine">,
+  HelpText<"Enables dumping rewrite systems from the generics implementation">;
+
+def debug_requirement_machine : Joined<["-"], "debug-requirement-machine=">,
+  HelpText<"Fine-grained debug output from the generics implementation">;
 
 def analyze_requirement_machine : Flag<["-"], "analyze-requirement-machine">,
   Flags<[FrontendOption, HelpHidden, DoesNotAffectIncrementalBuild]>,
@@ -461,6 +464,10 @@ def disable_conformance_availability_errors : Flag<["-"],
 def warn_on_potentially_unavailable_enum_case : Flag<["-"],
   "warn-on-potentially-unavailable-enum-case">,
   HelpText<"Downgrade potential unavailability of enum case to a warning">;
+
+def warn_on_editor_placeholder : Flag<["-"],
+  "warn-on-editor-placeholder">,
+  HelpText<"Downgrade the editor placeholder error to a warning">;
 
 def report_errors_to_debugger : Flag<["-"], "report-errors-to-debugger">,
   HelpText<"Deprecated, will be removed in future versions.">;
