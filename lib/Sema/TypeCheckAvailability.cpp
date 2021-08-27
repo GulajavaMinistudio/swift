@@ -916,6 +916,25 @@ void TypeChecker::buildTypeRefinementContextHierarchy(SourceFile &SF) {
   }
 }
 
+void TypeChecker::buildTypeRefinementContextHierarchyDelayed(SourceFile &SF, AbstractFunctionDecl *AFD) {
+  // If there's no TRC for the file, we likely don't want this one either.
+  // RootTRC is not set when availability checking is disabled.
+  TypeRefinementContext *RootTRC = SF.getTypeRefinementContext();
+  if(!RootTRC)
+    return;
+
+  if (AFD->getBodyKind() != AbstractFunctionDecl::BodyKind::Unparsed)
+    return;
+
+  // Parse the function body.
+  AFD->getBody(/*canSynthesize=*/true);
+
+  // Build the refinement context for the function body.
+  ASTContext &Context = SF.getASTContext();
+  TypeRefinementContextBuilder Builder(RootTRC, Context);
+  Builder.build(AFD);
+}
+
 TypeRefinementContext *
 TypeChecker::getOrBuildTypeRefinementContext(SourceFile *SF) {
   TypeRefinementContext *TRC = SF->getTypeRefinementContext();
@@ -1694,7 +1713,9 @@ void TypeChecker::checkConcurrencyAvailability(SourceRange ReferenceRange,
   auto runningOS =
     TypeChecker::overApproximateAvailabilityAtLocation(
       ReferenceRange.Start, ReferenceDC);
-  auto availability = ctx.getConcurrencyAvailability();
+  auto availability = ctx.LangOpts.EnableExperimentalBackDeployConcurrency
+      ? ctx.getBackDeployedConcurrencyAvailability()
+      : ctx.getConcurrencyAvailability();
   if (!runningOS.isContainedIn(availability)) {
     diagnosePotentialConcurrencyUnavailability(
       ReferenceRange, ReferenceDC,
