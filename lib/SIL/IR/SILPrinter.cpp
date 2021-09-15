@@ -1260,6 +1260,8 @@ public:
   void visitAllocStackInst(AllocStackInst *AVI) {
     if (AVI->hasDynamicLifetime())
       *this << "[dynamic_lifetime] ";
+    if (AVI->isLexical())
+      *this << "[lexical] ";
     *this << AVI->getElementType();
     printDebugVar(AVI->getVarInfo(),
                   &AVI->getModule().getASTContext().SourceMgr);
@@ -1751,6 +1753,8 @@ public:
       *this << "[strict] ";
     if (CI->isInvariant())
       *this << "[invariant] ";
+    if (CI->alignment())
+      *this << "[align=" << CI->alignment()->value() << "] ";
     *this << CI->getType();
   }
   void visitUncheckedRefCastInst(UncheckedRefCastInst *CI) {

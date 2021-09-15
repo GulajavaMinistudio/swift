@@ -3079,7 +3079,7 @@ alloc_stack
 ```````````
 ::
 
-  sil-instruction ::= 'alloc_stack' '[dynamic_lifetime]'? sil-type (',' debug-var-attr)*
+  sil-instruction ::= 'alloc_stack' '[dynamic_lifetime]'? '[lexical]'? sil-type (',' debug-var-attr)*
 
   %1 = alloc_stack $T
   // %1 has type $*T
@@ -3101,6 +3101,9 @@ deallocated in last-in, first-out stack order.
 The ``dynamic_lifetime`` attribute specifies that the initialization and
 destruction of the stored value cannot be verified at compile time.
 This is the case, e.g. for conditionally initialized objects.
+
+The optional ``lexical`` attribute specifies that the operand corresponds to a
+local variable in the Swift source.
 
 The memory is not retainable. To allocate a retainable box for a value
 type, use ``alloc_box``.
@@ -6194,7 +6197,8 @@ pointer_to_address
 ``````````````````
 ::
 
-  sil-instruction ::= 'pointer_to_address' sil-operand 'to' ('[' 'strict' ']')? sil-type
+  sil-instruction ::= 'pointer_to_address' sil-operand 'to' ('[' 'strict' ']')? ('[' 'invariant' ']')? ('[' 'alignment' '=' alignment ']')? sil-type
+  alignment ::= [0-9]+
 
   %1 = pointer_to_address %0 : $Builtin.RawPointer to [strict] $*T
   // %1 will be of type $*T
@@ -6214,6 +6218,12 @@ type. A memory access from an address that is not strict cannot have
 its address substituted with a strict address, even if other nearby
 memory accesses at the same location are strict.
 
+The ``invariant`` flag is set if loading from the returned address
+always produces the same value.
+
+The ``alignment`` integer value specifies the byte alignment of the
+address. ``alignment=0`` is the default, indicating the natural
+alignment of ``T``.
 
 unchecked_ref_cast
 ``````````````````

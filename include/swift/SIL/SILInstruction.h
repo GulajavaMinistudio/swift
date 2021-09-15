@@ -1902,16 +1902,16 @@ class AllocStackInst final
   friend SILBuilder;
 
   bool dynamicLifetime = false;
+  bool lexical = false;
 
   AllocStackInst(SILDebugLocation Loc, SILType elementType,
-                 ArrayRef<SILValue> TypeDependentOperands,
-                 SILFunction &F,
-                 Optional<SILDebugVariable> Var, bool hasDynamicLifetime);
+                 ArrayRef<SILValue> TypeDependentOperands, SILFunction &F,
+                 Optional<SILDebugVariable> Var, bool hasDynamicLifetime,
+                 bool isLexical);
 
   static AllocStackInst *create(SILDebugLocation Loc, SILType elementType,
-                                SILFunction &F,
-                                Optional<SILDebugVariable> Var,
-                                bool hasDynamicLifetime);
+                                SILFunction &F, Optional<SILDebugVariable> Var,
+                                bool hasDynamicLifetime, bool isLexical);
 
   SIL_DEBUG_VAR_SUPPLEMENT_TRAILING_OBJS_IMPL()
 
@@ -1941,6 +1941,9 @@ public:
   /// An example of an alloc_stack with dynamic lifetime is an alloc_stack that
   /// is conditionally initialized.
   bool hasDynamicLifetime() const { return dynamicLifetime; }
+
+  /// Whether the alloc_stack instruction corresponds to a source-level VarDecl.
+  bool isLexical() const { return lexical; }
 
   /// Return the debug variable information attached to this instruction.
   Optional<SILDebugVariable> getVarInfo() const {
@@ -5127,10 +5130,15 @@ class PointerToAddressInst
   friend SILBuilder;
 
   PointerToAddressInst(SILDebugLocation DebugLoc, SILValue Operand, SILType Ty,
-                       bool IsStrict, bool IsInvariant)
-    : UnaryInstructionBase(DebugLoc, Operand, Ty) {
+                       bool IsStrict, bool IsInvariant,
+                       llvm::MaybeAlign Alignment)
+      : UnaryInstructionBase(DebugLoc, Operand, Ty) {
     SILNode::Bits.PointerToAddressInst.IsStrict = IsStrict;
     SILNode::Bits.PointerToAddressInst.IsInvariant = IsInvariant;
+    unsigned encodedAlignment = llvm::encode(Alignment);
+    SILNode::Bits.PointerToAddressInst.Alignment = encodedAlignment;
+    assert(SILNode::Bits.PointerToAddressInst.Alignment == encodedAlignment
+           && "pointer_to_address alignment overflow");
   }
 
 public:
@@ -5145,6 +5153,13 @@ public:
   /// produces the same value.
   bool isInvariant() const {
     return SILNode::Bits.PointerToAddressInst.IsInvariant;
+  }
+
+  /// The byte alignment of the address. Since the alignment of types isn't
+  /// known until IRGen (TypeInfo::getBestKnownAlignment), in SIL an unknown
+  /// alignment indicates the natural in-memory alignment of the element type.
+  llvm::MaybeAlign alignment() const {
+    return llvm::decodeMaybeAlign(SILNode::Bits.PointerToAddressInst.Alignment);
   }
 };
 
