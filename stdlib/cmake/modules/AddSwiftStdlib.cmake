@@ -321,8 +321,12 @@ function(_add_target_variant_c_compile_flags)
     list(APPEND result "-DSWIFT_ENABLE_REFLECTION")
   endif()
 
-  if(SWIFT_RUNTIME_MACHO_NO_DYLD)
-    list(APPEND result "-DSWIFT_RUNTIME_MACHO_NO_DYLD")
+  if(SWIFT_STDLIB_HAS_DLADDR)
+    list(APPEND result "-DSWIFT_STDLIB_HAS_DLADDR")
+  endif()
+
+  if(SWIFT_RUNTIME_STATIC_IMAGE_INSPECTION)
+    list(APPEND result "-DSWIFT_RUNTIME_STATIC_IMAGE_INSPECTION")
   endif()
 
   if(SWIFT_STDLIB_HAS_DARWIN_LIBMALLOC)
@@ -1701,6 +1705,7 @@ function(add_swift_target_library name)
   # behavior for their requirements.
   if (SWIFTLIB_IS_STDLIB)
     list(APPEND SWIFTLIB_SWIFT_COMPILE_FLAGS "-warn-implicit-overrides")
+    list(APPEND SWIFTLIB_SWIFT_COMPILE_FLAGS "-Xfrontend;-enable-ossa-modules")
   endif()
 
   if(NOT SWIFT_BUILD_RUNTIME_WITH_HOST_COMPILER AND NOT BUILD_STANDALONE AND

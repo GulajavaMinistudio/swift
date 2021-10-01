@@ -283,10 +283,12 @@ endif()
 if(SWIFT_STDLIB_ENABLE_STDLIBCORE_EXCLUSIVITY_CHECKING)
   list(APPEND swift_stdlib_compile_flags "-enforce-exclusivity=checked")
 endif()
+if(SWIFT_ENABLE_ARRAY_COW_CHECKS)
+  list(APPEND swift_stdlib_compile_flags "-DCOW_CHECKS_ENABLED")
+endif()
 
 # STAGING: Temporarily avoids having to write #fileID in Swift.swiftinterface.
 list(APPEND swift_stdlib_compile_flags "-Xfrontend" "-enable-experimental-concise-pound-file")
-list(APPEND swift_stdlib_compile_flags "-Xfrontend" "-enable-ossa-modules")
 
 if(SWIFT_CHECK_ESSENTIAL_STDLIB)
   add_swift_target_library(swift_stdlib_essential ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_STDLIB IS_STDLIB_CORE
