@@ -22,6 +22,7 @@
 #include "TypeChecker.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ClangModuleLoader.h"
+#include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticsParse.h"
 #include "swift/AST/Effects.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -262,9 +263,42 @@ public:
 
   void visitReasyncAttr(ReasyncAttr *attr);
   void visitNonisolatedAttr(NonisolatedAttr *attr);
+
+  void visitNoImplicitCopyAttr(NoImplicitCopyAttr *attr);
 };
 
 } // end anonymous namespace
+
+void AttributeChecker::visitNoImplicitCopyAttr(NoImplicitCopyAttr *attr) {
+  auto *dc = D->getDeclContext();
+  auto *vd = dyn_cast<VarDecl>(D);
+  if (!vd) {
+    auto error = diag::noimplicitcopy_attr_valid_only_on_local_let;
+    diagnoseAndRemoveAttr(attr, error);
+    return;
+  }
+
+  // If we have a 'var' instead of a 'let', bail. We only support on local lets.
+  if (!vd->isLet()) {
+    auto error = diag::noimplicitcopy_attr_valid_only_on_local_let;
+    diagnoseAndRemoveAttr(attr, error);
+    return;
+  }
+
+  // We only support local lets.
+  if (!dc->isLocalContext()) {
+    auto error = diag::noimplicitcopy_attr_valid_only_on_local_let;
+    diagnoseAndRemoveAttr(attr, error);
+    return;
+  }
+
+  // We do not support static vars either yet.
+  if (dc->isTypeContext() && vd->isStatic()) {
+    auto error = diag::noimplicitcopy_attr_valid_only_on_local_let;
+    diagnoseAndRemoveAttr(attr, error);
+    return;
+  }
+}
 
 void AttributeChecker::visitTransparentAttr(TransparentAttr *attr) {
   DeclContext *dc = D->getDeclContext();
