@@ -1842,6 +1842,10 @@ public:
     *this << getIDAndType(I->getOperand());
   }
 
+  void visitExplicitCopyValueInst(ExplicitCopyValueInst *I) {
+    *this << getIDAndType(I->getOperand());
+  }
+
   void visitMoveValueInst(MoveValueInst *I) {
     *this << getIDAndType(I->getOperand());
   }
@@ -2869,6 +2873,13 @@ void SILFunction::print(SILPrintContext &PrintCtx) const {
     case OptimizationMode::ForSpeed: OS << "[Ospeed] "; break;
     case OptimizationMode::ForSize: OS << "[Osize] "; break;
     default: break;
+  }
+
+  PerformanceConstraints perf = getPerfConstraints();
+  switch (perf) {
+    case PerformanceConstraints::None:         break;
+    case PerformanceConstraints::NoLocks:      OS << "[no_locks] "; break;
+    case PerformanceConstraints::NoAllocation: OS << "[no_allocation] "; break;
   }
 
   if (getEffectsKind() == EffectsKind::ReadOnly)

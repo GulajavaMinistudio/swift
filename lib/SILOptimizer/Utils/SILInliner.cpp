@@ -17,6 +17,7 @@
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/SIL/PrettyStackTrace.h"
 #include "swift/SIL/SILDebugScope.h"
+#include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/TypeSubstCloner.h"
 #include "swift/SILOptimizer/Utils/CFGOptUtils.h"
 #include "swift/SILOptimizer/Utils/SILOptFunctionBuilder.h"
@@ -256,7 +257,7 @@ class SILInlineCloner
   FullApplySite Apply;
   Optional<BeginApplySite> BeginApply;
 
-  SILInliner::DeletionFuncTy DeletionCallback;
+  InstructionDeleter &deleter;
 
   /// The location representing the inlined instructions.
   ///
@@ -272,18 +273,15 @@ class SILInlineCloner
   // control path.
   SILBasicBlock *ReturnToBB = nullptr;
 
-  // Keep track of the next instruction after inlining the call.
-  SILBasicBlock::iterator NextIter;
-
 public:
   SILInlineCloner(SILFunction *CalleeFunction, FullApplySite Apply,
                   SILOptFunctionBuilder &FuncBuilder, InlineKind IKind,
                   SubstitutionMap ApplySubs,
-                  SILInliner::DeletionFuncTy deletionCallback);
+                  InstructionDeleter &deleter);
 
   SILFunction *getCalleeFunction() const { return &Original; }
 
-  SILBasicBlock::iterator cloneInline(ArrayRef<SILValue> AppliedArgs);
+  void cloneInline(ArrayRef<SILValue> AppliedArgs);
 
 protected:
   SILValue borrowFunctionArgument(SILValue callArg, FullApplySite AI);
@@ -335,7 +333,7 @@ protected:
 };
 } // namespace swift
 
-std::pair<SILBasicBlock::iterator, SILBasicBlock *>
+SILBasicBlock *
 SILInliner::inlineFunction(SILFunction *calleeFunction, FullApplySite apply,
                            ArrayRef<SILValue> appliedArgs) {
   PrettyStackTraceSILFunction calleeTraceRAII("inlining", calleeFunction);
@@ -344,15 +342,16 @@ SILInliner::inlineFunction(SILFunction *calleeFunction, FullApplySite apply,
          && "Asked to inline function that is unable to be inlined?!");
 
   SILInlineCloner cloner(calleeFunction, apply, FuncBuilder, IKind, ApplySubs,
-                         DeletionCallback);
-  auto nextI = cloner.cloneInline(appliedArgs);
-  return std::make_pair(nextI, cloner.getLastClonedBB());
+                         deleter);
+  cloner.cloneInline(appliedArgs);
+  return cloner.getLastClonedBB();
 }
 
-std::pair<SILBasicBlock::iterator, SILBasicBlock *>
+SILBasicBlock *
 SILInliner::inlineFullApply(FullApplySite apply,
                             SILInliner::InlineKind inlineKind,
-                            SILOptFunctionBuilder &funcBuilder) {
+                            SILOptFunctionBuilder &funcBuilder,
+                            InstructionDeleter &deleter) {
   assert(apply.canOptimize());
   assert(!apply.getFunction()->hasOwnership() ||
          apply.getReferencedFunctionOrNull()->hasOwnership());
@@ -361,7 +360,7 @@ SILInliner::inlineFullApply(FullApplySite apply,
   for (const auto arg : apply.getArguments())
     appliedArgs.push_back(arg);
 
-  SILInliner Inliner(funcBuilder, inlineKind, apply.getSubstitutionMap());
+  SILInliner Inliner(funcBuilder, deleter, inlineKind, apply.getSubstitutionMap());
   return Inliner.inlineFunction(apply.getReferencedFunctionOrNull(), apply,
                                 appliedArgs);
 }
@@ -370,11 +369,11 @@ SILInlineCloner::SILInlineCloner(
     SILFunction *calleeFunction, FullApplySite apply,
     SILOptFunctionBuilder &funcBuilder, InlineKind inlineKind,
     SubstitutionMap applySubs,
-    SILInliner::DeletionFuncTy deletionCallback)
+    InstructionDeleter &deleter)
     : SuperTy(*apply.getFunction(), *calleeFunction, applySubs,
               /*DT=*/nullptr, /*Inlining=*/true),
       FuncBuilder(funcBuilder), IKind(inlineKind), Apply(apply),
-      DeletionCallback(deletionCallback) {
+      deleter(deleter) {
 
   SILFunction &F = getBuilder().getFunction();
   assert(apply.getFunction() && apply.getFunction() == &F
@@ -419,10 +418,8 @@ SILInlineCloner::SILInlineCloner(
 }
 
 // Clone the entire callee function into the caller function at the apply site.
-// Delete the original apply and all dead arguments except the callee. Return an
-// iterator the the first instruction after the original apply.
-SILBasicBlock::iterator
-SILInlineCloner::cloneInline(ArrayRef<SILValue> AppliedArgs) {
+// Delete the original apply and all dead arguments except the callee.
+void SILInlineCloner::cloneInline(ArrayRef<SILValue> AppliedArgs) {
   assert(getCalleeFunction()->getArguments().size() == AppliedArgs.size()
          && "Unexpected number of callee arguments.");
 
@@ -506,8 +503,6 @@ SILInlineCloner::cloneInline(ArrayRef<SILValue> AppliedArgs) {
 
   // Visit original BBs in depth-first preorder, starting with the
   // entry block, cloning all instructions and terminators.
-  //
-  // NextIter is initialized during `fixUp`.
   cloneFunctionBody(getCalleeFunction(), callerBlock, entryArgs);
 
   // For non-throwing applies, the inlined body now unconditionally branches to
@@ -520,7 +515,6 @@ SILInlineCloner::cloneInline(ArrayRef<SILValue> AppliedArgs) {
   //
   // Once all calls in a function are inlined, unconditional branches are
   // eliminated by mergeBlocks.
-  return NextIter;
 }
 
 void SILInlineCloner::visitTerminator(SILBasicBlock *BB) {
@@ -578,25 +572,8 @@ void SILInlineCloner::preFixUp(SILFunction *calleeFunction) {
 }
 
 void SILInlineCloner::postFixUp(SILFunction *calleeFunction) {
-  NextIter = std::next(Apply.getInstruction()->getIterator());
-
-  assert(!Apply.getInstruction()->hasUsesOfAnyResult());
-
-  auto callbacks = InstModCallbacks().onDelete([&](SILInstruction *deadInst) {
-    if (NextIter == deadInst->getIterator())
-      ++NextIter;
-    deadInst->eraseFromParent();
-  });
-  if (DeletionCallback) {
-    callbacks =
-        callbacks.onNotifyWillBeDeleted([this](SILInstruction *toDeleteInst) {
-          DeletionCallback(toDeleteInst);
-        });
-  }
-  InstructionDeleter deleter(callbacks);
-  callbacks.notifyWillBeDeleted(Apply.getInstruction());
+  deleter.getCallbacks().notifyWillBeDeleted(Apply.getInstruction());
   deleter.forceDelete(Apply.getInstruction());
-  deleter.cleanupDeadInstructions();
 }
 
 SILValue SILInlineCloner::borrowFunctionArgument(SILValue callArg,
@@ -709,6 +686,43 @@ void SILInlineCloner::visitBuiltinInst(BuiltinInst *Inst) {
 
         getBuilder().emitStoreValueOperation(opLoc, mvi, otherResultAddr,
                                              StoreOwnershipQualifier::Init);
+
+        // We know that Inst returns a tuple value that isn't used by anything
+        // else, so this /should/ be safe.
+        return recordClonedInstruction(Inst, mvi);
+      }
+
+      if (*kind == BuiltinValueKind::Copy) {
+        auto otherResultAddr = getOpValue(Inst->getOperand(0));
+        auto otherSrcAddr = getOpValue(Inst->getOperand(1));
+        auto otherType = otherSrcAddr->getType();
+
+        if (!otherType.isLoadable(*Inst->getFunction())) {
+          // If otherType is not loadable, emit a diagnostic since it was used
+          // on a generic or existential value.
+          diagnose(Inst->getModule().getASTContext(),
+                   getOpLocation(Inst->getLoc()).getSourceLoc(),
+                   diag::copy_operator_used_on_generic_or_existential_value);
+          return SILCloner<SILInlineCloner>::visitBuiltinInst(Inst);
+        }
+
+        getBuilder().setCurrentDebugScope(getOpScope(Inst->getDebugScope()));
+        // We stash otherValue in originalOtherValue in case we need to
+        // perform a writeback.
+        auto opLoc = getOpLocation(Inst->getLoc());
+
+        assert(otherType.isAddress());
+
+        // Perform a load_borrow and then copy that.
+        SILValue otherValue =
+            getBuilder().emitLoadBorrowOperation(opLoc, otherSrcAddr);
+
+        auto *mvi = getBuilder().createExplicitCopyValue(opLoc, otherValue);
+
+        getBuilder().emitStoreValueOperation(opLoc, mvi, otherResultAddr,
+                                             StoreOwnershipQualifier::Init);
+        // End the borrowed value.
+        getBuilder().emitEndBorrowOperation(opLoc, otherValue);
 
         // We know that Inst returns a tuple value that isn't used by anything
         // else, so this /should/ be safe.
@@ -892,6 +906,7 @@ InlineCost swift::instructionInlineCost(SILInstruction &I) {
   case SILInstructionKind::RetainValueAddrInst:
   case SILInstructionKind::UnmanagedRetainValueInst:
   case SILInstructionKind::CopyValueInst:
+  case SILInstructionKind::ExplicitCopyValueInst:
   case SILInstructionKind::DeallocBoxInst:
   case SILInstructionKind::DeallocExistentialBoxInst:
   case SILInstructionKind::DeallocRefInst:

@@ -484,7 +484,8 @@ void SILSerializer::writeSILFunction(const SILFunction &F, bool DeclOnly) {
       (unsigned)F.isTransparent(), (unsigned)F.isSerialized(),
       (unsigned)F.isThunk(), (unsigned)F.isWithoutActuallyEscapingThunk(),
       (unsigned)F.getSpecialPurpose(), (unsigned)F.getInlineStrategy(),
-      (unsigned)F.getOptimizationMode(), (unsigned)F.getClassSubclassScope(),
+      (unsigned)F.getOptimizationMode(), (unsigned)F.getPerfConstraints(),
+      (unsigned)F.getClassSubclassScope(),
       (unsigned)F.hasCReferences(), (unsigned)F.getEffectsKind(),
       (unsigned)numSpecAttrs, (unsigned)F.hasOwnership(),
       F.isAlwaysWeakImported(), LIST_VER_TUPLE_PIECES(available),
@@ -1396,6 +1397,7 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
   case SILInstructionKind::UnmanagedRetainValueInst:
   case SILInstructionKind::EndBorrowInst:
   case SILInstructionKind::CopyValueInst:
+  case SILInstructionKind::ExplicitCopyValueInst:
   case SILInstructionKind::MoveValueInst:
   case SILInstructionKind::DestroyValueInst:
   case SILInstructionKind::ReleaseValueInst:
