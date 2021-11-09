@@ -2611,14 +2611,14 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
       auto numSPIGroups = attr->getSPIGroups().size();
       assert(pieces.size() == numArgs + numSPIGroups ||
              pieces.size() == (numArgs - 1 + numSPIGroups));
-      auto numAvailabilityAttrs = attr->getAvailabeAttrs().size();
+      auto numAvailabilityAttrs = attr->getAvailableAttrs().size();
       SpecializeDeclAttrLayout::emitRecord(
           S.Out, S.ScratchRecord, abbrCode, (unsigned)attr->isExported(),
           (unsigned)attr->getSpecializationKind(),
           S.addGenericSignatureRef(attr->getSpecializedSignature()),
           S.addDeclRef(targetFunDecl), numArgs, numSPIGroups,
           numAvailabilityAttrs, pieces);
-      for (auto availAttr : attr->getAvailabeAttrs()) {
+      for (auto availAttr : attr->getAvailableAttrs()) {
         writeDeclAttribute(D, availAttr);
       }
       return;
@@ -3385,11 +3385,11 @@ public:
     verifyAttrSerializable(genericParam);
 
     unsigned abbrCode = S.DeclTypeAbbrCodes[GenericTypeParamDeclLayout::Code];
-    GenericTypeParamDeclLayout::emitRecord(S.Out, S.ScratchRecord, abbrCode,
-                                S.addDeclBaseNameRef(genericParam->getName()),
-                                genericParam->isImplicit(),
-                                genericParam->getDepth(),
-                                genericParam->getIndex());
+    GenericTypeParamDeclLayout::emitRecord(
+        S.Out, S.ScratchRecord, abbrCode,
+        S.addDeclBaseNameRef(genericParam->getName()),
+        genericParam->isImplicit(), genericParam->isTypeSequence(),
+        genericParam->getDepth(), genericParam->getIndex());
   }
 
   void visitAssociatedTypeDecl(const AssociatedTypeDecl *assocType) {
@@ -4471,6 +4471,7 @@ public:
       indexPlusOne = genericParam->getIndex() + 1;
     }
     GenericTypeParamTypeLayout::emitRecord(S.Out, S.ScratchRecord, abbrCode,
+                                           genericParam->isTypeSequence(),
                                            declIDOrDepth, indexPlusOne);
   }
 

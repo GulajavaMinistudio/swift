@@ -767,8 +767,8 @@ AssociatedTypeInference::inferTypeWitnessesViaValueWitness(ValueDecl *req,
   // Match the witness. If we don't succeed, throw away the inference
   // information.
   // FIXME: A renamed match might be useful to retain for the failure case.
-  if (matchWitness(dc, req, witness, setup, matchTypes, finalize)
-          .Kind != MatchKind::ExactMatch) {
+  if (!matchWitness(dc, req, witness, setup, matchTypes, finalize)
+          .isWellFormed()) {
     inferred.Inferred.clear();
   }
 
@@ -1511,7 +1511,9 @@ static Comparison compareDeclsForInference(DeclContext *DC, ValueDecl *decl1,
   if (!sig1 || !sig2)
     return TypeChecker::compareDeclarations(DC, decl1, decl2);
 
-  auto selfParam = GenericTypeParamType::get(0, 0, decl1->getASTContext());
+  auto selfParam = GenericTypeParamType::get(/*type sequence*/ false,
+                                             /*depth*/ 0, /*index*/ 0,
+                                             decl1->getASTContext());
 
   // Collect the protocols required by extension 1.
   Type class1;

@@ -2739,10 +2739,17 @@ public:
     for (auto param : *func->getParameters()) {
       switch (param->getDefaultArgumentKind()) {
       case DefaultArgumentKind::Normal:
+      case DefaultArgumentKind::NilLiteral:
+      case DefaultArgumentKind::EmptyArray:
+      case DefaultArgumentKind::EmptyDictionary:
       case DefaultArgumentKind::StoredProperty:
       case DefaultArgumentKind::Inherited: // FIXME: include this?
         return true;
-      default:
+
+      case DefaultArgumentKind::None:
+#define MAGIC_IDENTIFIER(NAME, STRING, SYNTAX_KIND)                            \
+      case DefaultArgumentKind::NAME:
+#include "swift/AST/MagicIdentifierKinds.def"
         break;
       }
     }
@@ -7404,81 +7411,6 @@ void CodeCompletionCallbacksImpl::doneParsing() {
   }
 
   deliverCompletionResults(CompletionContext, Lookup, CurDeclContext, Consumer);
-}
-
-void PrintingCodeCompletionConsumer::handleResults(
-    CodeCompletionContext &context) {
-  auto results = context.takeResults();
-  handleResults(results);
-}
-
-void PrintingCodeCompletionConsumer::handleResults(
-    MutableArrayRef<CodeCompletionResult *> Results) {
-  unsigned NumResults = 0;
-  for (auto Result : Results) {
-    if (!IncludeKeywords && Result->getKind() == CodeCompletionResult::Keyword)
-      continue;
-    ++NumResults;
-  }
-  if (NumResults == 0)
-    return;
-
-  OS << "Begin completions, " << NumResults << " items\n";
-  for (auto Result : Results) {
-    if (!IncludeKeywords && Result->getKind() == CodeCompletionResult::Keyword)
-      continue;
-    Result->printPrefix(OS);
-    if (PrintAnnotatedDescription) {
-      printCodeCompletionResultDescriptionAnnotated(*Result, OS, /*leadingPunctuation=*/false);
-      OS << "; typename=";
-      printCodeCompletionResultTypeNameAnnotated(*Result, OS);
-    } else {
-      Result->getCompletionString()->print(OS);
-    }
-
-    OS << "; name=";
-    printCodeCompletionResultFilterName(*Result, OS);
-
-    if (IncludeSourceText) {
-      OS << "; sourcetext=";
-      SmallString<64> buf;
-      {
-        llvm::raw_svector_ostream bufOS(buf);
-        printCodeCompletionResultSourceText(*Result, bufOS);
-      }
-      OS.write_escaped(buf);
-    }
-
-    StringRef comment = Result->getBriefDocComment();
-    if (IncludeComments && !comment.empty()) {
-      OS << "; comment=" << comment;
-    }
-
-    if (Result->getDiagnosticSeverity() !=
-        CodeCompletionDiagnosticSeverity::None) {
-      OS << "; diagnostics=" << comment;
-      switch (Result->getDiagnosticSeverity()) {
-      case CodeCompletionDiagnosticSeverity::Error:
-        OS << "error";
-        break;
-      case CodeCompletionDiagnosticSeverity::Warning:
-        OS << "warning";
-        break;
-      case CodeCompletionDiagnosticSeverity::Remark:
-        OS << "remark";
-        break;
-      case CodeCompletionDiagnosticSeverity::Note:
-        OS << "note";
-        break;
-      case CodeCompletionDiagnosticSeverity::None:
-        llvm_unreachable("none");
-      }
-      OS << ":" << Result->getDiagnosticMessage();
-    }
-
-    OS << "\n";
-  }
-  OS << "End completions\n";
 }
 
 namespace {
