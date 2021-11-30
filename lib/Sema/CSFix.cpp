@@ -169,7 +169,7 @@ bool TreatArrayLiteralAsDictionary::diagnose(const Solution &solution,
                                                     getToType(), getFromType(),
                                                     getLocator());
   return failure.diagnose(asNote);
-};
+}
 
 TreatArrayLiteralAsDictionary *
 TreatArrayLiteralAsDictionary::create(ConstraintSystem &cs,
@@ -178,7 +178,7 @@ TreatArrayLiteralAsDictionary::create(ConstraintSystem &cs,
   assert(getAsExpr<ArrayExpr>(locator->getAnchor())->getNumElements() <= 1);
   return new (cs.getAllocator())
       TreatArrayLiteralAsDictionary(cs, dictionaryTy, arrayTy, locator);
-};
+}
 
 bool MarkExplicitlyEscaping::diagnose(const Solution &solution,
                                       bool asNote) const {
@@ -1124,6 +1124,22 @@ bool RemoveReturn::diagnose(const Solution &solution, bool asNote) const {
 RemoveReturn *RemoveReturn::create(ConstraintSystem &cs, Type resultTy,
                                    ConstraintLocator *locator) {
   return new (cs.getAllocator()) RemoveReturn(cs, resultTy, locator);
+}
+
+NotCompileTimeConst::NotCompileTimeConst(ConstraintSystem &cs, Type paramTy,
+                                         ConstraintLocator *locator):
+  ContextualMismatch(cs, FixKind::NotCompileTimeConst, paramTy,
+                     cs.getASTContext().TheEmptyTupleType, locator) {}
+
+NotCompileTimeConst *
+NotCompileTimeConst::create(ConstraintSystem &cs, Type paramTy,
+                            ConstraintLocator *locator) {
+  return new (cs.getAllocator()) NotCompileTimeConst(cs, paramTy, locator);
+}
+
+bool NotCompileTimeConst::diagnose(const Solution &solution, bool asNote) const {
+  NotCompileTimeConstFailure failure(solution, getLocator());
+  return failure.diagnose(asNote);
 }
 
 bool CollectionElementContextualMismatch::diagnose(const Solution &solution,
