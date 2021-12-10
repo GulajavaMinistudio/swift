@@ -5859,6 +5859,10 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
                                   type1, type2, locator);
           return getTypeMatchSuccess();
         };
+
+      // Foreign reference types do *not* conform to AnyObject.
+      if (type1->isForeignReferenceType() && type2->isAnyObject())
+        return getTypeMatchFailure(locator);
       
       if (auto meta1 = type1->getAs<MetatypeType>()) {
         if (meta1->getInstanceType()->mayHaveSuperclass()
@@ -11657,9 +11661,16 @@ bool ConstraintSystem::recordFix(ConstraintFix *fix, unsigned impact) {
   // current anchor or, in case of anchor being an expression, any of
   // its sub-expressions.
   llvm::SmallDenseSet<ASTNode> anchors;
-  for (const auto *fix : Fixes)
-    anchors.insert(fix->getAnchor());
+  for (const auto *fix : Fixes) {
+    // Warning fixes shouldn't be considered because even if
+    // such fix is recorded at that anchor this should not
+    // have any affect in the recording of any other fix.
+    if (fix->isWarning())
+      continue;
 
+    anchors.insert(fix->getAnchor());
+  }
+  
   bool found = false;
   if (auto *expr = getAsExpr(anchor)) {
     forEachExpr(expr, [&](Expr *subExpr) -> Expr * {

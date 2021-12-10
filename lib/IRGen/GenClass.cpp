@@ -147,6 +147,8 @@ namespace {
         addNSObjectHeader();
         HeaderSize = CurSize;
         break;
+      case ReferenceCounting::None:
+        break;
       case ReferenceCounting::Block:
       case ReferenceCounting::Unknown:
       case ReferenceCounting::Bridge:
@@ -215,7 +217,7 @@ namespace {
     void addFieldsForClassImpl(ClassDecl *rootClass, SILType rootClassType,
                                ClassDecl *theClass, SILType classType,
                                bool superclass) {
-      if (theClass->hasClangNode()) {
+      if (theClass->hasClangNode() && !theClass->isForeignReferenceType()) {
         Options |= ClassMetadataFlags::ClassHasObjCAncestry;
         return;
       }
@@ -1341,8 +1343,7 @@ namespace {
       // };
 
       assert(fields.getNextOffsetFromGlobal() == size);
-      return buildGlobalVariable(fields, "_CATEGORY_", /*const*/ true,
-                                 llvm::GlobalVariable::InternalLinkage);
+      return buildGlobalVariable(fields, "_CATEGORY_", /*const*/ true);
     }
     
     llvm::Constant *emitProtocol() {
@@ -1502,8 +1503,7 @@ namespace {
       // statically. Otherwise, the ObjC runtime may slide the InstanceSize
       // based on changing base class layout.
       return buildGlobalVariable(fields, dataSuffix,
-                               /*const*/ forMeta || FieldLayout->isFixedSize(),
-                               llvm::GlobalVariable::InternalLinkage);
+                               /*const*/ forMeta || FieldLayout->isFixedSize());
     }
 
   private:
@@ -1768,8 +1768,12 @@ namespace {
         return null();
       }
 
-      return buildGlobalVariable(array, "_PROTOCOL_METHOD_TYPES_",
-                                 /*const*/ true);
+      auto *gv_as_const =  buildGlobalVariable(array, "_PROTOCOL_METHOD_TYPES_",
+                               /*const*/ true,
+                               /*likage*/ llvm::GlobalVariable::WeakAnyLinkage);
+      llvm::GlobalValue *gv = (llvm::GlobalValue *)gv_as_const;
+      gv->setVisibility(llvm::GlobalValue::HiddenVisibility);
+      return gv;
     }
 
     void buildExtMethodTypes(ConstantArrayBuilder &array,
@@ -2171,7 +2175,7 @@ namespace {
     template <class B>
     llvm::Constant *buildGlobalVariable(B &fields, StringRef nameBase, bool isConst,
                       llvm::GlobalValue::LinkageTypes linkage =
-                          llvm::GlobalVariable::WeakAnyLinkage) {
+                          llvm::GlobalVariable::InternalLinkage) {
       llvm::SmallString<64> nameBuffer;
       auto var =
         fields.finishAndCreateGlobal(Twine(nameBase) 
@@ -2182,9 +2186,6 @@ namespace {
                                      IGM.getPointerAlignment(),
                                      /*constant*/ true,
                                      linkage);
-      if (linkage == llvm::GlobalVariable::WeakAnyLinkage) {
-        var->setVisibility(llvm::GlobalValue::HiddenVisibility);
-      }
 
       switch (IGM.TargetInfo.OutputObjectFormat) {
       case llvm::Triple::MachO:

@@ -294,7 +294,8 @@ void RewriteSystem::processMergedAssociatedTypes() {
 /// types in RewriteSystem::processMergedAssociatedTypes().
 void RewriteSystem::checkMergedAssociatedType(Term lhs, Term rhs) {
   // FIXME: Figure out 3-cell representation for merged associated types
-  if (RecordLoops)
+  if (RecordLoops ||
+      !Context.getASTContext().LangOpts.RequirementMachineMergedAssociatedTypes)
     return;
 
   if (lhs.size() == rhs.size() &&
@@ -454,7 +455,8 @@ RewriteSystem::computeCriticalPair(ArrayRef<Symbol>::const_iterator from,
     if (xv.back().hasSubstitutions() &&
         !xv.back().getSubstitutions().empty() &&
         t.size() > 0) {
-      path.add(RewriteStep::forAdjustment(t.size(), /*inverse=*/true));
+      path.add(RewriteStep::forAdjustment(t.size(), /*endOffset=*/0,
+                                          /*inverse=*/true));
 
       xv.back() = xv.back().prependPrefixToConcreteSubstitutions(
           t, Context);

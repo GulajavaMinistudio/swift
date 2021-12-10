@@ -1216,8 +1216,23 @@ ASTContext::getBuiltinInitDecl(NominalTypeDecl *decl,
   return witness;
 }
 
+ConcreteDeclRef ASTContext::getRegexInitDecl(Type regexType) const {
+  auto *spModule = getLoadedModule(Id_StringProcessing);
+  DeclName name(*const_cast<ASTContext *>(this),
+                DeclBaseName::createConstructor(),
+                {Id_regexString});
+  SmallVector<ValueDecl *, 1> results;
+  spModule->lookupQualified(getRegexType(), DeclNameRef(name),
+                            NL_IncludeUsableFromInline, results);
+  assert(results.size() == 1);
+  auto *foundDecl = cast<ConstructorDecl>(results[0]);
+  auto subs = regexType->getMemberSubstitutionMap(spModule, foundDecl);
+  return ConcreteDeclRef(foundDecl, subs);
+}
+
 static 
-FuncDecl *getBinaryComparisonOperatorIntDecl(const ASTContext &C, StringRef op, FuncDecl *&cached) {
+FuncDecl *getBinaryComparisonOperatorIntDecl(const ASTContext &C, StringRef op,
+                                             FuncDecl *&cached) {
   if (cached)
     return cached;
 
@@ -2015,6 +2030,11 @@ ASTContext::getRewriteContext() {
 bool ASTContext::isRecursivelyConstructingRequirementMachine(
       CanGenericSignature sig) {
   return getRewriteContext().isRecursivelyConstructingRequirementMachine(sig);
+}
+
+bool ASTContext::isRecursivelyConstructingRequirementMachine(
+      const ProtocolDecl *proto) {
+  return getRewriteContext().isRecursivelyConstructingRequirementMachine(proto);
 }
 
 Optional<llvm::TinyPtrVector<ValueDecl *>>
