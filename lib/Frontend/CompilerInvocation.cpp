@@ -263,6 +263,11 @@ void CompilerInvocation::setSDKPath(const std::string &Path) {
   updateRuntimeLibraryPaths(SearchPathOpts, LangOpts.Target);
 }
 
+bool CompilerInvocation::setModuleAliasMap(std::vector<std::string> args,
+                                           DiagnosticEngine &diags) {
+  return ModuleAliasesConverter::computeModuleAliases(args, FrontendOpts, diags);
+}
+
 static bool ParseFrontendArgs(
     FrontendOptions &opts, ArgList &args, DiagnosticEngine &diags,
     SmallVectorImpl<std::unique_ptr<llvm::MemoryBuffer>> *buffers) {
@@ -437,6 +442,9 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   Opts.EnableExperimentalNamedOpaqueTypes |=
       Args.hasArg(OPT_enable_experimental_named_opaque_types);
+
+  Opts.EnableExplicitExistentialTypes |=
+      Args.hasArg(OPT_enable_explicit_existential_types);
 
   Opts.EnableExperimentalDistributed |=
     Args.hasArg(OPT_enable_experimental_distributed);
