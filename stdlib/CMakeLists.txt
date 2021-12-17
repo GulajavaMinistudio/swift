@@ -89,8 +89,8 @@ option(SWIFT_ENABLE_MODULE_INTERFACES
        "Generate .swiftinterface files alongside .swiftmodule files"
        "${SWIFT_STDLIB_STABLE_ABI}")
 
-option(SWIFT_ENABLE_COMPATIBILITY_OVERRIDES
-       "Support back-deploying compatibility fixes for newer apps running on older runtimes."
+option(SWIFT_STDLIB_SUPPORT_BACK_DEPLOYMENT
+       "Support back-deployment of built binaries to older OS versions."
        TRUE)
 
 option(SWIFT_STDLIB_HAS_DLADDR
@@ -162,6 +162,10 @@ set(SWIFT_STDLIB_ENABLE_LTO OFF CACHE STRING "Build Swift stdlib with LTO. One
 
 option(SWIFT_ENABLE_REFLECTION
   "Build stdlib with support for runtime reflection and mirrors."
+  TRUE)
+
+option(SWIFT_STDLIB_BUILD_PRIVATE
+  "Build private part of the Standard Library."
   TRUE)
 
 if(SWIFT_STDLIB_SINGLE_THREADED_RUNTIME)
@@ -329,5 +333,7 @@ swift_create_stdlib_targets("swift-test-stdlib" "" FALSE)
 # the clang resource directory symlink stops installing correctly.
 add_subdirectory(toolchain)
 add_subdirectory(public)
-add_subdirectory(private)
+if(SWIFT_STDLIB_BUILD_PRIVATE)
+  add_subdirectory(private)
+endif()
 add_subdirectory(tools)
