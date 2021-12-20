@@ -1507,6 +1507,10 @@ private:
                                       File, FwdDeclLine, Flags, MangledName);
     }
 
+    case TypeKind::Pack:
+    case TypeKind::PackExpansion:
+      llvm_unreachable("Unimplemented!");
+
     case TypeKind::Tuple: {
       // Tuples are also represented as structs.  Since tuples are ephemeral
       // (not nominal) they don't have a source location.
@@ -1895,7 +1899,7 @@ IRGenDebugInfoImpl::IRGenDebugInfoImpl(const IRGenOptions &Opts,
                  ? createFile(SourcePath, {}, {})
                  : DBuilder.createFile(RemappedFile, RemappedDir);
 
-  StringRef Sysroot = IGM.Context.SearchPathOpts.SDKPath;
+  StringRef Sysroot = IGM.Context.SearchPathOpts.getSDKPath();
   StringRef SDK;
   {
     auto B = llvm::sys::path::rbegin(Sysroot);
