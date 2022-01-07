@@ -371,6 +371,10 @@ function(_add_target_variant_c_compile_flags)
   if(SWIFT_STDLIB_SUPPORTS_BACKTRACE_REPORTING)
     list(APPEND result "-DSWIFT_STDLIB_SUPPORTS_BACKTRACE_REPORTING")
   endif()
+  
+  if(SWIFT_STDLIB_ENABLE_UNICODE_DATA)
+    list(APPEND result "-D" "SWIFT_STDLIB_ENABLE_UNICODE_DATA")
+  endif()
 
   list(APPEND result ${SWIFT_STDLIB_EXTRA_C_COMPILE_FLAGS})
 
@@ -1152,17 +1156,9 @@ function(add_swift_target_library_single target name)
     target_link_libraries("${target}" INTERFACE ${SWIFTLIB_SINGLE_LINK_LIBRARIES})
   endif()
 
-  # Don't add the icucore target.
-  set(SWIFTLIB_SINGLE_LINK_LIBRARIES_WITHOUT_ICU)
-  foreach(item ${SWIFTLIB_SINGLE_LINK_LIBRARIES})
-    if(NOT "${item}" STREQUAL "icucore")
-      list(APPEND SWIFTLIB_SINGLE_LINK_LIBRARIES_WITHOUT_ICU "${item}")
-    endif()
-  endforeach()
-
   if(target_static)
     _list_add_string_suffix(
-        "${SWIFTLIB_SINGLE_LINK_LIBRARIES_WITHOUT_ICU}"
+        "${SWIFTLIB_SINGLE_LINK_LIBRARIES}"
         "-static"
         target_static_depends)
     # FIXME: should this be target_link_libraries?

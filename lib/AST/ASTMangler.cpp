@@ -831,9 +831,11 @@ std::string ASTMangler::mangleOpaqueTypeDecl(const OpaqueTypeDecl *decl) {
 }
 
 std::string ASTMangler::mangleOpaqueTypeDecl(const ValueDecl *decl) {
-  DWARFMangling = true;
   OptimizeProtocolNames = false;
-  return mangleDeclAsUSR(decl, MANGLING_PREFIX_STR);
+
+  beginMangling();
+  appendEntity(decl);
+  return finalize();
 }
 
 std::string ASTMangler::mangleGenericSignature(const GenericSignature sig) {
@@ -849,7 +851,7 @@ void ASTMangler::appendSymbolKind(SymbolKind SKind) {
     case SymbolKind::SwiftAsObjCThunk: return appendOperator("To");
     case SymbolKind::ObjCAsSwiftThunk: return appendOperator("TO");
     case SymbolKind::DistributedThunk: return appendOperator("TE");
-    case SymbolKind::DistributedMethodAccessor: return appendOperator("TF");
+    case SymbolKind::DistributedAccessor: return appendOperator("TF");
     case SymbolKind::AccessibleFunctionRecord: return appendOperator("HF");
   }
 }
@@ -1845,6 +1847,7 @@ void ASTMangler::appendImplFunctionType(SILFunctionType *fn,
       OpArgs.push_back('B');
       appendClangTypeToVec(OpArgs);
       break;
+    case SILFunctionTypeRepresentation::CXXMethod:
     case SILFunctionTypeRepresentation::CFunctionPointer:
       if (!mangleClangType) {
         OpArgs.push_back('C');
@@ -3314,11 +3317,12 @@ void ASTMangler::appendAnyProtocolConformance(
                                                      conformance.getAbstract());
     appendDependentProtocolConformance(path, genericSig);
   } else if (auto opaqueType = conformingType->getAs<OpaqueTypeArchetypeType>()) {
-    GenericSignature opaqueSignature = opaqueType->getBoundSignature();
-    GenericTypeParamType *opaqueTypeParam = opaqueSignature.getGenericParams().back();
+    GenericSignature opaqueSignature =
+        opaqueType->getDecl()->getOpaqueInterfaceGenericSignature();
     ConformanceAccessPath conformanceAccessPath =
-        opaqueSignature->getConformanceAccessPath(opaqueTypeParam,
-                                                  conformance.getAbstract());
+        opaqueSignature->getConformanceAccessPath(
+          opaqueType->getInterfaceType(),
+          conformance.getAbstract());
 
     // Append the conformance access path with the signature of the opaque type.
     appendDependentProtocolConformance(conformanceAccessPath, opaqueSignature);
