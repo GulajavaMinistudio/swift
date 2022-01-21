@@ -62,7 +62,7 @@
 #include "swift/Option/Options.h"
 #include "swift/Migrator/FixitFilter.h"
 #include "swift/Migrator/Migrator.h"
-#include "swift/PrintAsObjC/PrintAsObjC.h"
+#include "swift/PrintAsClang/PrintAsClang.h"
 #include "swift/Serialization/SerializationOptions.h"
 #include "swift/Serialization/SerializedModuleLoader.h"
 #include "swift/SILOptimizer/PassManager/Passes.h"
@@ -193,7 +193,7 @@ static bool printAsObjCIfNeeded(StringRef outputPath, ModuleDecl *M,
 ///
 /// \returns true if there were any errors
 ///
-/// \see swift::printAsCxx
+/// \see swift::printAsCXX
 static bool printAsCxxIfNeeded(StringRef outputPath, ModuleDecl *M) {
   if (outputPath.empty())
     return false;
