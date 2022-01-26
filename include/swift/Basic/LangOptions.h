@@ -317,6 +317,10 @@ namespace swift {
     /// keyword.
     bool EnableExplicitExistentialTypes = true;
 
+    /// Enable support for protocol types parametrized by primary
+    /// associated type.
+    bool EnableParametrizedProtocolTypes = false;
+
     /// Enable experimental flow-sensitive concurrent captures.
     bool EnableExperimentalFlowSensitiveConcurrentCaptures = false;
 
@@ -484,7 +488,7 @@ namespace swift {
         ASTVerifierOverrideKind::NoOverride;
 
     /// Enables merged associated type support, which might go away.
-    bool RequirementMachineMergedAssociatedTypes = true;
+    bool RequirementMachineMergedAssociatedTypes = false;
 
     /// Enables dumping rewrite systems from the requirement machine.
     bool DumpRequirementMachine = false;
