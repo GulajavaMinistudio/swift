@@ -17,6 +17,12 @@
 // FIXME(distributed): remote calls seem to hang on linux - rdar://87240034
 // UNSUPPORTED: linux
 
+// rdar://87568630 - segmentation fault on 32-bit WatchOS simulator
+// UNSUPPORTED: OS=watchos && CPU=i386
+
+// rdar://88228867 - remoteCall_* tests have been disabled due to random failures
+// REQUIRES: rdar88228867
+
 import _Distributed
 import FakeDistributedActorSystems
 
@@ -35,7 +41,7 @@ func test() async throws {
   let ref = try Greeter.resolve(id: local.id, using: system)
 
   let reply = try await ref.echo(name: "Caplin")
-  // CHECK: >> remoteCall: on:main.Greeter), target:RemoteCallTarget(_mangledName: "$s4main7GreeterC4echo4nameS2S_tFTE"), invocation:FakeRoundtripInvocation(genericSubs: [], arguments: ["Caplin"], returnType: Optional(Swift.String), errorType: nil, argumentIndex: 0), throwing:Swift.Never, returning:Swift.String
+  // CHECK: >> remoteCall: on:main.Greeter), target:RemoteCallTarget(_mangledName: "$s4main7GreeterC4echo4nameS2S_tFTE"), invocation:FakeInvocationEncoder(genericSubs: [], arguments: ["Caplin"], returnType: Optional(Swift.String), errorType: nil), throwing:Swift.Never, returning:Swift.String
 
   // CHECK: << remoteCall return: Echo: Caplin
   print("reply: \(reply)")
