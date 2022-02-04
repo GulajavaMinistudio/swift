@@ -451,8 +451,8 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   Opts.EnableExplicitExistentialTypes |=
       Args.hasArg(OPT_enable_explicit_existential_types);
 
-  Opts.EnableParametrizedProtocolTypes |=
-      Args.hasArg(OPT_enable_parametrized_protocol_types);
+  Opts.EnableParameterizedProtocolTypes |=
+      Args.hasArg(OPT_enable_parameterized_protocol_types);
 
   Opts.EnableExperimentalDistributed |=
     Args.hasArg(OPT_enable_experimental_distributed);
@@ -502,6 +502,9 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   // Experimental string processing
   Opts.EnableExperimentalStringProcessing |=
       Args.hasArg(OPT_enable_experimental_string_processing);
+
+  Opts.EnableExperimentalBoundGenericExtensions |=
+    Args.hasArg(OPT_enable_experimental_bound_generic_extensions);
 
   Opts.DisableAvailabilityChecking |=
       Args.hasArg(OPT_disable_availability_checking);
@@ -2043,8 +2046,13 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
   }
 
   if (Args.hasArg(OPT_disable_reflection_metadata)) {
-    Opts.EnableReflectionMetadata = false;
+    Opts.ReflectionMetadata = ReflectionMetadataMode::None;
     Opts.EnableReflectionNames = false;
+  }
+
+  if (Args.hasArg(OPT_reflection_metadata_for_debugger_only)) {
+    Opts.ReflectionMetadata = ReflectionMetadataMode::DebuggerOnly;
+    Opts.EnableReflectionNames = true;
   }
 
   if (Args.hasArg(OPT_enable_anonymous_context_mangled_names))

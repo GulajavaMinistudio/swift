@@ -321,9 +321,9 @@ namespace swift {
     /// keyword.
     bool EnableExplicitExistentialTypes = true;
 
-    /// Enable support for protocol types parametrized by primary
+    /// Enable support for protocol types parameterized by primary
     /// associated type.
-    bool EnableParametrizedProtocolTypes = false;
+    bool EnableParameterizedProtocolTypes = false;
 
     /// Enable experimental flow-sensitive concurrent captures.
     bool EnableExperimentalFlowSensitiveConcurrentCaptures = false;
@@ -476,6 +476,13 @@ namespace swift {
     // Allow errors during module generation. See corresponding option in
     // FrontendOptions.
     bool AllowModuleWithCompilerErrors = false;
+
+    /// Enable extensions of (sugared) bound generic types
+    ///
+    /// \code
+    /// extension [Int] { /**/ }
+    /// \endcode
+    bool EnableExperimentalBoundGenericExtensions = false;
 
     /// A helper enum to represent whether or not we customized the default
     /// ASTVerifier behavior via a frontend flag. By default, we do not
