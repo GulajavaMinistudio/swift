@@ -192,6 +192,13 @@ set(SWIFT_TOOLS_ENABLE_LTO OFF CACHE STRING "Build Swift tools with LTO. One
     option only affects the tools that run on the host (the compiler), and has
     no effect on the target libraries (the standard library and the runtime).")
 
+option(SWIFT_TOOLS_LD64_LTO_CODEGEN_ONLY_FOR_SUPPORTING_TARGETS
+    "When building ThinLTO using ld64 on Darwin, controls whether to opt out of
+    LLVM IR optimizations when linking targets that will get
+    little benefit from it (e.g. tools for bootstrapping or
+    debugging Swift)"
+    FALSE)
+
 option(BOOTSTRAPPING_MODE [=[
 How to build the swift compiler modules. Possible values are
     OFF:           build without swift modules
@@ -354,6 +361,10 @@ set(SWIFT_DARWIN_DEPLOYMENT_VERSION_WATCHOS "2.0" CACHE STRING
 
 option(SWIFT_SIL_VERIFY_ALL
     "Run SIL verification after each transform when building Swift files in the build process"
+    FALSE)
+
+option(SWIFT_SIL_VERIFY_ALL_MACOS_ONLY
+    "Run SIL verification after each transform when building the macOS stdlib"
     FALSE)
 
 option(SWIFT_EMIT_SORTED_SIL_OUTPUT
