@@ -1335,67 +1335,44 @@ ASTContext::getRecordGenericSubstitutionOnDistributedInvocationEncoder(
   return nullptr;
 }
 
-FuncDecl *ASTContext::getRecordArgumentOnDistributedInvocationEncoder(
+AbstractFunctionDecl *ASTContext::getRecordArgumentOnDistributedInvocationEncoder(
     NominalTypeDecl *nominal) const {
-  for (auto result : nominal->lookupDirect(Id_recordArgument)) {
-    auto *fd = dyn_cast<FuncDecl>(result);
-    if (!fd)
-      continue;
-    if (fd->getParameters()->size() != 1)
-      continue;
-    if (fd->hasAsync())
-      continue;
-    if (!fd->hasThrows())
-      continue;
-    // TODO(distributed): more checks
-
-    if (fd->getResultInterfaceType()->isVoid())
-      return fd;
-  }
-
-  return nullptr;
+  return evaluateOrDefault(
+      nominal->getASTContext().evaluator,
+      GetDistributedTargetInvocationEncoderRecordArgumentFunctionRequest{nominal},
+      nullptr);
 }
 
-FuncDecl *ASTContext::getRecordErrorTypeOnDistributedInvocationEncoder(
+AbstractFunctionDecl *ASTContext::getRecordReturnTypeOnDistributedInvocationEncoder(
     NominalTypeDecl *nominal) const {
-  for (auto result : nominal->lookupDirect(Id_recordErrorType)) {
-    auto *fd = dyn_cast<FuncDecl>(result);
-    if (!fd)
-      continue;
-    if (fd->getParameters()->size() != 1)
-      continue;
-    if (fd->hasAsync())
-      continue;
-    if (!fd->hasThrows())
-      continue;
-    // TODO(distributed): more checks
-
-    if (fd->getResultInterfaceType()->isVoid())
-      return fd;
-  }
-
-  return nullptr;
+  return evaluateOrDefault(
+      nominal->getASTContext().evaluator,
+      GetDistributedTargetInvocationEncoderRecordReturnTypeFunctionRequest{nominal},
+      nullptr);
 }
 
-FuncDecl *ASTContext::getRecordReturnTypeOnDistributedInvocationEncoder(
+AbstractFunctionDecl *ASTContext::getRecordErrorTypeOnDistributedInvocationEncoder(
     NominalTypeDecl *nominal) const {
-  for (auto result : nominal->lookupDirect(Id_recordReturnType)) {
-    auto *fd = dyn_cast<FuncDecl>(result);
-    if (!fd)
-      continue;
-    if (fd->getParameters()->size() != 1)
-      continue;
-    if (fd->hasAsync())
-      continue;
-    if (!fd->hasThrows())
-      continue;
-    // TODO(distributed): more checks
+  return evaluateOrDefault(
+      nominal->getASTContext().evaluator,
+      GetDistributedTargetInvocationEncoderRecordErrorTypeFunctionRequest{nominal},
+      nullptr);
+}
 
-    if (fd->getResultInterfaceType()->isVoid())
-      return fd;
-  }
+AbstractFunctionDecl *ASTContext::getDecodeNextArgumentOnDistributedInvocationDecoder(
+    NominalTypeDecl *nominal) const {
+  return evaluateOrDefault(
+      nominal->getASTContext().evaluator,
+      GetDistributedTargetInvocationDecoderDecodeNextArgumentFunctionRequest{nominal},
+      nullptr);
+}
 
-  return nullptr;
+AbstractFunctionDecl *ASTContext::getOnReturnOnDistributedTargetInvocationResultHandler(
+    NominalTypeDecl *nominal) const {
+  return evaluateOrDefault(
+      nominal->getASTContext().evaluator,
+      GetDistributedTargetInvocationResultHandlerOnReturnFunctionRequest{nominal},
+      nullptr);
 }
 
 FuncDecl *ASTContext::getDoneRecordingOnDistributedInvocationEncoder(
@@ -4481,10 +4458,10 @@ CanOpenedArchetypeType OpenedArchetypeType::get(CanType existential,
     auto found = openedExistentialEnvironments.find(*knownID);
     
     if (found != openedExistentialEnvironments.end()) {
+      assert(found->second->getOpenedExistentialType()->isEqual(existential) &&
+             "Retrieved the wrong generic environment?");
       auto result = found->second->mapTypeIntoContext(interfaceType)
           ->castTo<OpenedArchetypeType>();
-      assert(result->getOpenedExistentialType()->isEqual(existential) &&
-             "Retrieved the wrong opened existential type?");
       return CanOpenedArchetypeType(result);
     }
   } else {
