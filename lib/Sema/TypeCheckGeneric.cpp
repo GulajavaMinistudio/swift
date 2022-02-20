@@ -274,7 +274,7 @@ OpaqueResultTypeRequest::evaluate(Evaluator &evaluator,
 
         ctx.Diags.diagnose(repr->getLoc(),
                            diag::opaque_type_in_parameter,
-                           interfaceType);
+                           false, interfaceType);
         return true;
       }
     }
@@ -533,12 +533,9 @@ static Type formExtensionInterfaceType(
     auto *protoTy = paramProtoTy->getBaseType();
     type = protoTy;
 
-    auto *depMemTy = DependentMemberType::get(
+    paramProtoTy->getRequirements(
         protoTy->getDecl()->getSelfInterfaceType(),
-        paramProtoTy->getAssocType());
-    sameTypeReqs.emplace_back(
-      RequirementKind::SameType, depMemTy,
-      paramProtoTy->getArgumentType());
+        sameTypeReqs);
   }
 
   Type parentType = type->getNominalParent();

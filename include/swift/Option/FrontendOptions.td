@@ -296,10 +296,6 @@ def enable_experimental_eager_clang_module_diagnostics :
   Flag<["-"], "enable-experimental-eager-clang-module-diagnostics">,
   HelpText<"Enable experimental eager diagnostics reporting on the importability of all referenced C, C++, and Objective-C libraries">;
 
-def enable_experimental_opaque_parameters :
-  Flag<["-"], "enable-experimental-opaque-parameters">,
-  HelpText<"Enable experimental support for opaque parameters">;
-
 def enable_experimental_pairwise_build_block :
   Flag<["-"], "enable-experimental-pairwise-build-block">,
   HelpText<"Enable experimental pairwise 'buildBlock' for result builders">;
@@ -517,6 +513,14 @@ def enable_explicit_existential_types :
 def enable_parameterized_protocol_types :
   Flag<["-"], "enable-parameterized-protocol-types">,
   HelpText<"Enable experimental support for primary associated types and parameterized protocols">;
+
+def enable_experimental_opened_existential_types :
+  Flag<["-"], "enable-experimental-opened-existential-types">,
+  HelpText<"Enable experimental support for implicitly opened existentials">;
+
+def disable_experimental_opened_existential_types :
+  Flag<["-"], "disble-experimental-opened-existential-types">,
+  HelpText<"Disable experimental support for implicitly opened existentials">;
 
 def enable_deserialization_recovery :
   Flag<["-"], "enable-deserialization-recovery">,

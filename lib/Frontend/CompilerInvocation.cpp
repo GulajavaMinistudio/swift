@@ -445,14 +445,18 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   Opts.EnableExperimentalNamedOpaqueTypes |=
       Args.hasArg(OPT_enable_experimental_named_opaque_types);
 
-  Opts.EnableExperimentalOpaqueParameters |=
-      Args.hasArg(OPT_enable_experimental_opaque_parameters);
-
-  Opts.EnableExplicitExistentialTypes |=
-      Args.hasArg(OPT_enable_explicit_existential_types);
-
   Opts.EnableParameterizedProtocolTypes |=
       Args.hasArg(OPT_enable_parameterized_protocol_types);
+
+  Opts.EnableOpenedExistentialTypes =
+    Args.hasFlag(OPT_enable_experimental_opened_existential_types,
+                 OPT_disable_experimental_opened_existential_types,
+                 false);
+
+  // SwiftOnoneSupport produces different symbols when opening existentials,
+  // so disable it.
+  if (FrontendOpts.ModuleName == SWIFT_ONONE_SUPPORT)
+    Opts.EnableOpenedExistentialTypes = false;
 
   Opts.EnableExperimentalDistributed |=
     Args.hasArg(OPT_enable_experimental_distributed);

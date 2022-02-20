@@ -112,7 +112,7 @@ Solution::computeSubstitutions(GenericSignature sig,
 // On Windows and 32-bit platforms we need to force "Int" to actually be
 // re-imported as "Int." This is needed because otherwise, we cannot round-trip
 // "Int" and "UInt". For example, on Windows, "Int" will be imported into C++ as
-// "long long" and then back into Swift as "Int64" not "Int." 
+// "long long" and then back into Swift as "Int64" not "Int."
 static ValueDecl *rewriteIntegerTypes(SubstitutionMap subst, ValueDecl *oldDecl,
                                       AbstractFunctionDecl *newDecl) {
   auto originalFnSubst = cast<AbstractFunctionDecl>(oldDecl)
@@ -172,6 +172,7 @@ static ValueDecl *rewriteIntegerTypes(SubstitutionMap subst, ValueDecl *oldDecl,
         newFnDecl->setSelfAccessKind(func->getSelfAccessKind());
         newFnDecl->setSelfIndex(func->getSelfIndex());
       }
+
       return newFnDecl;
     }
   }
@@ -179,44 +180,167 @@ static ValueDecl *rewriteIntegerTypes(SubstitutionMap subst, ValueDecl *oldDecl,
   return newDecl;
 }
 
-// Derive a concrete function type for fdecl by substituting the generic args
-// and use that to derive the corresponding function type and parameter list.
-static std::pair<FunctionType *, ParameterList *>
-substituteFunctionTypeAndParamList(ASTContext &ctx, AbstractFunctionDecl *fdecl,
-                                   SubstitutionMap subst) {
-  FunctionType *newFnType = nullptr;
-  // Create a new ParameterList with the substituted type.
-  if (auto oldFnType = dyn_cast<GenericFunctionType>(
-          fdecl->getInterfaceType().getPointer())) {
-    newFnType = oldFnType->substGenericArgs(subst);
+static Expr *createSelfExpr(FuncDecl *fnDecl) {
+  ASTContext &ctx = fnDecl->getASTContext();
+
+  auto selfDecl = fnDecl->getImplicitSelfDecl();
+  auto selfRefExpr = new (ctx) DeclRefExpr(selfDecl, DeclNameLoc(),
+                                           /*implicit*/ true);
+
+  if (!fnDecl->isMutating()) {
+    selfRefExpr->setType(selfDecl->getInterfaceType());
+    return selfRefExpr;
+  }
+  selfRefExpr->setType(LValueType::get(selfDecl->getInterfaceType()));
+
+  auto inoutSelfExpr = new (ctx) InOutExpr(
+      SourceLoc(), selfRefExpr,
+      fnDecl->mapTypeIntoContext(selfDecl->getValueInterfaceType()),
+      /*isImplicit*/ true);
+  inoutSelfExpr->setType(InOutType::get(selfDecl->getInterfaceType()));
+  return inoutSelfExpr;
+}
+
+// Synthesize a thunk body for the function created in
+// "addThunkForDependentTypes". This will just cast all params and forward them
+// along to the specialized function. It will also cast the result before
+// returning it.
+static std::pair<BraceStmt *, bool>
+synthesizeDependentTypeThunkParamForwarding(AbstractFunctionDecl *afd, void *context) {
+  ASTContext &ctx = afd->getASTContext();
+
+  auto thunkDecl = cast<FuncDecl>(afd);
+  auto specializedFuncDecl = static_cast<FuncDecl *>(context);
+
+  SmallVector<Argument, 8> forwardingParams;
+  unsigned paramIndex = 0;
+  for (auto param : *thunkDecl->getParameters()) {
+    if (isa<MetatypeType>(param->getType().getPointer())) {
+      paramIndex++;
+      continue;
+    }
+
+    Expr *paramRefExpr = new (ctx) DeclRefExpr(param, DeclNameLoc(),
+                                               /*Implicit=*/true);
+    paramRefExpr->setType(param->getType());
+
+    if (param->isInOut()) {
+      paramRefExpr->setType(LValueType::get(param->getType()));
+
+      paramRefExpr = new (ctx) InOutExpr(
+          SourceLoc(), paramRefExpr, param->getType(), /*isImplicit*/ true);
+      paramRefExpr->setType(InOutType::get(param->getType()));
+    }
+
+    auto specParamTy = specializedFuncDecl->getParameters()->get(paramIndex)->getType();
+
+    Expr *argExpr = nullptr;
+    if (specParamTy->isEqual(param->getType())) {
+      argExpr = paramRefExpr;
+    } else {
+      argExpr = ForcedCheckedCastExpr::createImplicit(ctx, paramRefExpr,
+                                                      specParamTy);
+    }
+
+    forwardingParams.push_back(Argument(SourceLoc(), Identifier(), argExpr));
+    paramIndex++;
+  }
+
+  Expr *specializedFuncDeclRef = new (ctx) DeclRefExpr(ConcreteDeclRef(specializedFuncDecl),
+                                                       DeclNameLoc(), true);
+  specializedFuncDeclRef->setType(specializedFuncDecl->getInterfaceType());
+
+  if (specializedFuncDecl->isInstanceMember()) {
+    auto selfExpr = createSelfExpr(thunkDecl);
+    auto *memberCall = DotSyntaxCallExpr::create(ctx, specializedFuncDeclRef, SourceLoc(), selfExpr);
+    memberCall->setThrows(false);
+    auto resultType = specializedFuncDecl->getInterfaceType()->getAs<FunctionType>()->getResult();
+    specializedFuncDeclRef = memberCall;
+    specializedFuncDeclRef->setType(resultType);
+  } else if (specializedFuncDecl->isStatic()) {
+    auto resultType = specializedFuncDecl->getInterfaceType()->getAs<FunctionType>()->getResult();
+    auto selfType = cast<NominalTypeDecl>(thunkDecl->getDeclContext()->getAsDecl())->getDeclaredInterfaceType();
+    auto selfTypeExpr = TypeExpr::createImplicit(selfType, ctx);
+    auto *memberCall = DotSyntaxCallExpr::create(ctx, specializedFuncDeclRef, SourceLoc(), selfTypeExpr);
+    memberCall->setThrows(false);
+    specializedFuncDeclRef = memberCall;
+    specializedFuncDeclRef->setType(resultType);
+  }
+
+  auto argList = ArgumentList::createImplicit(ctx, forwardingParams);
+  auto *specializedFuncCallExpr = CallExpr::createImplicit(ctx, specializedFuncDeclRef, argList);
+  specializedFuncCallExpr->setType(specializedFuncDecl->getResultInterfaceType());
+  specializedFuncCallExpr->setThrows(false);
+
+  Expr *resultExpr = nullptr;
+  if (specializedFuncCallExpr->getType()->isEqual(thunkDecl->getResultInterfaceType())) {
+    resultExpr = specializedFuncCallExpr;
   } else {
-    newFnType = cast<FunctionType>(fdecl->getInterfaceType().getPointer());
+    resultExpr = ForcedCheckedCastExpr::createImplicit(
+        ctx, specializedFuncCallExpr, thunkDecl->getResultInterfaceType());
   }
-  // The constructor type is a function type as follows:
-  //   (CType.Type) -> (Generic) -> CType
-  // And a method's function type is as follows:
-  //   (inout CType) -> (Generic) -> Void
-  // In either case, we only want the result of that function type because that
-  // is the function type with the generic params that need to be substituted:
-  //   (Generic) -> CType
-  if (isa<ConstructorDecl>(fdecl) || fdecl->isInstanceMember() ||
-      fdecl->isStatic())
-    newFnType = cast<FunctionType>(newFnType->getResult().getPointer());
-  SmallVector<ParamDecl *, 4> newParams;
-  unsigned i = 0;
 
-  for (auto paramTy : newFnType->getParams()) {
-    auto *oldParamDecl = fdecl->getParameters()->get(i);
-    auto *newParamDecl =
-        ParamDecl::cloneWithoutType(fdecl->getASTContext(), oldParamDecl);
-    newParamDecl->setInterfaceType(paramTy.getParameterType());
-    newParams.push_back(newParamDecl);
-    (void)++i;
+  auto returnStmt = new (ctx)
+      ReturnStmt(SourceLoc(), resultExpr, /*implicit=*/true);
+  auto body = BraceStmt::create(ctx, SourceLoc(), {returnStmt}, SourceLoc(),
+                                /*implicit=*/true);
+  return {body, /*isTypeChecked=*/true};
+}
+
+// Create a thunk to map functions with dependent types to their specialized
+// version. For example, create a thunk with type (Any) -> Any to wrap a
+// specialized function template with type (Dependent<T>) -> Dependent<T>.
+static ValueDecl *addThunkForDependentTypes(FuncDecl *oldDecl,
+                                            FuncDecl *newDecl) {
+  bool updatedAnyParams = false;
+
+  SmallVector<ParamDecl *, 4> fixedParameters;
+  unsigned parameterIndex = 0;
+  for (auto *newFnParam : *newDecl->getParameters()) {
+    // If the un-specialized function had a parameter with type "Any" preserve
+    // that parameter. Otherwise, use the new function parameter.
+    auto oldParamType = oldDecl->getParameters()->get(parameterIndex)->getType();
+    if (oldParamType->isEqual(newDecl->getASTContext().TheAnyType)) {
+      updatedAnyParams = true;
+      auto newParam =
+          ParamDecl::cloneWithoutType(newDecl->getASTContext(), newFnParam);
+      newParam->setInterfaceType(oldParamType);
+      fixedParameters.push_back(newParam);
+    } else {
+      fixedParameters.push_back(newFnParam);
+    }
+    parameterIndex++;
   }
-  auto *newParamList =
-      ParameterList::create(ctx, SourceLoc(), newParams, SourceLoc());
 
-  return {newFnType, newParamList};
+  // If we don't need this thunk, bail out.
+  if (!updatedAnyParams &&
+      !oldDecl->getResultInterfaceType()->isEqual(
+          oldDecl->getASTContext().TheAnyType))
+    return newDecl;
+
+  auto fixedParams =
+      ParameterList::create(newDecl->getASTContext(), fixedParameters);
+
+  Type fixedResultType;
+  if (oldDecl->getResultInterfaceType()->isEqual(
+          oldDecl->getASTContext().TheAnyType))
+      fixedResultType = oldDecl->getASTContext().TheAnyType;
+  else
+    fixedResultType = newDecl->getResultInterfaceType();
+
+  // We have to rebuild the whole function.
+  auto newFnDecl = FuncDecl::createImplicit(
+      newDecl->getASTContext(), newDecl->getStaticSpelling(),
+      newDecl->getName(), newDecl->getNameLoc(), newDecl->hasAsync(),
+      newDecl->hasThrows(), /*genericParams=*/nullptr, fixedParams,
+      fixedResultType, newDecl->getDeclContext());
+  newFnDecl->copyFormalAccessFrom(newDecl);
+  newFnDecl->setBodySynthesizer(synthesizeDependentTypeThunkParamForwarding, newDecl);
+  newFnDecl->setSelfAccessKind(newDecl->getSelfAccessKind());
+  if (newDecl->isStatic()) newFnDecl->setStatic();
+  newFnDecl->getAttrs().add(
+      new (newDecl->getASTContext()) TransparentAttr(/*IsImplicit=*/true));
+  return newFnDecl;
 }
 
 // Synthesizes the body of a thunk that takes extra metatype arguments and
@@ -237,15 +361,41 @@ synthesizeForwardingThunkBody(AbstractFunctionDecl *afd, void *context) {
     if (isa<MetatypeType>(param->getType().getPointer())) {
       continue;
     }
-    auto paramRefExpr = new (ctx) DeclRefExpr(param, DeclNameLoc(),
-                                             /*Implicit=*/true);
+    Expr *paramRefExpr = new (ctx) DeclRefExpr(param, DeclNameLoc(),
+                                               /*Implicit=*/true);
     paramRefExpr->setType(param->getType());
+
+    if (param->isInOut()) {
+      paramRefExpr->setType(LValueType::get(param->getType()));
+
+      paramRefExpr = new (ctx) InOutExpr(
+          SourceLoc(), paramRefExpr, param->getType(), /*isImplicit*/ true);
+      paramRefExpr->setType(InOutType::get(param->getType()));
+    }
+
     forwardingParams.push_back(Argument(SourceLoc(), Identifier(), paramRefExpr));
   }
 
-  auto *specializedFuncDeclRef = new (ctx) DeclRefExpr(ConcreteDeclRef(specializedFuncDecl),
+  Expr *specializedFuncDeclRef = new (ctx) DeclRefExpr(ConcreteDeclRef(specializedFuncDecl),
                                                 DeclNameLoc(), true);
   specializedFuncDeclRef->setType(specializedFuncDecl->getInterfaceType());
+
+  if (specializedFuncDecl->isInstanceMember()) {
+    auto selfExpr = createSelfExpr(thunkDecl);
+    auto *memberCall = DotSyntaxCallExpr::create(ctx, specializedFuncDeclRef, SourceLoc(), selfExpr);
+    memberCall->setThrows(false);
+    auto resultType = specializedFuncDecl->getInterfaceType()->getAs<FunctionType>()->getResult();
+    specializedFuncDeclRef = memberCall;
+    specializedFuncDeclRef->setType(resultType);
+  } else if (specializedFuncDecl->isStatic()) {
+    auto resultType = specializedFuncDecl->getInterfaceType()->getAs<FunctionType>()->getResult();
+    auto selfType = cast<NominalTypeDecl>(thunkDecl->getDeclContext()->getAsDecl())->getDeclaredInterfaceType();
+    auto selfTypeExpr = TypeExpr::createImplicit(selfType, ctx);
+    auto *memberCall = DotSyntaxCallExpr::create(ctx, specializedFuncDeclRef, SourceLoc(), selfTypeExpr);
+    memberCall->setThrows(false);
+    specializedFuncDeclRef = memberCall;
+    specializedFuncDeclRef->setType(resultType);
+  }
 
   auto argList = ArgumentList::createImplicit(ctx, forwardingParams);
   auto *specializedFuncCallExpr = CallExpr::createImplicit(ctx, specializedFuncDeclRef, argList);
@@ -267,16 +417,56 @@ static ValueDecl *generateThunkForExtraMetatypes(SubstitutionMap subst,
   // specialization, which are no longer now that we've specialized
   // this function. Create a thunk that only forwards the original
   // parameters along to the clang function.
-  auto thunkTypeAndParamList = substituteFunctionTypeAndParamList(oldDecl->getASTContext(),
-                                                                  oldDecl, subst);
+  SmallVector<ParamDecl *, 4> newParams;
+
+  for (auto param : *newDecl->getParameters()) {
+    auto *newParamDecl = ParamDecl::clone(newDecl->getASTContext(), param);
+    newParams.push_back(newParamDecl);
+  }
+
+  auto originalFnSubst = cast<AbstractFunctionDecl>(oldDecl)
+                             ->getInterfaceType()
+                             ->getAs<GenericFunctionType>()
+                             ->substGenericArgs(subst);
+  // The constructor type is a function type as follows:
+  //   (CType.Type) -> (Generic) -> CType
+  // And a method's function type is as follows:
+  //   (inout CType) -> (Generic) -> Void
+  // In either case, we only want the result of that function type because that
+  // is the function type with the generic params that need to be substituted:
+  //   (Generic) -> CType
+  if (isa<ConstructorDecl>(oldDecl) || oldDecl->isInstanceMember() ||
+      oldDecl->isStatic())
+    originalFnSubst = cast<FunctionType>(originalFnSubst->getResult().getPointer());
+
+  for (auto paramTy : originalFnSubst->getParams()) {
+    if (!paramTy.getPlainType()->is<MetatypeType>())
+      continue;
+
+    auto dc = newDecl->getDeclContext();
+    auto paramVarDecl =
+        new (newDecl->getASTContext()) ParamDecl(
+            SourceLoc(), SourceLoc(), Identifier(), SourceLoc(),
+            newDecl->getASTContext().getIdentifier("_"), dc);
+    paramVarDecl->setInterfaceType(paramTy.getPlainType());
+    paramVarDecl->setSpecifier(ParamSpecifier::Default);
+    newParams.push_back(paramVarDecl);
+  }
+
+  auto *newParamList =
+      ParameterList::create(newDecl->getASTContext(), SourceLoc(), newParams, SourceLoc());
+
   auto thunk = FuncDecl::createImplicit(
-      oldDecl->getASTContext(), oldDecl->getStaticSpelling(), oldDecl->getName(),
-      oldDecl->getNameLoc(), oldDecl->hasAsync(), oldDecl->hasThrows(),
-      /*genericParams=*/nullptr, thunkTypeAndParamList.second,
-      thunkTypeAndParamList.first->getResult(), oldDecl->getDeclContext());
-  thunk->copyFormalAccessFrom(oldDecl);
+      newDecl->getASTContext(), newDecl->getStaticSpelling(), oldDecl->getName(),
+      newDecl->getNameLoc(), newDecl->hasAsync(), newDecl->hasThrows(),
+      /*genericParams=*/nullptr, newParamList,
+      newDecl->getResultInterfaceType(), newDecl->getDeclContext());
+  thunk->copyFormalAccessFrom(newDecl);
   thunk->setBodySynthesizer(synthesizeForwardingThunkBody, newDecl);
-  thunk->setSelfAccessKind(oldDecl->getSelfAccessKind());
+  thunk->setSelfAccessKind(newDecl->getSelfAccessKind());
+  if (newDecl->isStatic()) thunk->setStatic();
+  thunk->getAttrs().add(
+      new (newDecl->getASTContext()) TransparentAttr(/*IsImplicit=*/true));
 
   return thunk;
 }
@@ -324,6 +514,10 @@ static ConcreteDeclRef getCXXFunctionTemplateSpecialization(SubstitutionMap subs
     if (!subst.empty()) {
       newDecl = rewriteIntegerTypes(subst, decl, fn);
     }
+  }
+
+  if (auto fn = dyn_cast<FuncDecl>(decl)) {
+    newDecl = addThunkForDependentTypes(fn, cast<FuncDecl>(newDecl));
   }
 
   if (auto fn = dyn_cast<FuncDecl>(decl)) {
@@ -977,8 +1171,16 @@ namespace {
       // Dig out the base type.
       Type baseTy = cs.getType(base);
 
-      // Look through lvalues.
+      // Look through inout.
       bool isLValue = false;
+      InOutExpr *origInOutBase = dyn_cast<InOutExpr>(base);
+      if (origInOutBase) {
+        base = origInOutBase->getSubExpr();
+        baseTy = baseTy->getInOutObjectType();
+        isLValue = true;
+      }
+
+      // Look through lvalues.
       if (auto lvalueTy = baseTy->getAs<LValueType>()) {
         isLValue = true;
         baseTy = lvalueTy->getObjectType();
@@ -996,7 +1198,7 @@ namespace {
       // If the base was an lvalue but it will only be treated as an
       // rvalue, turn the base into an rvalue now. This results in
       // better SILGen.
-      if (isLValue &&
+      if (isLValue && !origInOutBase &&
           (isNonMutatingMember(member) ||
            member->getDeclContext()->getDeclaredInterfaceType()
              ->hasReferenceSemantics())) {
@@ -1030,12 +1232,20 @@ namespace {
       // Record the opened existential.
       OpenedExistentials.push_back({archetype, base, archetypeVal, depth});
 
-      return archetypeVal;
+      // Re-apply inout if needed.
+      Expr *resultExpr = archetypeVal;
+      if (origInOutBase) {
+        resultExpr = new (ctx) InOutExpr(
+            origInOutBase->getLoc(), resultExpr, opaqueType->getRValueType());
+        cs.cacheType(resultExpr);
+      }
+
+      return resultExpr;
     }
 
-    /// Trying to close the active existential, if there is one.
+    /// Try to close the innermost active existential, if there is one.
     bool closeExistential(Expr *&result, ConstraintLocatorBuilder locator,
-                          bool force=false) {
+                          bool force) {
       if (OpenedExistentials.empty())
         return false;
 
@@ -1075,6 +1285,18 @@ namespace {
 
       OpenedExistentials.pop_back();
       return true;
+    }
+
+    /// Close any active existentials.
+    bool closeExistentials(Expr *&result, ConstraintLocatorBuilder locator,
+                           bool force=false) {
+      bool closedAny = false;
+      while (closeExistential(result, locator, force)) {
+        force = false;
+        closedAny = true;
+      }
+
+      return closedAny;
     }
 
     /// Determines if a partially-applied member reference should be
@@ -1598,7 +1820,7 @@ namespace {
 
         cs.setType(ref, refType);
 
-        closeExistential(ref, locator, /*force=*/openedExistential);
+        closeExistentials(ref, locator, /*force=*/openedExistential);
 
         // If this attribute was inferred based on deprecated Swift 3 rules,
         // complain.
@@ -1650,7 +1872,7 @@ namespace {
         cs.setType(memberRefExpr, refTy->castTo<FunctionType>()->getResult());
 
         Expr *result = memberRefExpr;
-        closeExistential(result, locator);
+        closeExistentials(result, locator);
 
         // If the property is of dynamic 'Self' type, wrap an implicit
         // conversion around the resulting expression, with the destination
@@ -1851,7 +2073,7 @@ namespace {
                                                               ref,
                                                               cs.getType(ref));
         cs.cacheType(result);
-        closeExistential(result, locator, /*force=*/openedExistential);
+        closeExistentials(result, locator, /*force=*/openedExistential);
         return forceUnwrapIfExpected(result, memberLocator);
       } else {
         assert((!baseIsInstance || member->isInstanceMember()) &&
@@ -2155,7 +2377,7 @@ namespace {
                && "open existential archetype in AnyObject subscript type?");
         cs.setType(subscriptExpr, resultTy);
         Expr *result = subscriptExpr;
-        closeExistential(result, locator);
+        closeExistentials(result, locator);
         return result;
       }
 
@@ -2197,7 +2419,7 @@ namespace {
                      : fullSubscriptTy->getResult());
 
       Expr *result = subscriptExpr;
-      closeExistential(result, locator);
+      closeExistentials(result, locator);
 
       // If the element is of dynamic 'Self' type, wrap an implicit conversion
       // around the resulting expression, with the destination type having
@@ -5921,6 +6143,23 @@ ArgumentList *ExprRewriter::coerceCallArguments(
       cs.cacheExprTypes(argExpr);
     }
 
+    auto argLoc = getArgLocator(argIdx, paramIdx, param.getParameterFlags());
+
+    // If the argument is an existential type that has been opened, perform
+    // the open operation.
+    if (argType->getInOutObjectType()->isAnyExistentialType() &&
+        paramType->hasOpenedExistential()) {
+      // FIXME: Look for an opened existential and use it. We need to
+      // know how far out we need to go to close the existentials. Huh.
+      auto knownOpened = solution.OpenedExistentialTypes.find(
+          cs.getConstraintLocator(argLoc));
+      if (knownOpened != solution.OpenedExistentialTypes.end()) {
+        argExpr = openExistentialReference(
+            argExpr, knownOpened->second, callee.getDecl());
+        argType = cs.getType(argExpr);
+      }
+    }
+
     if (argRequiresAutoClosureExpr(param, argType)) {
       assert(!param.isInOut());
 
@@ -5929,8 +6168,6 @@ ArgumentList *ExprRewriter::coerceCallArguments(
       //   - impilict autoclosure is created to wrap argument expression
       //   - new types are propagated to constraint system
       auto *closureType = param.getPlainType()->castTo<FunctionType>();
-
-      auto argLoc = getArgLocator(argIdx, paramIdx, param.getParameterFlags());
 
       argExpr = coerceToType(
           argExpr, closureType->getResult(),
@@ -5954,9 +6191,7 @@ ArgumentList *ExprRewriter::coerceCallArguments(
 
       convertedArg = cs.buildAutoClosureExpr(argExpr, closureType, dc);
     } else {
-      convertedArg = coerceToType(
-          argExpr, paramType,
-          getArgLocator(argIdx, paramIdx, param.getParameterFlags()));
+      convertedArg = coerceToType(argExpr, paramType, argLoc);
     }
 
     // Perform the wrapped value placeholder injection
@@ -7692,8 +7927,8 @@ Expr *ExprRewriter::finishApply(ApplyExpr *apply, Type openedType,
             result, covariantResultType));
     }
 
-    // Try closing the existential, if there is one.
-    closeExistential(result, locator);
+    // Try closing existentials, if there are any.
+    closeExistentials(result, locator);
 
     // We may also need to force the result for an IUO. We don't apply this on
     // SelfApplyExprs, as the force unwraps should be inserted at the result of
