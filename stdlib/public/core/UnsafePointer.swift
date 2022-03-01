@@ -316,10 +316,10 @@ public struct UnsafePointer<Pointee>: _Pointer {
     _debugPrecondition(
       Int(bitPattern: .init(_rawValue)) & (MemoryLayout<T>.alignment-1) == 0 &&
       ( count == 1 ||
-        MemoryLayout<Pointee>.stride > MemoryLayout<T>.stride
-        ? MemoryLayout<Pointee>.stride % MemoryLayout<T>.stride == 0
-        : MemoryLayout<T>.stride % MemoryLayout<Pointee>.stride == 0 )
-    )
+        ( MemoryLayout<Pointee>.stride > MemoryLayout<T>.stride
+          ? MemoryLayout<Pointee>.stride % MemoryLayout<T>.stride == 0
+          : MemoryLayout<T>.stride % MemoryLayout<Pointee>.stride == 0
+    )))
     let binding = Builtin.bindMemory(_rawValue, count._builtinWordValue, T.self)
     defer { Builtin.rebindMemory(_rawValue, binding) }
     return try body(.init(_rawValue))
@@ -352,6 +352,23 @@ public struct UnsafePointer<Pointee>: _Pointer {
     unsafeAddress {
       return self + i
     }
+  }
+
+  /// Obtain a pointer to the stored property referred to by a key path.
+  ///
+  /// If the key path represents a computed property,
+  /// this function will return `nil`.
+  ///
+  /// - Parameter property: A `KeyPath` whose `Root` is `Pointee`.
+  /// - Returns: A pointer to the stored property represented
+  ///            by the key path, or `nil`.
+  @inlinable
+  @_alwaysEmitIntoClient
+  public func pointer<Property>(
+    to property: KeyPath<Pointee, Property>
+  ) -> UnsafePointer<Property>? {
+    guard let o = property._storedInlineOffset else { return nil }
+    return .init(Builtin.gepRaw_Word(_rawValue, o._builtinWordValue))
   }
 
   @inlinable // unsafe-performance
@@ -1003,10 +1020,10 @@ public struct UnsafeMutablePointer<Pointee>: _Pointer {
     _debugPrecondition(
       Int(bitPattern: .init(_rawValue)) & (MemoryLayout<T>.alignment-1) == 0 &&
       ( count == 1 ||
-        MemoryLayout<Pointee>.stride > MemoryLayout<T>.stride
-        ? MemoryLayout<Pointee>.stride % MemoryLayout<T>.stride == 0
-        : MemoryLayout<T>.stride % MemoryLayout<Pointee>.stride == 0 )
-    )
+        ( MemoryLayout<Pointee>.stride > MemoryLayout<T>.stride
+          ? MemoryLayout<Pointee>.stride % MemoryLayout<T>.stride == 0
+          : MemoryLayout<T>.stride % MemoryLayout<Pointee>.stride == 0
+    )))
     let binding = Builtin.bindMemory(_rawValue, count._builtinWordValue, T.self)
     defer { Builtin.rebindMemory(_rawValue, binding) }
     return try body(.init(_rawValue))
@@ -1049,6 +1066,40 @@ public struct UnsafeMutablePointer<Pointee>: _Pointer {
     nonmutating unsafeMutableAddress {
       return self + i
     }
+  }
+
+  /// Obtain a pointer to the stored property referred to by a key path.
+  ///
+  /// If the key path represents a computed property,
+  /// this function will return `nil`.
+  ///
+  /// - Parameter property: A `KeyPath` whose `Root` is `Pointee`.
+  /// - Returns: A pointer to the stored property represented
+  ///            by the key path, or `nil`.
+  @inlinable
+  @_alwaysEmitIntoClient
+  public func pointer<Property>(
+    to property: KeyPath<Pointee, Property>
+  ) -> UnsafePointer<Property>? {
+    guard let o = property._storedInlineOffset else { return nil }
+    return .init(Builtin.gepRaw_Word(_rawValue, o._builtinWordValue))
+  }
+
+  /// Obtain a mutable pointer to the stored property referred to by a key path.
+  ///
+  /// If the key path represents a computed property,
+  /// this function will return `nil`.
+  ///
+  /// - Parameter property: A `WritableKeyPath` whose `Root` is `Pointee`.
+  /// - Returns: A mutable pointer to the stored property represented
+  ///            by the key path, or `nil`.
+  @inlinable
+  @_alwaysEmitIntoClient
+  public func pointer<Property>(
+    to property: WritableKeyPath<Pointee, Property>
+  ) -> UnsafeMutablePointer<Property>? {
+    guard let o = property._storedInlineOffset else { return nil }
+    return .init(Builtin.gepRaw_Word(_rawValue, o._builtinWordValue))
   }
 
   @inlinable // unsafe-performance
