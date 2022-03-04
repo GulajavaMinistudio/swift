@@ -316,8 +316,6 @@ public:
 
   void visitUnsafeInheritExecutorAttr(UnsafeInheritExecutorAttr *attr);
 
-  void visitPrimaryAssociatedTypeAttr(PrimaryAssociatedTypeAttr *attr);
-
   void checkBackDeployAttrs(ArrayRef<BackDeployAttr *> Attrs);
 };
 
@@ -940,7 +938,7 @@ void AttributeChecker::visitAccessControlAttr(AccessControlAttr *attr) {
   if (attr->getAccess() == AccessLevel::Open) {
     auto classDecl = dyn_cast<ClassDecl>(D);
     if (!(classDecl && !classDecl->isActor()) &&
-        !D->isPotentiallyOverridable() &&
+        !D->isSyntacticallyOverridable() &&
         !attr->isInvalid()) {
       diagnose(attr->getLocation(), diag::access_control_open_bad_decl)
         .fixItReplace(attr->getRange(), "public");
@@ -3268,15 +3266,30 @@ void AttributeChecker::visitPropertyWrapperAttr(PropertyWrapperAttr *attr) {
 
 void AttributeChecker::visitResultBuilderAttr(ResultBuilderAttr *attr) {
   auto *nominal = dyn_cast<NominalTypeDecl>(D);
+  auto &ctx = D->getASTContext();
   SmallVector<ValueDecl *, 4> potentialMatches;
   bool supportsBuildBlock = TypeChecker::typeSupportsBuilderOp(
-      nominal->getDeclaredType(), nominal, D->getASTContext().Id_buildBlock,
+      nominal->getDeclaredType(), nominal, ctx.Id_buildBlock,
       /*argLabels=*/{}, &potentialMatches);
+  bool isBuildPartialBlockFeatureEnabled =
+      ctx.LangOpts.EnableExperimentalPairwiseBuildBlock;
+  bool supportsBuildPartialBlock = isBuildPartialBlockFeatureEnabled &&
+      TypeChecker::typeSupportsBuilderOp(
+          nominal->getDeclaredType(), nominal,
+          ctx.Id_buildPartialBlock,
+          /*argLabels=*/{ctx.Id_first}, &potentialMatches) &&
+      TypeChecker::typeSupportsBuilderOp(
+          nominal->getDeclaredType(), nominal,
+          ctx.Id_buildPartialBlock,
+          /*argLabels=*/{ctx.Id_accumulated, ctx.Id_next}, &potentialMatches);
 
-  if (!supportsBuildBlock) {
+  if (!supportsBuildBlock && !supportsBuildPartialBlock) {
     {
       auto diag = diagnose(
-          nominal->getLoc(), diag::result_builder_static_buildblock);
+          nominal->getLoc(),
+          isBuildPartialBlockFeatureEnabled
+              ? diag::result_builder_static_buildblock_or_buildpartialblock
+              : diag::result_builder_static_buildblock);
 
       // If there were no close matches, propose adding a stub.
       SourceLoc buildInsertionLoc;
@@ -3496,7 +3509,7 @@ void AttributeChecker::checkBackDeployAttrs(ArrayRef<BackDeployAttr *> Attrs) {
       continue;
 
     // Back deployment isn't compatible with dynamic dispatch.
-    if (VD->isPotentiallyOverridable() && !VD->isFinal()) {
+    if (VD->isSyntacticallyOverridable()) {
       diagnose(Attr->getLocation(), diag::attr_incompatible_with_non_final,
                Attr, D->getDescriptiveKind());
       continue;
@@ -5892,10 +5905,6 @@ void AttributeChecker::visitUnsafeInheritExecutorAttr(
   if (!fn->isAsyncContext()) {
     diagnose(attr->getLocation(), diag::inherits_executor_without_async);
   }
-}
-
-void AttributeChecker::visitPrimaryAssociatedTypeAttr(
-    PrimaryAssociatedTypeAttr *attr) {
 }
 
 namespace {

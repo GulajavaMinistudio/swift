@@ -546,6 +546,12 @@ namespace {
         return importFunctionPointerLikeType(*type, pointeeType);
       }
 
+      // Currently, we can't generate thunks for references to dependent types
+      // because there's no way to cast without a copy (without writing the SIL
+      // manually).
+      if (pointeeQualType->isDependentType())
+        return Type();
+
       if (Impl.isOverAligned(pointeeQualType)) {
         return importOverAlignedFunctionPointerLikeType(*type, Impl);
       }
@@ -1967,7 +1973,8 @@ ParameterList *ClangImporter::Implementation::importFunctionParameterList(
           cast<clang::TemplateTypeParmType>(paramTy->getPointeeType());
       swiftParamTy =
           findGenericTypeInGenericDecls(templateParamType, genericParams);
-      isInOut = true;
+      if (!paramTy->getPointeeType().isConstQualified())
+        isInOut = true;
     } else if (auto *templateParamType =
                    dyn_cast<clang::TemplateTypeParmType>(paramTy)) {
       swiftParamTy =
@@ -1975,7 +1982,8 @@ ParameterList *ClangImporter::Implementation::importFunctionParameterList(
     } else {
       if (auto refType = dyn_cast<clang::ReferenceType>(paramTy)) {
         paramTy = refType->getPointeeType();
-        isInOut = true;
+        if (!paramTy.isConstQualified())
+          isInOut = true;
       }
       auto importedType = importType(paramTy, importKind, allowNSUIntegerAsInt,
                                      Bridgeability::Full, OptionalityOfParam);
