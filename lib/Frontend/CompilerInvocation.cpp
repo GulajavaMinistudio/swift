@@ -914,6 +914,7 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
       Args.hasArg(OPT_disable_subst_sil_function_types);
 
   Opts.RequirementMachineProtocolSignatures = RequirementMachineMode::Verify;
+  Opts.RequirementMachineAbstractSignatures = RequirementMachineMode::Verify;
 
   if (auto A = Args.getLastArg(OPT_requirement_machine_protocol_signatures_EQ)) {
     auto value = llvm::StringSwitch<Optional<RequirementMachineMode>>(A->getValue())
@@ -1003,6 +1004,9 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   if (Args.hasArg(OPT_disable_requirement_machine_concrete_contraction))
     Opts.EnableRequirementMachineConcreteContraction = false;
+
+  if (Args.hasArg(OPT_enable_requirement_machine_loop_normalization))
+    Opts.EnableRequirementMachineLoopNormalization = true;
 
   Opts.DumpTypeWitnessSystems = Args.hasArg(OPT_dump_type_witness_systems);
 
