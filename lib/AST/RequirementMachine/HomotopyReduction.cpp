@@ -65,23 +65,29 @@
 using namespace swift;
 using namespace rewriting;
 
-/// Recompute Useful, RulesInEmptyContext, ProjectionCount and DecomposeCount
-/// if needed.
+/// Recompute various cached values if needed.
 void RewriteLoop::recompute(const RewriteSystem &system) {
   if (!Dirty)
     return;
   Dirty = 0;
 
+  Useful = 0;
   ProjectionCount = 0;
   DecomposeCount = 0;
-  Useful = false;
+  HasConcreteTypeAliasRule = 0;
 
   RewritePathEvaluator evaluator(Basepoint);
   for (auto step : Path) {
     switch (step.Kind) {
-    case RewriteStep::Rule:
+    case RewriteStep::Rule: {
       Useful |= (!step.isInContext() && !evaluator.isInContext());
+
+      const auto &rule = system.getRule(step.getRuleID());
+      if (rule.isDerivedFromConcreteProtocolTypeAliasRule())
+        HasConcreteTypeAliasRule = 1;
+
       break;
+    }
 
     case RewriteStep::LeftConcreteProjection:
       ++ProjectionCount;
@@ -128,6 +134,14 @@ unsigned RewriteLoop::getDecomposeCount(
     const RewriteSystem &system) const {
   const_cast<RewriteLoop *>(this)->recompute(system);
   return DecomposeCount;
+}
+
+/// Returns true if the loop contains at least one concrete protocol typealias rule,
+/// which have the form ([P].A.[concrete: C] => [P].A).
+bool RewriteLoop::hasConcreteTypeAliasRule(
+    const RewriteSystem &system) const {
+  const_cast<RewriteLoop *>(this)->recompute(system);
+  return HasConcreteTypeAliasRule;
 }
 
 /// The number of Decompose steps, used by the elimination order to prioritize
@@ -230,36 +244,25 @@ void RewriteSystem::propagateRedundantRequirementIDs() {
   }
 }
 
-/// After propagating the 'explicit' bit on rules, process pairs of
-/// conflicting rules, marking one or both of the rules as conflicting,
-/// which instructs minimization to drop them.
+/// Process pairs of conflicting rules, marking the more specific rule as
+/// conflicting, which instructs minimization to drop this rule.
 void RewriteSystem::processConflicts() {
   for (auto pair : ConflictingRules) {
-    auto existingRuleID = pair.first;
-    auto newRuleID = pair.second;
+    auto *existingRule = &getRule(pair.first);
+    auto *newRule = &getRule(pair.second);
 
-    auto *existingRule = &getRule(existingRuleID);
-    auto *newRule = &getRule(newRuleID);
+    // The identity conformance rule ([P].[P] => [P]) will conflict with
+    // a concrete type requirement in an invalid protocol declaration
+    // where 'Self' is constrained to a type that does not conform to
+    // the protocol. This rule is permanent, so don't mark it as
+    // conflicting in this case.
 
-    auto existingKind = existingRule->isPropertyRule()->getKind();
-    auto newKind = newRule->isPropertyRule()->getKind();
-
-    // The GSB preferred to drop an explicit rule in a conflict, but
-    // only if the kinds were the same.
-    if (existingRule->isExplicit() && !newRule->isExplicit() &&
-        existingKind == newKind) {
-      std::swap(existingRule, newRule);
-    }
-
-    if (newRule->getRHS().size() >= existingRule->getRHS().size()) {
+    if (!existingRule->isIdentityConformanceRule() &&
+        existingRule->getRHS().size() >= newRule->getRHS().size())
+      existingRule->markConflicting();
+    if (!newRule->isIdentityConformanceRule() &&
+        newRule->getRHS().size() >= existingRule->getRHS().size())
       newRule->markConflicting();
-    } else if (existingKind != Symbol::Kind::Superclass &&
-               existingKind == newKind) {
-      // The GSB only dropped the new rule in the case of a conflicting
-      // superclass requirement, so maintain that behavior here.
-      if (existingRule->getRHS().size() >= newRule->getRHS().size())
-        existingRule->markConflicting();
-    }
 
     // FIXME: Diagnose the conflict later.
   }
@@ -488,7 +491,7 @@ RewritePath::getRulesInEmptyContext(const MutableTerm &term,
 /// \p redundantConformances equal to the set of conformance rules that are
 ///    not minimal conformances.
 Optional<std::pair<unsigned, unsigned>> RewriteSystem::
-findRuleToDelete(llvm::function_ref<bool(unsigned)> isRedundantRuleFn) {
+findRuleToDelete(EliminationPredicate isRedundantRuleFn) {
   SmallVector<std::pair<unsigned, unsigned>, 2> redundancyCandidates;
   for (unsigned loopID : indices(Loops)) {
     auto &loop = Loops[loopID];
@@ -520,7 +523,10 @@ findRuleToDelete(llvm::function_ref<bool(unsigned)> isRedundantRuleFn) {
   }
 
   for (const auto &pair : redundancyCandidates) {
+    unsigned loopID = pair.first;
     unsigned ruleID = pair.second;
+
+    const auto &loop = Loops[loopID];
     const auto &rule = getRule(ruleID);
 
     // We should not find a rule that has already been marked redundant
@@ -538,10 +544,10 @@ findRuleToDelete(llvm::function_ref<bool(unsigned)> isRedundantRuleFn) {
     // Homotopy reduction runs multiple passes with different filters to
     // prioritize the deletion of certain rules ahead of others. Apply
     // the filter now.
-    if (!isRedundantRuleFn(ruleID)) {
+    if (!isRedundantRuleFn(loopID, ruleID)) {
       if (Debug.contains(DebugFlags::HomotopyReductionDetail)) {
         llvm::dbgs() << "** Skipping rule " << rule << " from loop #"
-                     << pair.first << "\n";
+                     << loopID << "\n";
       }
 
       continue;
@@ -549,7 +555,7 @@ findRuleToDelete(llvm::function_ref<bool(unsigned)> isRedundantRuleFn) {
 
     if (Debug.contains(DebugFlags::HomotopyReductionDetail)) {
       llvm::dbgs() << "** Candidate rule " << rule << " from loop #"
-                   << pair.first << "\n";
+                   << loopID << "\n";
     }
 
     if (!found) {
@@ -561,7 +567,6 @@ findRuleToDelete(llvm::function_ref<bool(unsigned)> isRedundantRuleFn) {
     // we've found so far.
     const auto &otherRule = getRule(found->second);
 
-    const auto &loop = Loops[pair.first];
     const auto &otherLoop = Loops[found->first];
 
     {
@@ -712,7 +717,7 @@ void RewriteSystem::deleteRule(unsigned ruleID,
 }
 
 void RewriteSystem::performHomotopyReduction(
-    llvm::function_ref<bool(unsigned)> isRedundantRuleFn) {
+    EliminationPredicate isRedundantRuleFn) {
   while (true) {
     auto optPair = findRuleToDelete(isRedundantRuleFn);
 
@@ -803,14 +808,21 @@ void RewriteSystem::minimizeRewriteSystem() {
   // First pass:
   // - Eliminate all LHS-simplified non-conformance rules.
   // - Eliminate all RHS-simplified and substitution-simplified rules.
-  // - Eliminate all rules with unresolved symbols.
+  //
+  // An example of a conformance rule that is LHS-simplified but not
+  // RHS-simplified is (T.[P] => T) where T is irreducible, but there
+  // is a rule (V.[P] => V) for some V with T == U.V.
+  //
+  // Such conformance rules can still be minimal, as part of a hack to
+  // maintain compatibility with the GenericSignatureBuilder's minimization
+  // algorithm.
   if (Debug.contains(DebugFlags::HomotopyReduction)) {
-    llvm::dbgs() << "---------------------------------------------\n";
-    llvm::dbgs() << "First pass: simplified and unresolved rules -\n";
-    llvm::dbgs() << "---------------------------------------------\n";
+    llvm::dbgs() << "------------------------------\n";
+    llvm::dbgs() << "First pass: simplified rules -\n";
+    llvm::dbgs() << "------------------------------\n";
   }
 
-  performHomotopyReduction([&](unsigned ruleID) -> bool {
+  performHomotopyReduction([&](unsigned loopID, unsigned ruleID) -> bool {
     const auto &rule = getRule(ruleID);
 
     if (rule.isLHSSimplified() &&
@@ -821,8 +833,31 @@ void RewriteSystem::minimizeRewriteSystem() {
         rule.isSubstitutionSimplified())
       return true;
 
-    if (rule.containsUnresolvedSymbols() &&
-        !rule.isProtocolTypeAliasRule())
+    return false;
+  });
+
+  // Second pass:
+  // - Eliminate all rules with unresolved symbols which were *not*
+  //   simplified.
+  //
+  // Two examples of such rules:
+  //
+  //  - (T.X => T.[P:X]) obtained from resolving the overlap between
+  //    (T.[P] => T) and ([P].X => [P:X]).
+  //
+  // - (T.X.[concrete: C] => T.X) obtained from resolving the overlap
+  //   between (T.[P] => T) and a protocol typealias rule
+  //   ([P].X.[concrete: C] => [P].X).
+  if (Debug.contains(DebugFlags::HomotopyReduction)) {
+    llvm::dbgs() << "-------------------------------\n";
+    llvm::dbgs() << "Second pass: unresolved rules -\n";
+    llvm::dbgs() << "-------------------------------\n";
+  }
+
+  performHomotopyReduction([&](unsigned loopID, unsigned ruleID) -> bool {
+    const auto &rule = getRule(ruleID);
+
+    if (rule.containsUnresolvedSymbols())
       return true;
 
     return false;
@@ -838,14 +873,14 @@ void RewriteSystem::minimizeRewriteSystem() {
   llvm::DenseSet<unsigned> redundantConformances;
   computeMinimalConformances(redundantConformances);
 
-  // Second pass: Eliminate all non-minimal conformance rules.
+  // Third pass: Eliminate all non-minimal conformance rules.
   if (Debug.contains(DebugFlags::HomotopyReduction)) {
-    llvm::dbgs() << "--------------------------------------------\n";
-    llvm::dbgs() << "Second pass: non-minimal conformance rules -\n";
-    llvm::dbgs() << "--------------------------------------------\n";
+    llvm::dbgs() << "-------------------------------------------\n";
+    llvm::dbgs() << "Third pass: non-minimal conformance rules -\n";
+    llvm::dbgs() << "-------------------------------------------\n";
   }
 
-  performHomotopyReduction([&](unsigned ruleID) -> bool {
+  performHomotopyReduction([&](unsigned loopID, unsigned ruleID) -> bool {
     const auto &rule = getRule(ruleID);
 
     if (rule.isAnyConformanceRule() &&
@@ -855,17 +890,22 @@ void RewriteSystem::minimizeRewriteSystem() {
     return false;
   });
 
-  // Third pass: Eliminate all other redundant non-conformance rules.
+  // Fourth pass: Eliminate all remaining redundant non-conformance rules.
   if (Debug.contains(DebugFlags::HomotopyReduction)) {
-    llvm::dbgs() << "---------------------------------------\n";
-    llvm::dbgs() << "Third pass: all other redundant rules -\n";
-    llvm::dbgs() << "---------------------------------------\n";
+    llvm::dbgs() << "----------------------------------------\n";
+    llvm::dbgs() << "Fourth pass: all other redundant rules -\n";
+    llvm::dbgs() << "----------------------------------------\n";
   }
 
-  performHomotopyReduction([&](unsigned ruleID) -> bool {
+  performHomotopyReduction([&](unsigned loopID, unsigned ruleID) -> bool {
+    const auto &loop = Loops[loopID];
     const auto &rule = getRule(ruleID);
 
-    if (!rule.isAnyConformanceRule())
+    if (rule.isProtocolTypeAliasRule())
+      return true;
+
+    if (!loop.hasConcreteTypeAliasRule(*this) &&
+        !rule.isAnyConformanceRule())
       return true;
 
     return false;
@@ -879,31 +919,31 @@ void RewriteSystem::minimizeRewriteSystem() {
   normalizeRedundantRules();
 }
 
-/// In a conformance-valid rewrite system, any rule with unresolved symbols on
-/// the left or right hand side should be redundant. The presence of unresolved
-/// non-redundant rules means one of the original requirements written by the
-/// user was invalid.
-bool RewriteSystem::hadError() const {
+/// Returns flags indicating if the rewrite system has unresolved or
+/// conflicting rules in our minimization domain.
+GenericSignatureErrors RewriteSystem::getErrors() const {
   assert(Complete);
   assert(Minimized);
 
-  for (const auto &rule : Rules) {
-    if (!isInMinimizationDomain(rule.getLHS().getRootProtocol()))
-      continue;
+  GenericSignatureErrors result;
 
+  for (const auto &rule : Rules) {
     if (rule.isPermanent())
       continue;
 
-    if (rule.isConflicting())
-      return true;
+    if (!isInMinimizationDomain(rule.getLHS().getRootProtocol()))
+      continue;
 
     if (!rule.isRedundant() &&
         !rule.isProtocolTypeAliasRule() &&
         rule.containsUnresolvedSymbols())
-      return true;
+      result |= GenericSignatureErrorFlags::HasUnresolvedType;
+
+    if (rule.isConflicting())
+      result |= GenericSignatureErrorFlags::HasConflict;
   }
 
-  return false;
+  return result;
 }
 
 /// Collect all non-permanent, non-redundant rules whose domain is equal to

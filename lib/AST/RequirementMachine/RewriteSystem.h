@@ -14,6 +14,7 @@
 #define SWIFT_REWRITESYSTEM_H
 
 #include "swift/AST/Requirement.h"
+#include "swift/AST/TypeCheckRequests.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/PointerUnion.h"
 
@@ -159,6 +160,8 @@ public:
   }
 
   Optional<Identifier> isProtocolTypeAliasRule() const;
+
+  bool isDerivedFromConcreteProtocolTypeAliasRule() const;
 
   void markLHSSimplified() {
     assert(!LHSSimplified);
@@ -506,13 +509,15 @@ private:
 
   void processConflicts();
 
+  using EliminationPredicate = llvm::function_ref<bool(unsigned loopID,
+                                                       unsigned ruleID)>;
+
   Optional<std::pair<unsigned, unsigned>>
-  findRuleToDelete(llvm::function_ref<bool(unsigned)> isRedundantRuleFn);
+  findRuleToDelete(EliminationPredicate isRedundantRuleFn);
 
   void deleteRule(unsigned ruleID, const RewritePath &replacementPath);
 
-  void performHomotopyReduction(
-      llvm::function_ref<bool(unsigned)> isRedundantRuleFn);
+  void performHomotopyReduction(EliminationPredicate isRedundantRuleFn);
 
   void computeMinimalConformances(
       llvm::DenseSet<unsigned> &redundantConformances);
@@ -533,7 +538,7 @@ public:
 
   void minimizeRewriteSystem();
 
-  bool hadError() const;
+  GenericSignatureErrors getErrors() const;
 
   struct MinimizedProtocolRules {
     std::vector<unsigned> Requirements;
