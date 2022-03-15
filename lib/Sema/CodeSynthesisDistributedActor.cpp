@@ -73,8 +73,6 @@ static VarDecl *addImplicitDistributedActorIDProperty(
       C, StaticSpellingKind::None, propPat, /*InitExpr*/ nullptr,
       nominal);
 
-  propDecl->setIntroducer(VarDecl::Introducer::Let);
-
   // mark as nonisolated, allowing access to it from everywhere
   propDecl->getAttrs().add(
       new (C) NonisolatedAttr(/*IsImplicit=*/true));
@@ -564,7 +562,6 @@ addDistributedActorCodableConformance(
   assert(proto->isSpecificProtocol(swift::KnownProtocolKind::Decodable) ||
          proto->isSpecificProtocol(swift::KnownProtocolKind::Encodable));
   auto &C = actor->getASTContext();
-  auto DC = actor->getDeclContext();
   auto module = actor->getParentModule();
 
   // === Only Distributed actors can gain this implicit conformance
