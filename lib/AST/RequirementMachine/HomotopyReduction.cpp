@@ -136,8 +136,16 @@ void RewriteSystem::propagateRedundantRequirementIDs() {
     MutableTerm lhs(rule.getLHS());
     for (auto ruleID : rewritePath.getRulesInEmptyContext(lhs, *this)) {
       auto &replacement = Rules[ruleID];
-      if (!replacement.isPermanent() &&
-          !replacement.getRequirementID().hasValue()) {
+      if (!replacement.isPermanent()) {
+        // If the replacement rule already has a requirementID, overwrite
+        // it if the existing ID corresponds to an inferred requirement.
+        // This effectively makes the inferred requirement the redundant
+        // one, which makes it easier to suppress redundancy warnings for
+        // inferred requirements later on.
+        auto existingID = replacement.getRequirementID();
+        if (existingID.hasValue() && !WrittenRequirements[*existingID].inferred)
+          continue;
+
         if (Debug.contains(DebugFlags::PropagateRequirementIDs)) {
           llvm::dbgs() << "\n- propagating ID = "
             << requirementID
@@ -682,7 +690,8 @@ RewriteSystem::getMinimizedProtocolRules() const {
   assert(!Protos.empty());
 
   llvm::DenseMap<const ProtocolDecl *, MinimizedProtocolRules> rules;
-  for (unsigned ruleID : indices(Rules)) {
+  for (unsigned ruleID = FirstLocalRule, e = Rules.size();
+       ruleID < e; ++ruleID) {
     const auto &rule = getRule(ruleID);
 
     if (rule.isPermanent() ||
@@ -713,7 +722,8 @@ RewriteSystem::getMinimizedGenericSignatureRules() const {
   assert(Protos.empty());
 
   std::vector<unsigned> rules;
-  for (unsigned ruleID : indices(Rules)) {
+  for (unsigned ruleID = FirstLocalRule, e = Rules.size();
+       ruleID < e; ++ruleID) {
     const auto &rule = getRule(ruleID);
 
     if (rule.isPermanent() ||
@@ -768,7 +778,8 @@ void RewriteSystem::verifyMinimizedRules(
     const llvm::DenseSet<unsigned> &redundantConformances) const {
   unsigned redundantRuleCount = 0;
 
-  for (unsigned ruleID : indices(Rules)) {
+  for (unsigned ruleID = FirstLocalRule, e = Rules.size();
+       ruleID < e; ++ruleID) {
     const auto &rule = getRule(ruleID);
 
     // Ignore the rewrite rule if it is not part of our minimization domain.

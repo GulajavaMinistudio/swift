@@ -5569,7 +5569,7 @@ void ProtocolDecl::computeKnownProtocolKind() const {
       !module->getName().is("Foundation") &&
       !module->getName().is("_Differentiation") &&
       !module->getName().is("_Concurrency") &&
-      !module->getName().is("_Distributed")) {
+      !module->getName().is("Distributed")) {
     const_cast<ProtocolDecl *>(this)->Bits.ProtocolDecl.KnownProtocol = 1;
     return;
   }
@@ -9088,11 +9088,11 @@ ActorIsolation swift::getActorIsolationOfContext(DeclContext *dc) {
   }
 
   if (auto *tld = dyn_cast<TopLevelCodeDecl>(dc)) {
-    if (dc->isAsyncContext() ||
-        (dc->getASTContext().LangOpts.WarnConcurrency &&
-         dc->getASTContext().LangOpts.EnableExperimentalAsyncTopLevel)) {
+    if (dc->isAsyncContext() || dc->getASTContext().LangOpts.WarnConcurrency) {
       if (Type mainActor = dc->getASTContext().getMainActorType())
-        return ActorIsolation::forGlobalActor(mainActor, /*unsafe=*/false);
+        return ActorIsolation::forGlobalActor(
+            mainActor,
+            /*unsafe=*/!dc->getASTContext().isSwiftVersionAtLeast(6));
     }
   }
 
