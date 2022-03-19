@@ -747,7 +747,38 @@ namespace {
     
     favorCallOverloads(expr, CS, isFavoredDecl);
   }
-  
+
+  /// If \p expr is a call and that call contains the code completion token,
+  /// add the expressions of all arguments after the code completion token to
+  /// \p ignoredArguemnts.
+  /// Otherwise, returns an empty vector.
+  /// Asssumes that we are solving for code completion.
+  void getArgumentsAfterCodeCompletionToken(
+      Expr *expr, ConstraintSystem &CS,
+      SmallVectorImpl<Expr *> &ignoredArguments) {
+    assert(CS.isForCodeCompletion());
+
+    /// Don't ignore the rhs argument if the code completion token is the lhs of
+    /// an operator call. Main use case is the implicit `<complete> ~= $match`
+    /// call created for pattern matching, in which we need to type-check
+    /// `$match` to get a contextual type for `<complete>`
+    if (isa<BinaryExpr>(expr)) {
+      return;
+    }
+
+    auto args = expr->getArgs();
+    auto argInfo = getCompletionArgInfo(expr, CS);
+    if (!args || !argInfo) {
+      return;
+    }
+
+    for (auto argIndex : indices(*args)) {
+      if (argInfo->isBefore(argIndex)) {
+        ignoredArguments.push_back(args->get(argIndex).getExpr());
+      }
+    }
+  }
+
   class ConstraintOptimizer : public ASTWalker {
     ConstraintSystem &CS;
     
@@ -757,6 +788,9 @@ namespace {
       CS(cs) {}
     
     std::pair<bool, Expr *> walkToExprPre(Expr *expr) override {
+      if (CS.isArgumentIgnoredForCodeCompletion(expr)) {
+        return {false, expr};
+      }
 
       if (CS.shouldReusePrecheckedType() &&
           !CS.getType(expr)->hasTypeVariable()) {
@@ -2053,7 +2087,14 @@ namespace {
                                      /*outerAlternatives=*/{});
     }
 
-    FunctionType *inferClosureType(ClosureExpr *closure) {
+    /// If \p allowResultBindToHole is \c true, we always allow the closure's
+    /// result type to bind to a hole, otherwise the result type may only bind
+    /// to a hole if the closure does not participate in type inference. Setting
+    /// \p allowResultBindToHole to \c true is useful when ignoring a closure
+    /// argument in a function call after the code completion token and thus
+    /// wanting to ignore the closure's type.
+    FunctionType *inferClosureType(ClosureExpr *closure,
+                                   bool allowResultBindToHole = false) {
       SmallVector<AnyFunctionType::Param, 4> closureParams;
 
       if (auto *paramList = closure->getParameters()) {
@@ -2141,9 +2182,10 @@ namespace {
         // If this is a multi-statement closure, let's mark result
         // as potential hole right away.
         return Type(CS.createTypeVariable(
-            resultLocator, CS.participatesInInference(closure)
-                               ? 0
-                               : TVO_CanBindToHole));
+            resultLocator,
+            (!CS.participatesInInference(closure) || allowResultBindToHole)
+                ? TVO_CanBindToHole
+                : 0));
       }();
 
       // For a non-async function type, add the global actor if present.
@@ -2584,8 +2626,7 @@ namespace {
               parentMetaType, enumPattern->getName(), memberType, CurDC,
               functionRefKind, {},
               CS.getConstraintLocator(locator,
-                                      {LocatorPathElt::PatternMatch(pattern),
-                                       ConstraintLocator::Member}));
+                                      LocatorPathElt::PatternMatch(pattern)));
 
           // Parent type needs to be convertible to the pattern type; this
           // accounts for cases where the pattern type is existential.
@@ -3574,6 +3615,26 @@ namespace {
       }
       llvm_unreachable("unhandled operation");
     }
+
+    /// Assuming that we are solving for code completion, assign \p expr a fresh
+    /// and unconstrained type variable as its type.
+    void setTypeForArgumentIgnoredForCompletion(Expr *expr) {
+      assert(CS.isForCodeCompletion());
+      ConstraintSystem &CS = getConstraintSystem();
+
+      if (auto closure = dyn_cast<ClosureExpr>(expr)) {
+        FunctionType *closureTy =
+            inferClosureType(closure, /*allowResultBindToHole=*/true);
+        CS.setClosureType(closure, closureTy);
+        CS.setType(closure, closureTy);
+      } else {
+        TypeVariableType *exprType = CS.createTypeVariable(
+            CS.getConstraintLocator(expr),
+            TVO_CanBindToLValue | TVO_CanBindToInOut | TVO_CanBindToNoEscape |
+                TVO_CanBindToHole);
+        CS.setType(expr, exprType);
+      }
+    }
   };
 
   class ConstraintWalker : public ASTWalker {
@@ -3583,6 +3644,12 @@ namespace {
     ConstraintWalker(ConstraintGenerator &CG) : CG(CG) { }
 
     std::pair<bool, Expr *> walkToExprPre(Expr *expr) override {
+      auto &CS = CG.getConstraintSystem();
+
+      if (CS.isArgumentIgnoredForCodeCompletion(expr)) {
+        CG.setTypeForArgumentIgnoredForCompletion(expr);
+        return {false, expr};
+      }
 
       if (CG.getConstraintSystem().shouldReusePrecheckedType()) {
         if (expr->getType()) {
@@ -3648,6 +3715,14 @@ namespace {
       if (auto ifExpr = dyn_cast<IfExpr>(expr)) {
         if (!ifExpr->getThenExpr() || !ifExpr->getElseExpr())
           return { false, expr };
+      }
+
+      if (CS.isForCodeCompletion()) {
+        SmallVector<Expr *, 2> ignoredArgs;
+        getArgumentsAfterCodeCompletionToken(expr, CS, ignoredArgs);
+        for (auto ignoredArg : ignoredArgs) {
+          CS.markArgumentIgnoredForCodeCompletion(ignoredArg);
+        }
       }
 
       return { true, expr };
