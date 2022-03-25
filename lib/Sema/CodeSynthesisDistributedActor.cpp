@@ -76,6 +76,10 @@ static VarDecl *addImplicitDistributedActorIDProperty(
   // mark as nonisolated, allowing access to it from everywhere
   propDecl->getAttrs().add(
       new (C) NonisolatedAttr(/*IsImplicit=*/true));
+  // mark as @_compilerInitialized, since we synthesize the initializing
+  // assignment during SILGen.
+  propDecl->getAttrs().add(
+      new (C) CompilerInitializedAttr(/*IsImplicit=*/true));
 
   nominal->addMember(propDecl);
   nominal->addMember(pbDecl);
@@ -735,7 +739,6 @@ VarDecl *GetDistributedActorIDPropertyRequest::evaluate(
   return addImplicitDistributedActorIDProperty(classDecl);
 }
 
-
 VarDecl *GetDistributedActorSystemPropertyRequest::evaluate(
     Evaluator &evaluator, NominalTypeDecl *nominal) const {
   auto &C = nominal->getASTContext();
@@ -783,10 +786,20 @@ VarDecl *GetDistributedActorSystemPropertyRequest::evaluate(
   return nullptr;
 }
 
-NormalProtocolConformance
-*GetDistributedActorImplicitCodableRequest::evaluate(
-    Evaluator &evaluator,
-    NominalTypeDecl *nominal,
+FuncDecl *GetDistributedActorSystemInvokeHandlerOnReturnRequest::evaluate(
+    Evaluator &evaluator, NominalTypeDecl *system) const {
+  auto &C = system->getASTContext();
+
+  // not via `ensureDistributedModuleLoaded` to avoid generating a warning,
+  // we won't be emitting the offending decl after all.
+  if (!C.getLoadedModule(C.Id_Distributed))
+    return nullptr;
+
+  return nullptr; // FIXME
+}
+
+NormalProtocolConformance *GetDistributedActorImplicitCodableRequest::evaluate(
+    Evaluator &evaluator, NominalTypeDecl *nominal,
     KnownProtocolKind protoKind) const {
   assert(nominal->isDistributedActor());
   assert(protoKind == KnownProtocolKind::Encodable ||

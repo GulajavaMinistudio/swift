@@ -1432,12 +1432,13 @@ namespace {
 /// \param argTy The type of the argument.
 ///
 /// \returns If the argument type is existential and opening it can bind a
-/// generic parameter in the callee, returns the type variable (from the
-/// opened parameter type) the existential type that needs to be opened
-/// (from the argument type), and the adjustements that need to be applied to
-/// the existential type after it is opened.
+/// generic parameter in the callee, returns the generic parameter, type
+/// variable (from the opened parameter type) the existential type that needs
+/// to be opened (from the argument type), and the adjustements that need to be
+/// applied to the existential type after it is opened.
 static Optional<
-    std::tuple<TypeVariableType *, Type, OpenedExistentialAdjustments>>
+    std::tuple<GenericTypeParamType *, TypeVariableType *, Type,
+               OpenedExistentialAdjustments>>
 shouldOpenExistentialCallArgument(
     ValueDecl *callee, unsigned paramIdx, Type paramTy, Type argTy,
     Expr *argExpr, ConstraintSystem &cs) {
@@ -1500,6 +1501,25 @@ shouldOpenExistentialCallArgument(
   if (!argTy->isAnyExistentialType())
     return None;
 
+  if (argTy->isExistentialType()) {
+    // If the existential argument type conforms to all of its protocol
+    // requirements, don't open the existential.
+    auto layout = argTy->getExistentialLayout();
+    auto module = cs.DC->getParentModule();
+    bool containsNonSelfConformance = false;
+    for (auto proto : layout.getProtocols()) {
+      auto protoDecl = proto->getDecl();
+      auto conformance = module->lookupExistentialConformance(argTy, protoDecl);
+      if (conformance.isInvalid()) {
+        containsNonSelfConformance = true;
+        break;
+      }
+    }
+
+    if (!containsNonSelfConformance)
+      return None;
+  }
+
   auto param = getParameterAt(callee, paramIdx);
   if (!param)
     return None;
@@ -1551,7 +1571,7 @@ shouldOpenExistentialCallArgument(
       referenceInfo.assocTypeRef > TypePosition::Covariant)
     return None;
 
-  return std::make_tuple(paramTypeVar, argTy, adjustments);
+  return std::make_tuple(genericParam, paramTypeVar, argTy, adjustments);
 }
 
 // Match the argument of a call to the parameter.
@@ -1831,15 +1851,29 @@ static ConstraintSystem::TypeMatchResult matchCallArguments(
             cs, cs.getConstraintLocator(loc)));
       }
 
+      // Type-erase any opened existentials from subsequent parameter types
+      // unless the argument itself is a generic function, which could handle
+      // the opened existentials.
+      if (!openedExistentials.empty() && paramTy->hasTypeVariable() &&
+          !cs.isArgumentGenericFunction(argTy, argExpr)) {
+        for (const auto &opened : openedExistentials) {
+          paramTy = typeEraseOpenedExistentialReference(
+              paramTy, opened.second->getExistentialType(), opened.first,
+              /*FIXME*/cs.DC, TypePosition::Contravariant);
+        }
+      }
+
       // If the argument is an existential type and the parameter is generic,
       // consider opening the existential type.
       if (auto existentialArg = shouldOpenExistentialCallArgument(
               callee, paramIdx, paramTy, argTy, argExpr, cs)) {
         // My kingdom for a decent "if let" in C++.
+        GenericTypeParamType *openedGenericParam;
         TypeVariableType *openedTypeVar;
         Type existentialType;
         OpenedExistentialAdjustments adjustments;
-        std::tie(openedTypeVar, existentialType, adjustments) = *existentialArg;
+        std::tie(openedGenericParam, openedTypeVar, existentialType,
+                 adjustments) = *existentialArg;
 
         OpenedArchetypeType *opened;
         std::tie(argTy, opened) = cs.openExistentialType(
@@ -1932,7 +1966,7 @@ static ConstraintSystem::TypeMatchResult matchCallArguments(
             locator->getAnchor().isExpr(ExprKind::UnresolvedMemberChainResult)) {
           locator =
             cs.getConstraintLocator(cast<UnresolvedMemberChainResultExpr>(
-              locator->getAnchor().get<Expr*>())->getChainBase());
+              locator->getAnchor().get<Expr*>())->getSubExpr());
         }
         cs.recordFix(NotCompileTimeConst::create(cs, paramTy, locator));
       }
@@ -4258,6 +4292,12 @@ static bool repairOutOfOrderArgumentsInBinaryFunction(
 
   auto currArgIdx =
       locator->castLastElementTo<LocatorPathElt::ApplyArgToParam>().getArgIdx();
+
+  // Argument is extraneous and has been re-ordered to match one
+  // of two parameter types.
+  if (currArgIdx >= 2)
+    return false;
+
   auto otherArgIdx = currArgIdx == 0 ? 1 : 0;
 
   auto argType = cs.getType(argument);
@@ -11321,7 +11361,8 @@ ConstraintSystem::simplifyApplicableFnConstraint(
     if (result2->hasTypeVariable() && !openedExistentials.empty()) {
       for (const auto &opened : openedExistentials) {
         result2 = typeEraseOpenedExistentialReference(
-            result2, opened.second->getExistentialType(), opened.first, DC);
+            result2, opened.second->getExistentialType(), opened.first, DC,
+            TypePosition::Covariant);
       }
     }
 

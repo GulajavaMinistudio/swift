@@ -287,11 +287,8 @@ public:
     /// Whether this attribute is only valid when concurrency is enabled.
     ConcurrencyOnly = 1ull << (unsigned(DeclKindIndex::Last_Decl) + 16),
 
-    /// Whether this attribute is only valid when distributed is enabled.
-    DistributedOnly = 1ull << (unsigned(DeclKindIndex::Last_Decl) + 17),
-
     /// Whether this attribute is valid on additional decls in ClangImporter.
-    OnAnyClangDecl = 1ull << (unsigned(DeclKindIndex::Last_Decl) + 18),
+    OnAnyClangDecl = 1ull << (unsigned(DeclKindIndex::Last_Decl) + 17),
   };
 
   LLVM_READNONE
@@ -384,10 +381,6 @@ public:
 
   static bool isConcurrencyOnly(DeclAttrKind DK) {
     return getOptions(DK) & ConcurrencyOnly;
-  }
-
-  static bool isDistributedOnly(DeclAttrKind DK) {
-    return getOptions(DK) & DistributedOnly;
   }
 
   static bool isUserInaccessible(DeclAttrKind DK) {
@@ -614,6 +607,8 @@ enum class PlatformAgnosticAvailabilityKind {
   PackageDescriptionVersionSpecific,
   /// The declaration is unavailable for other reasons.
   Unavailable,
+  /// The declaration is unavailable from asynchronous contexts
+  NoAsync,
 };
 
 /// Defines the @available attribute.
@@ -701,6 +696,9 @@ public:
 
   /// Whether this is an unconditionally deprecated entity.
   bool isUnconditionallyDeprecated() const;
+
+  /// Whether this is a noasync attribute.
+  bool isNoAsync() const;
 
   /// Returns the platform-agnostic availability.
   PlatformAgnosticAvailabilityKind getPlatformAgnosticAvailability() const {
@@ -2260,6 +2258,11 @@ public:
   /// Returns the first @available attribute that indicates
   /// a declaration will be deprecated in the future, or null otherwise.
   const AvailableAttr *getSoftDeprecated(const ASTContext &ctx) const;
+
+  /// Returns the first @available attribute that indicates
+  /// a declaration is unavailable from asynchronous contexts, or null
+  /// otherwise.
+  const AvailableAttr *getNoAsync(const ASTContext &ctx) const;
 
   SWIFT_DEBUG_DUMPER(dump(const Decl *D = nullptr));
   void print(ASTPrinter &Printer, const PrintOptions &Options,
