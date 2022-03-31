@@ -32,6 +32,13 @@
 // REQUIRES: executable_test
 // REQUIRES: VENDOR=apple
 
+// This test doesn't behave as expected on some deployment targets because
+// the minimum OS versions accepted by the linker are later than the deployment
+// targets given to the compiler invocation, and therefore symbols that need
+// to be weak linked for the test to function are not.
+// UNSUPPORTED: OS=ios && CPU=arm64e
+// UNSUPPORTED: OS=watchos && CPU=x86_64
+
 // ---- (0) Prepare SDK
 // RUN: %empty-directory(%t)
 // RUN: %empty-directory(%t/SDK_ABI)
