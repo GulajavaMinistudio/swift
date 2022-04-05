@@ -795,6 +795,11 @@ DisableImplicitConcurrencyImport("disable-implicit-concurrency-module-import",
                                  llvm::cl::desc("Disable implicit import of _Concurrency module"),
                                  llvm::cl::init(false));
 
+static llvm::cl::opt<bool>
+DisableImplicitStringProcessingImport("disable-implicit-string-processing-module-import",
+                                      llvm::cl::desc("Disable implicit import of _StringProcessing module"),
+                                      llvm::cl::init(false));
+
 static llvm::cl::opt<bool> EnableExperimentalNamedOpaqueTypes(
     "enable-experimental-named-opaque-types",
     llvm::cl::desc("Enable experimental support for named opaque result types"),
@@ -1629,6 +1634,7 @@ static int doBatchCodeCompletion(const CompilerInvocation &InitInvok,
   llvm::errs() << "----\n";
   if (!FailedTokens.empty()) {
     llvm::errs() << "Unexpected failures: ";
+    llvm::sort(FailedTokens);
     llvm::interleave(
         FailedTokens, [&](StringRef name) { llvm::errs() << name; },
         [&]() { llvm::errs() << ", "; });
@@ -1636,6 +1642,7 @@ static int doBatchCodeCompletion(const CompilerInvocation &InitInvok,
   }
   if (!UPassTokens.empty()) {
     llvm::errs() << "Unexpected passes: ";
+    llvm::sort(UPassTokens);
     llvm::interleave(
         UPassTokens, [&](StringRef name) { llvm::errs() << name; },
         [&]() { llvm::errs() << ", "; });
@@ -4273,6 +4280,9 @@ int main(int argc, char *argv[]) {
   }
   if (options::DisableImplicitConcurrencyImport) {
     InitInvok.getLangOptions().DisableImplicitConcurrencyModuleImport = true;
+  }
+  if (options::DisableImplicitStringProcessingImport) {
+    InitInvok.getLangOptions().DisableImplicitStringProcessingModuleImport = true;
   }
   if (options::EnableExperimentalNamedOpaqueTypes) {
     InitInvok.getLangOptions().EnableExperimentalNamedOpaqueTypes = true;
