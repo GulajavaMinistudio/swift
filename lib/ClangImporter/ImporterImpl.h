@@ -1148,7 +1148,7 @@ public:
   /// 'unavailable' in Swift.
   bool isUnavailableInSwift(const clang::Decl *decl) {
     return importer::isUnavailableInSwift(
-        decl, platformAvailability, SwiftContext.LangOpts.EnableObjCInterop);
+        decl, &platformAvailability, SwiftContext.LangOpts.EnableObjCInterop);
   }
 
   /// Add "Unavailable" annotation to the swift declaration.
@@ -1590,8 +1590,15 @@ public:
     llvm_unreachable("unimplemented for ClangImporter");
   }
 
-  void loadAssociatedTypes(const ProtocolDecl *decl, uint64_t contextData,
-                           SmallVectorImpl<AssociatedTypeDecl *> &assocTypes) override {
+  void loadAssociatedTypes(
+      const ProtocolDecl *decl, uint64_t contextData,
+      SmallVectorImpl<AssociatedTypeDecl *> &assocTypes) override {
+    llvm_unreachable("unimplemented for ClangImporter");
+  }
+
+  void loadPrimaryAssociatedTypes(
+      const ProtocolDecl *decl, uint64_t contextData,
+      SmallVectorImpl<AssociatedTypeDecl *> &assocTypes) override {
     llvm_unreachable("unimplemented for ClangImporter");
   }
 
