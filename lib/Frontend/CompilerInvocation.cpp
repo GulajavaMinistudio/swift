@@ -694,12 +694,12 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   // Swift 6+ uses the strictest concurrency level.
   if (Opts.isSwiftVersionAtLeast(6)) {
-    Opts.StrictConcurrencyLevel = StrictConcurrency::On;
+    Opts.StrictConcurrencyLevel = StrictConcurrency::Complete;
   } else if (const Arg *A = Args.getLastArg(OPT_strict_concurrency)) {
     auto value = llvm::StringSwitch<Optional<StrictConcurrency>>(A->getValue())
-      .Case("off", StrictConcurrency::Off)
-      .Case("limited", StrictConcurrency::Limited)
-      .Case("on", StrictConcurrency::On)
+      .Case("explicit", StrictConcurrency::Explicit)
+      .Case("targeted", StrictConcurrency::Targeted)
+      .Case("complete", StrictConcurrency::Complete)
       .Default(None);
 
     if (value)
@@ -709,10 +709,10 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
                      A->getAsString(Args), A->getValue());
 
   } else if (Args.hasArg(OPT_warn_concurrency)) {
-    Opts.StrictConcurrencyLevel = StrictConcurrency::On;
+    Opts.StrictConcurrencyLevel = StrictConcurrency::Complete;
   } else {
     // Default to "limited" checking in Swift 5.x.
-    Opts.StrictConcurrencyLevel = StrictConcurrency::Limited;
+    Opts.StrictConcurrencyLevel = StrictConcurrency::Targeted;
   }
 
   Opts.WarnImplicitOverrides =
@@ -789,7 +789,7 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   // Collect -clang-target value if specified in the front-end invocation.
   // Usually, the driver will pass down a clang target with the
-  // exactly same value as the main target, so we could dignose the usage of
+  // exactly same value as the main target, so we could diagnose the usage of
   // unavailable APIs.
   // The reason we cannot infer clang target from -target is that not all
   // front-end invocation will include a -target to start with. For instance,
@@ -1145,9 +1145,6 @@ static bool ParseTypeCheckerArgs(TypeCheckerOptions &Opts, ArgList &Args,
 
   Opts.EnableOneWayClosureParameters |=
       Args.hasArg(OPT_experimental_one_way_closure_params);
-
-  Opts.EnableMultiStatementClosureInference |=
-      Args.hasArg(OPT_experimental_multi_statement_closures);
 
   Opts.PrintFullConvention |=
       Args.hasArg(OPT_experimental_print_full_convention);
@@ -2112,7 +2109,7 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
     Opts.UseTypeLayoutValueHandling
       = A->getOption().matches(OPT_enable_type_layouts);
   } else if (Opts.OptMode == OptimizationMode::NoOptimization) {
-    // Disable type layouts at Onone except if explictly requested.
+    // Disable type layouts at Onone except if explicitly requested.
     Opts.UseTypeLayoutValueHandling = false;
   }
 
@@ -2362,7 +2359,7 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
   } else if (Triple.isWatchOS() && !Triple.isSimulatorEnvironment()) {
     // watchOS does not support auto async frame pointers due to bitcode, so
     // silently override "auto" to "never" when back-deploying. This approach
-    // sacrifies async backtraces when back-deploying but prevents crashes in
+    // sacrifices async backtraces when back-deploying but prevents crashes in
     // older tools that cannot handle the async frame bit in the frame pointer.
     unsigned major, minor, micro;
     Triple.getWatchOSVersion(major, minor, micro);
