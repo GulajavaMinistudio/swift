@@ -62,7 +62,7 @@ namespace swift {
   enum class StrictConcurrency {
     /// Enforce Sendable constraints where it has been explicitly adopted and
     /// perform actor-isolation checking wherever code has adopted concurrency.
-    Explicit,
+    Minimal,
     /// Enforce Sendable constraints and perform actor-isolation checking
     /// wherever code has adopted concurrency, including code that has
     /// explicitly adopted Sendable.
@@ -280,6 +280,9 @@ namespace swift {
     /// language mode of clang on a per-header or even per-module basis. Also
     /// disabled because it is not complete.
     bool EnableCXXInterop = false;
+
+    /// Imports getters and setters as computed properties.
+    bool CxxInteropGettersSettersAsProperties = false;
 
     /// On Darwin platforms, use the pre-stable ABI's mark bit for Swift
     /// classes instead of the stable ABI's bit. This is needed when
