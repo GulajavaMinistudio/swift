@@ -78,6 +78,33 @@ bool swift::isExported(const ValueDecl *VD) {
   return false;
 }
 
+bool swift::isExported(const ExtensionDecl *ED) {
+  // An extension can only be exported if it extends an exported type.
+  if (auto *NTD = ED->getExtendedNominal()) {
+    if (!isExported(NTD))
+      return false;
+  }
+
+  // If there are any exported members then the extension is exported.
+  for (const Decl *D : ED->getMembers()) {
+    if (isExported(D))
+      return true;
+  }
+
+  // If the extension declares a conformance to a public protocol then the
+  // extension is exported.
+  auto protocols = ED->getLocalProtocols(ConformanceLookupKind::OnlyExplicit);
+  for (const ProtocolDecl *PD : protocols) {
+    AccessScope scope =
+      PD->getFormalAccessScope(/*useDC*/nullptr,
+                               /*treatUsableFromInlineAsPublic*/true);
+    if (scope.isPublic())
+      return true;
+  }
+
+  return false;
+}
+
 bool swift::isExported(const Decl *D) {
   if (auto *VD = dyn_cast<ValueDecl>(D)) {
     return isExported(VD);
@@ -91,10 +118,7 @@ bool swift::isExported(const Decl *D) {
     return false;
   }
   if (auto *ED = dyn_cast<ExtensionDecl>(D)) {
-    if (auto *NTD = ED->getExtendedNominal())
-      return isExported(NTD);
-
-    return false;
+    return isExported(ED);
   }
 
   return true;
@@ -3900,11 +3924,14 @@ static bool declNeedsExplicitAvailability(const Decl *decl) {
       decl->isImplicit())
     return false;
 
+  // Skip unavailable decls.
+  if (AvailableAttr::isUnavailable(decl))
+    return false;
+
   // Warn on decls without an introduction version.
   auto &ctx = decl->getASTContext();
   auto safeRangeUnderApprox = AvailabilityInference::availableRange(decl, ctx);
-  return !safeRangeUnderApprox.getOSVersion().hasLowerEndpoint() &&
-         !decl->getAttrs().isUnavailable(ctx);
+  return !safeRangeUnderApprox.getOSVersion().hasLowerEndpoint();
 }
 
 void swift::checkExplicitAvailability(Decl *decl) {
