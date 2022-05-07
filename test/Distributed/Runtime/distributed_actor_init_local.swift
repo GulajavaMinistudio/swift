@@ -8,6 +8,8 @@
 // UNSUPPORTED: use_os_stdlib
 // UNSUPPORTED: back_deployment_runtime
 
+// REQUIRES: rdar92910719
+
 import Distributed
 
 enum MyError: Error {
@@ -89,6 +91,26 @@ distributed actor MaybeAfterAssign {
     x = 100
   }
 }
+
+distributed actor LocalTestingSystemDA {
+  typealias ActorSystem = LocalTestingDistributedActorSystem
+  var x: Int
+  init() {
+    actorSystem = .init()
+    x = 100
+  }
+}
+
+distributed actor LocalTestingDA_Int {
+  typealias ActorSystem = LocalTestingDistributedActorSystem
+  var int: Int
+  init() {
+    actorSystem = .init()
+    int = 12
+    // CRASH
+  }
+}
+
 
 // ==== Fake Transport ---------------------------------------------------------
 
@@ -262,6 +284,10 @@ func test() async {
   // CHECK:      assign type:MaybeAfterAssign, id:ActorAddress(address: "[[ID10:.*]]")
   // CHECK-NEXT: ready actor:main.MaybeAfterAssign, id:ActorAddress(address: "[[ID10]]")
 
+  let localDA = LocalTestingDA_Int()
+  print("localDA = \(localDA.id)")
+  // CHECK: localDA = LocalTestingActorAddress(uuid: "1")
+
   // the following tests fail to initialize the actor's identity.
   print("-- start of no-assign tests --")
   test.append(MaybeSystem(nil))
@@ -270,7 +296,6 @@ func test() async {
   // CHECK: -- start of no-assign tests --
   // CHECK-NOT: assign
   // CHECK: -- end of no-assign tests --
-
 
   // resigns that come out of the deinits:
 
