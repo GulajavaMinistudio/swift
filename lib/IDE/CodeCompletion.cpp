@@ -671,11 +671,6 @@ static void addDeclKeywords(CodeCompletionResultSink &Sink, DeclContext *DC,
     case CodeCompletionKeywordKind::kw_enum:
     case CodeCompletionKeywordKind::kw_extension:
       return true;
-    case CodeCompletionKeywordKind::None:
-      if (DAK && *DAK == DeclAttrKind::DAK_Actor) {
-        return true;
-      }
-      break;
     default:
       break;
     }
@@ -782,12 +777,20 @@ static void addDeclKeywords(CodeCompletionResultSink &Sink, DeclContext *DC,
         DeclAttribute::isConcurrencyOnly(*DAK))
       return;
 
-    addKeyword(Sink, Name, Kind, /*TypeAnnotation=*/"", getFlair(Kind, DAK));
+    CodeCompletionFlair flair = getFlair(Kind, DAK);
+
+    // Special case for 'actor'. Get the same flair with 'kw_class'.
+    if (Kind == CodeCompletionKeywordKind::None && Name == "actor")
+      flair = getFlair(CodeCompletionKeywordKind::kw_class, None);
+
+    addKeyword(Sink, Name, Kind, /*TypeAnnotation=*/"", flair);
   };
 
 #define DECL_KEYWORD(kw)                                                       \
   AddDeclKeyword(#kw, CodeCompletionKeywordKind::kw_##kw, None);
 #include "swift/Syntax/TokenKinds.def"
+  // Manually add "actor" because it's a contextual keyword.
+  AddDeclKeyword("actor", CodeCompletionKeywordKind::None, None);
 
   // Context-sensitive keywords.
   auto AddCSKeyword = [&](StringRef Name, DeclAttrKind Kind) {
@@ -813,6 +816,12 @@ static void addStmtKeywords(CodeCompletionResultSink &Sink, DeclContext *DC,
   auto AddStmtKeyword = [&](StringRef Name, CodeCompletionKeywordKind Kind) {
     if (!MaybeFuncBody && Kind == CodeCompletionKeywordKind::kw_return)
       return;
+
+    // 'in' keyword is added in 'addClosureSignatureKeywordsIfApplicable' if
+    // needed.
+    if (Kind == CodeCompletionKeywordKind::kw_in)
+      return;
+
     addKeyword(Sink, Name, Kind, "", flair);
   };
 #define STMT_KEYWORD(kw) AddStmtKeyword(#kw, CodeCompletionKeywordKind::kw_##kw);
@@ -893,6 +902,18 @@ static void addAnyTypeKeyword(CodeCompletionResultSink &Sink, Type T) {
   Builder.addTypeAnnotation(T, PrintOptions());
 }
 
+static void
+addClosureSignatureKeywordsIfApplicable(CodeCompletionResultSink &Sink,
+                                        DeclContext *DC) {
+  ClosureExpr *closure = dyn_cast<ClosureExpr>(DC);
+  if (!closure)
+    return;
+  if (closure->getInLoc().isValid())
+    return;
+
+  addKeyword(Sink, "in", CodeCompletionKeywordKind::kw_in);
+}
+
 void CodeCompletionCallbacksImpl::addKeywords(CodeCompletionResultSink &Sink,
                                               bool MaybeFuncBody) {
   switch (Kind) {
@@ -947,6 +968,8 @@ void CodeCompletionCallbacksImpl::addKeywords(CodeCompletionResultSink &Sink,
     addDeclKeywords(Sink, CurDeclContext,
                     Context.LangOpts.EnableExperimentalConcurrency);
     addStmtKeywords(Sink, CurDeclContext, MaybeFuncBody);
+    addClosureSignatureKeywordsIfApplicable(Sink, CurDeclContext);
+
     LLVM_FALLTHROUGH;
   case CompletionKind::ReturnStmtExpr:
   case CompletionKind::YieldStmtExpr:
@@ -971,6 +994,11 @@ void CodeCompletionCallbacksImpl::addKeywords(CodeCompletionResultSink &Sink,
     break;
 
   case CompletionKind::PostfixExpr:
+    // Suggest 'in' for '{ value <HERE>'.
+    if (HasSpace)
+      addClosureSignatureKeywordsIfApplicable(Sink, CurDeclContext);
+
+    break;
   case CompletionKind::CaseStmtBeginning:
   case CompletionKind::TypeIdentifierWithDot:
   case CompletionKind::TypeIdentifierWithoutDot:
@@ -1695,6 +1723,35 @@ void CodeCompletionCallbacksImpl::doneParsing() {
 
   case CompletionKind::AttributeBegin: {
     Lookup.getAttributeDeclCompletions(IsInSil, AttTargetDK);
+    OptionSet<CustomAttributeKind> ExpectedCustomAttributeKinds;
+    if (AttTargetDK) {
+      switch (*AttTargetDK) {
+      case DeclKind::Var:
+        ExpectedCustomAttributeKinds |= CustomAttributeKind::GlobalActor;
+        LLVM_FALLTHROUGH;
+      case DeclKind::Param:
+        ExpectedCustomAttributeKinds |= CustomAttributeKind::ResultBuilder;
+        ExpectedCustomAttributeKinds |= CustomAttributeKind::PropertyWrapper;
+        break;
+      case DeclKind::Func:
+        ExpectedCustomAttributeKinds |= CustomAttributeKind::ResultBuilder;
+        ExpectedCustomAttributeKinds |= CustomAttributeKind::GlobalActor;
+        break;
+      default:
+        break;
+      }
+    }
+    if (!ExpectedCustomAttributeKinds) {
+      // If we don't know on which decl kind we are completing, suggest all
+      // attribute kinds.
+      ExpectedCustomAttributeKinds |= CustomAttributeKind::PropertyWrapper;
+      ExpectedCustomAttributeKinds |= CustomAttributeKind::ResultBuilder;
+      ExpectedCustomAttributeKinds |= CustomAttributeKind::GlobalActor;
+    }
+    Lookup.setExpectedTypes(/*Types=*/{},
+                            /*isImplicitSingleExpressionReturn=*/false,
+                            /*preferNonVoid=*/false,
+                            ExpectedCustomAttributeKinds);
 
     // TypeName at attribute position after '@'.
     // - VarDecl: Property Wrappers.
