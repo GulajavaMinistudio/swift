@@ -593,29 +593,6 @@ static void addSendableFixIt(const GenericTypeParamDecl *genericArgument,
   }
 }
 
-/// Determine whether there is an unavailable conformance here.
-static bool hasUnavailableConformance(ProtocolConformanceRef conformance) {
-  // Abstract conformances are never unavailable.
-  if (!conformance.isConcrete())
-    return false;
-
-  // Check whether this conformance is on an unavailable extension.
-  auto concrete = conformance.getConcrete();
-  auto ext = dyn_cast<ExtensionDecl>(concrete->getDeclContext());
-  if (ext && AvailableAttr::isUnavailable(ext))
-    return true;
-
-  // Check the conformances in the substitution map.
-  auto module = concrete->getDeclContext()->getParentModule();
-  auto subMap = concrete->getSubstitutions(module);
-  for (auto subConformance : subMap.getConformances()) {
-    if (hasUnavailableConformance(subConformance))
-      return true;
-  }
-
-  return false;
-}
-
 static bool shouldDiagnoseExistingDataRaces(const DeclContext *dc) {
   return contextRequiresStrictConcurrencyChecking(dc, [](const AbstractClosureExpr *) {
     return Type();
@@ -913,7 +890,7 @@ bool swift::diagnoseNonSendableTypes(
 
   // FIXME: More detail for unavailable conformances.
   auto conformance = TypeChecker::conformsToProtocol(type, proto, module);
-  if (conformance.isInvalid() || hasUnavailableConformance(conformance)) {
+  if (conformance.isInvalid() || conformance.hasUnavailableConformance()) {
     return diagnoseSingleNonSendableType(type, fromContext, loc, diagnose);
   }
 
@@ -1062,7 +1039,7 @@ namespace {
           return true;
 
         // If there is an unavailable conformance here, fail.
-        if (hasUnavailableConformance(conformance))
+        if (conformance.hasUnavailableConformance())
           return true;
 
         // Look for missing Sendable conformances.
@@ -2634,7 +2611,8 @@ namespace {
         // allow reads, depending on a SIL diagnostic pass to identify the
         // remaining race conditions.
         if (!var->supportsMutation() ||
-            (ctx.LangOpts.EnableExperimentalFlowSensitiveConcurrentCaptures &&
+            (ctx.LangOpts.hasFeature(
+                 Feature::FlowSensitiveConcurrencyCaptures) &&
              parent.dyn_cast<LoadExpr *>())) {
           return false;
         }
@@ -4432,7 +4410,8 @@ ProtocolConformance *GetImplicitSendableRequest::evaluate(
       auto classModule = classDecl->getParentModule();
       if (auto inheritedConformance = TypeChecker::conformsToProtocol(
               classDecl->mapTypeIntoContext(superclass),
-              proto, classModule, /*allowMissing=*/false)) {
+              proto, classModule, /*allowMissing=*/false,
+              /*allowUnavailable=*/false)) {
         inheritedConformance = inheritedConformance
             .mapConformanceOutOfContext();
         if (inheritedConformance.isConcrete()) {
