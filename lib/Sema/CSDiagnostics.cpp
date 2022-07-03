@@ -103,10 +103,8 @@ template <typename... ArgTypes>
 InFlightDiagnostic
 FailureDiagnostic::emitDiagnosticAt(ArgTypes &&... Args) const {
   auto &DE = getASTContext().Diags;
-  auto behavior = isWarning ? DiagnosticBehavior::Warning
-                            : DiagnosticBehavior::Unspecified;
   return std::move(DE.diagnose(std::forward<ArgTypes>(Args)...)
-                     .limitBehavior(behavior));
+                     .limitBehavior(behaviorLimit));
 }
 
 Expr *FailureDiagnostic::findParentExpr(const Expr *subExpr) const {
@@ -1309,7 +1307,7 @@ bool MemberAccessOnOptionalBaseFailure::diagnoseAsError() {
   // only a '?' fixit) even though the constraint system didn't need to add any
   // additional optionality.
   auto overload = getOverloadChoiceIfAvailable(locator);
-  if (overload && overload->openedType->getOptionalObjectType())
+  if (overload && overload->adjustedOpenedType->getOptionalObjectType())
     resultIsOptional = true;
 
   auto unwrappedBaseType = baseType->getOptionalObjectType();
@@ -2216,7 +2214,7 @@ AssignmentFailure::getMemberRef(ConstraintLocator *locator) const {
     if (isValidKeyPathDynamicMemberLookup(subscript)) {
       // Type has a following format:
       // `(Self) -> (dynamicMember: {Writable}KeyPath<T, U>) -> U`
-      auto *fullType = member->openedFullType->castTo<FunctionType>();
+      auto *fullType = member->adjustedOpenedFullType->castTo<FunctionType>();
       auto *fnType = fullType->getResult()->castTo<FunctionType>();
 
       auto paramTy = fnType->getParams()[0].getPlainType();
@@ -4617,7 +4615,7 @@ bool MissingArgumentsFailure::diagnoseAsError() {
 bool MissingArgumentsFailure::diagnoseAsNote() {
   auto *locator = getLocator();
   if (auto overload = getCalleeOverloadChoiceIfAvailable(locator)) {
-    auto *fn = resolveType(overload->openedType)->getAs<AnyFunctionType>();
+    auto *fn = resolveType(overload->adjustedOpenedType)->getAs<AnyFunctionType>();
     auto loc = overload->choice.getDecl()->getLoc();
 
     if (loc.isInvalid())
@@ -4941,7 +4939,7 @@ bool MissingArgumentsFailure::isMisplacedMissingArgument(
     return false;
 
   auto *fnType =
-      solution.simplifyType(overloadChoice->openedType)->getAs<FunctionType>();
+      solution.simplifyType(overloadChoice->adjustedOpenedType)->getAs<FunctionType>();
   if (!(fnType && fnType->getNumParams() == 2))
     return false;
 

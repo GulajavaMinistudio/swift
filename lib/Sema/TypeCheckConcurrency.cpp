@@ -489,13 +489,21 @@ static Optional<PartialApplyThunkInfo> decomposePartialApplyThunk(
 
 /// Find the immediate member reference in the given expression.
 static Optional<std::pair<ConcreteDeclRef, SourceLoc>>
-findMemberReference(Expr *expr) {
+findReference(Expr *expr) {
+  // Look through a function conversion.
+  if (auto fnConv = dyn_cast<FunctionConversionExpr>(expr))
+    expr = fnConv->getSubExpr();
+
   if (auto declRef = dyn_cast<DeclRefExpr>(expr))
     return std::make_pair(declRef->getDeclRef(), declRef->getLoc());
 
   if (auto otherCtor = dyn_cast<OtherConstructorDeclRefExpr>(expr)) {
     return std::make_pair(otherCtor->getDeclRef(), otherCtor->getLoc());
   }
+
+  Expr *inner = expr->getValueProvidingExpr();
+  if (inner != expr)
+    return findReference(inner);
 
   return None;
 }
@@ -536,6 +544,10 @@ static bool isSendableClosure(
     if (forActorIsolation && explicitClosure->inheritsActorContext()) {
       return false;
     }
+
+    if (explicitClosure->isIsolatedByPreconcurrency() &&
+        !shouldDiagnoseExistingDataRaces(closure->getParent()))
+      return false;
   }
 
   if (auto type = closure->getType()) {
@@ -1878,7 +1890,7 @@ namespace {
         // like based on the original written syntax, e.g., "self.method".
         if (auto partialApply = decomposePartialApplyThunk(
                 apply, Parent.getAsExpr())) {
-          if (auto memberRef = findMemberReference(partialApply->fn)) {
+          if (auto memberRef = findReference(partialApply->fn)) {
             // NOTE: partially-applied thunks are never annotated as
             // implicitly async, regardless of whether they are escaping.
             checkReference(
@@ -1899,7 +1911,7 @@ namespace {
       // NOTE: SelfApplyExpr is a subtype of ApplyExpr
       if (auto call = dyn_cast<SelfApplyExpr>(expr)) {
         Expr *fn = call->getFn()->getValueProvidingExpr();
-        if (auto memberRef = findMemberReference(fn)) {
+        if (auto memberRef = findReference(fn)) {
           checkReference(
               call->getBase(), memberRef->first, memberRef->second,
               /*partialApply=*/None, call);
@@ -2134,6 +2146,8 @@ namespace {
 
         if (auto conversion = dyn_cast<ImplicitConversionExpr>(expr))
           expr = conversion->getSubExpr();
+        if (auto fnConv = dyn_cast<FunctionConversionExpr>(expr))
+          expr = fnConv->getSubExpr();
       } while (prior != expr);
 
       if (auto call = dyn_cast<DotSyntaxCallExpr>(expr)) {
@@ -2410,7 +2424,9 @@ namespace {
         // and the fact that the reference may be just an argument to an apply
         ApplyExpr *apply = applyStack.back();
         Expr *fn = apply->getFn()->getValueProvidingExpr();
-        if (auto memberRef = findMemberReference(fn)) {
+        if (auto fnConv = dyn_cast<FunctionConversionExpr>(fn))
+          fn = fnConv->getSubExpr()->getValueProvidingExpr();
+        if (auto memberRef = findReference(fn)) {
           auto concDecl = memberRef->first;
           if (decl == concDecl.getDecl() && !apply->isImplicitlyAsync()) {
 
@@ -2528,7 +2544,8 @@ namespace {
 
       // If we are not in an asynchronous context, complain.
       if (!getDeclContext()->isAsyncContext()) {
-        if (auto calleeDecl = apply->getCalledValue()) {
+        if (auto calleeDecl = apply->getCalledValue(
+                /*skipFunctionConversions=*/true)) {
           ctx.Diags.diagnose(
               apply->getLoc(), diag::actor_isolated_call_decl,
               *unsatisfiedIsolation,
@@ -4019,11 +4036,18 @@ bool swift::contextRequiresStrictConcurrencyChecking(
 
   while (!dc->isModuleScopeContext()) {
     if (auto closure = dyn_cast<AbstractClosureExpr>(dc)) {
-      // A closure with an explicit global actor or nonindependent
+      // A closure with an explicit global actor, async, or Sendable
       // uses concurrency features.
       if (auto explicitClosure = dyn_cast<ClosureExpr>(closure)) {
         if (getExplicitGlobalActor(const_cast<ClosureExpr *>(explicitClosure)))
           return true;
+
+        // Don't take any more cues if this only got its type information by
+        // being provided to a `@preconcurrency` operation.
+        if (explicitClosure->isIsolatedByPreconcurrency()) {
+          dc = dc->getParent();
+          continue;
+        }
 
         if (auto type = getType(closure)) {
           if (auto fnType = type->getAs<AnyFunctionType>())
@@ -4598,7 +4622,7 @@ static AnyFunctionType *applyUnsafeConcurrencyToFunctionType(
     return fnType;
 
   AnyFunctionType *outerFnType = nullptr;
-  if (func && func->hasImplicitSelfDecl()) {
+  if ((subscript && numApplies > 1) || (func && func->hasImplicitSelfDecl())) {
     outerFnType = fnType;
     fnType = outerFnType->getResult()->castTo<AnyFunctionType>();
 
@@ -4628,7 +4652,7 @@ static AnyFunctionType *applyUnsafeConcurrencyToFunctionType(
     if (addSendable || addMainActor) {
       newParamType = applyUnsafeConcurrencyToParameterType(
         param.getPlainType(), addSendable, addMainActor);
-    } else if (stripConcurrency) {
+    } else if (stripConcurrency && numApplies == 0) {
       newParamType = param.getPlainType()->stripConcurrency(
           /*recurse=*/false, /*dropGlobalActor=*/numApplies == 0);
     }
@@ -4688,7 +4712,8 @@ static AnyFunctionType *applyUnsafeConcurrencyToFunctionType(
 AnyFunctionType *swift::adjustFunctionTypeForConcurrency(
     AnyFunctionType *fnType, ValueDecl *decl, DeclContext *dc,
     unsigned numApplies, bool isMainDispatchQueue,
-    llvm::function_ref<Type(const AbstractClosureExpr *)> getType) {
+    llvm::function_ref<Type(const AbstractClosureExpr *)> getType,
+    llvm::function_ref<Type(Type)> openType) {
   // Apply unsafe concurrency features to the given function type.
   bool strictChecking = contextRequiresStrictConcurrencyChecking(dc, getType);
   fnType = applyUnsafeConcurrencyToFunctionType(
@@ -4711,7 +4736,7 @@ AnyFunctionType *swift::adjustFunctionTypeForConcurrency(
       LLVM_FALLTHROUGH;
 
     case ActorIsolation::GlobalActor:
-      globalActorType = isolation.getGlobalActor();
+      globalActorType = openType(isolation.getGlobalActor());
       break;
     }
   }
