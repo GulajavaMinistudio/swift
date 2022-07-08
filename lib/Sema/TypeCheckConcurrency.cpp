@@ -609,6 +609,9 @@ static void addSendableFixIt(const GenericTypeParamDecl *genericArgument,
 static bool shouldDiagnoseExistingDataRaces(const DeclContext *dc) {
   return contextRequiresStrictConcurrencyChecking(dc, [](const AbstractClosureExpr *) {
     return Type();
+  },
+  [](const ClosureExpr *closure) {
+    return closure->isIsolatedByPreconcurrency();
   });
 }
 
@@ -4023,7 +4026,8 @@ void swift::checkOverrideActorIsolation(ValueDecl *value) {
 
 bool swift::contextRequiresStrictConcurrencyChecking(
     const DeclContext *dc,
-    llvm::function_ref<Type(const AbstractClosureExpr *)> getType) {
+    llvm::function_ref<Type(const AbstractClosureExpr *)> getType,
+    llvm::function_ref<bool(const ClosureExpr *)> isolatedByPreconcurrency) {
   switch (dc->getASTContext().LangOpts.StrictConcurrencyLevel) {
   case StrictConcurrency::Complete:
     return true;
@@ -4044,7 +4048,7 @@ bool swift::contextRequiresStrictConcurrencyChecking(
 
         // Don't take any more cues if this only got its type information by
         // being provided to a `@preconcurrency` operation.
-        if (explicitClosure->isIsolatedByPreconcurrency()) {
+        if (isolatedByPreconcurrency(explicitClosure)) {
           dc = dc->getParent();
           continue;
         }
@@ -4341,23 +4345,37 @@ static void addUnavailableAttrs(ExtensionDecl *ext, NominalTypeDecl *nominal) {
   ASTContext &ctx = nominal->getASTContext();
   llvm::VersionTuple noVersion;
 
-  // Add platform-version-specific @available attributes.
-  for (auto available : nominal->getAttrs().getAttributes<AvailableAttr>()) {
-    if (available->Platform == PlatformKind::none)
-      continue;
+  // Add platform-version-specific @available attributes. Search from nominal
+  // type declaration through its enclosing declarations to find the first one
+  // with platform-specific attributes.
+  for (Decl *enclosing = nominal;
+       enclosing;
+       enclosing = enclosing->getDeclContext()
+           ? enclosing->getDeclContext()->getAsDecl()
+           : nullptr) {
+    bool anyPlatformSpecificAttrs = false;
+    for (auto available: enclosing->getAttrs().getAttributes<AvailableAttr>()) {
+      if (available->Platform == PlatformKind::none)
+        continue;
 
-    auto attr = new (ctx) AvailableAttr(
-        SourceLoc(), SourceRange(),
-        available->Platform,
-        available->Message,
-        "", nullptr,
-        available->Introduced.getValueOr(noVersion), SourceRange(),
-        available->Deprecated.getValueOr(noVersion), SourceRange(),
-        available->Obsoleted.getValueOr(noVersion), SourceRange(),
-        PlatformAgnosticAvailabilityKind::Unavailable,
-        /*implicit=*/true,
-        available->IsSPI);
-    ext->getAttrs().add(attr);
+      auto attr = new (ctx) AvailableAttr(
+          SourceLoc(), SourceRange(),
+          available->Platform,
+          available->Message,
+          "", nullptr,
+          available->Introduced.getValueOr(noVersion), SourceRange(),
+          available->Deprecated.getValueOr(noVersion), SourceRange(),
+          available->Obsoleted.getValueOr(noVersion), SourceRange(),
+          PlatformAgnosticAvailabilityKind::Unavailable,
+          /*implicit=*/true,
+          available->IsSPI);
+      ext->getAttrs().add(attr);
+      anyPlatformSpecificAttrs = true;
+    }
+
+    // If we found any platform-specific availability attributes, we're done.
+    if (anyPlatformSpecificAttrs)
+      break;
   }
 
   // Add the blanket "unavailable".
@@ -4588,11 +4606,13 @@ static bool hasKnownUnsafeSendableFunctionParams(AbstractFunctionDecl *func) {
 
 Type swift::adjustVarTypeForConcurrency(
     Type type, VarDecl *var, DeclContext *dc,
-    llvm::function_ref<Type(const AbstractClosureExpr *)> getType) {
+    llvm::function_ref<Type(const AbstractClosureExpr *)> getType,
+    llvm::function_ref<bool(const ClosureExpr *)> isolatedByPreconcurrency) {
   if (!var->preconcurrency())
     return type;
 
-  if (contextRequiresStrictConcurrencyChecking(dc, getType))
+  if (contextRequiresStrictConcurrencyChecking(
+          dc, getType, isolatedByPreconcurrency))
     return type;
 
   bool isLValue = false;
@@ -4713,9 +4733,11 @@ AnyFunctionType *swift::adjustFunctionTypeForConcurrency(
     AnyFunctionType *fnType, ValueDecl *decl, DeclContext *dc,
     unsigned numApplies, bool isMainDispatchQueue,
     llvm::function_ref<Type(const AbstractClosureExpr *)> getType,
+    llvm::function_ref<bool(const ClosureExpr *)> isolatedByPreconcurrency,
     llvm::function_ref<Type(Type)> openType) {
   // Apply unsafe concurrency features to the given function type.
-  bool strictChecking = contextRequiresStrictConcurrencyChecking(dc, getType);
+  bool strictChecking = contextRequiresStrictConcurrencyChecking(
+      dc, getType, isolatedByPreconcurrency);
   fnType = applyUnsafeConcurrencyToFunctionType(
       fnType, decl, strictChecking, numApplies, isMainDispatchQueue);
 
@@ -4775,7 +4797,10 @@ bool swift::completionContextUsesConcurrencyFeatures(const DeclContext *dc) {
   return contextRequiresStrictConcurrencyChecking(
       dc, [](const AbstractClosureExpr *) {
         return Type();
-      });
+      },
+    [](const ClosureExpr *closure) {
+      return closure->isIsolatedByPreconcurrency();
+    });
 }
 
 AbstractFunctionDecl const *swift::isActorInitOrDeInitContext(
@@ -4884,6 +4909,9 @@ static ActorIsolation getActorIsolationForReference(
             fromDC,
             [](const AbstractClosureExpr *closure) {
               return closure->getType();
+            },
+            [](const ClosureExpr *closure) {
+              return closure->isIsolatedByPreconcurrency();
             })) {
       declIsolation = ActorIsolation::forGlobalActor(
           declIsolation.getGlobalActor(), /*unsafe=*/false);

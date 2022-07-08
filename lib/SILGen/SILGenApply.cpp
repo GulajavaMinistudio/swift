@@ -1303,7 +1303,10 @@ public:
     CanType superFormalType = arg->getType()->getCanonicalType();
 
     // The callee for a super call has to be either a method or constructor.
+    // There might be one level of conversion in between.
     Expr *fn = apply->getFn();
+    if (auto fnConv = dyn_cast<FunctionConversionExpr>(fn))
+      fn = fnConv->getSubExpr();
     SubstitutionMap substitutions;
     SILDeclRef constant;
     if (auto *ctorRef = dyn_cast<OtherConstructorDeclRefExpr>(fn)) {
@@ -5826,13 +5829,15 @@ SILDeclRef SILGenModule::getAccessorDeclRef(AccessorDecl *accessor) {
 }
 
 /// Emit a call to a getter.
-RValue SILGenFunction::emitGetAccessor(SILLocation loc, SILDeclRef get,
-                                       SubstitutionMap substitutions,
-                                       ArgumentSource &&selfValue, bool isSuper,
-                                       bool isDirectUse,
-                                       PreparedArguments &&subscriptIndices,
-                                       SGFContext c,
-                                       bool isOnSelfParameter) {
+RValue SILGenFunction::emitGetAccessor(
+    SILLocation loc, SILDeclRef get,
+    SubstitutionMap substitutions,
+    ArgumentSource &&selfValue, bool isSuper,
+    bool isDirectUse,
+    PreparedArguments &&subscriptIndices,
+    SGFContext c,
+    bool isOnSelfParameter,
+    Optional<ImplicitActorHopTarget> implicitActorHopTarget) {
   // Scope any further writeback just within this operation.
   FormalEvaluationScope writebackScope(*this);
 
@@ -5843,6 +5848,9 @@ RValue SILGenFunction::emitGetAccessor(SILLocation loc, SILDeclRef get,
   CanAnyFunctionType accessType = getter.getSubstFormalType();
 
   CallEmission emission(*this, std::move(getter), std::move(writebackScope));
+  if (implicitActorHopTarget)
+    emission.setImplicitlyAsync(implicitActorHopTarget);
+
   // Self ->
   if (hasSelf) {
     emission.addSelfParam(loc, std::move(selfValue),
