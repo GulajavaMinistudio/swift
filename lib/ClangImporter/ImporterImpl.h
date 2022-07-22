@@ -939,7 +939,7 @@ public:
 
   void addImportDiagnostic(
       ImportDiagnosticTarget target, Diagnostic &&diag,
-      const clang::SourceLocation &loc = clang::SourceLocation());
+      clang::SourceLocation loc);
 
   /// Import the given Clang identifier into Swift.
   ///
@@ -1724,7 +1724,7 @@ class ImportDiagnosticAdder {
 public:
   ImportDiagnosticAdder(
       ClangImporter::Implementation &impl, ImportDiagnosticTarget target,
-      const clang::SourceLocation &loc = clang::SourceLocation())
+      clang::SourceLocation loc)
       : impl(impl), target(target), loc(loc) {}
 
   void operator () (Diagnostic &&diag) {
@@ -1859,6 +1859,22 @@ inline Optional<const clang::EnumDecl *> findAnonymousEnumForTypedef(
     return cast<clang::EnumDecl>(found->get<clang::NamedDecl *>());
 
   return None;
+}
+
+inline bool requiresCPlusPlus(const clang::Module *module) {
+  // The libc++ modulemap doesn't currently declare the requirement.
+  if (module->getTopLevelModuleName() == "std")
+    return true;
+
+  // Modulemaps often declare the requirement for the top-level module only.
+  if (auto parent = module->Parent) {
+    if (requiresCPlusPlus(parent))
+      return true;
+  }
+
+  return llvm::any_of(module->Requirements, [](clang::Module::Requirement req) {
+    return req.first == "cplusplus";
+  });
 }
 
 }

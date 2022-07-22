@@ -452,6 +452,18 @@ ConstraintLocator *ConstraintSystem::getImplicitValueConversionLocator(
       anchor = ASTNode();
       path.clear();
     }
+
+    // If conversion is for a tuple element, let's drop `TupleType`
+    // components from the path since they carry information for
+    // diagnostics that `ExprRewriter` won't be able to re-construct
+    // during solution application.
+    if (!path.empty() && path.back().is<LocatorPathElt::TupleElement>()) {
+      path.erase(llvm::remove_if(path,
+                                 [](const LocatorPathElt &elt) {
+                                   return elt.is<LocatorPathElt::TupleType>();
+                                 }),
+                 path.end());
+    }
   }
 
   return getConstraintLocator(/*base=*/getConstraintLocator(anchor, path),
@@ -5254,6 +5266,13 @@ void constraints::simplifyLocator(ASTNode &anchor,
         anchor = patternBinding->getPattern(pattern.getIndex());
       path = path.slice(1);
       continue;
+    }
+
+    case ConstraintLocator::NamedPatternDecl: {
+      auto pattern = cast<NamedPattern>(anchor.get<Pattern *>());
+      anchor = pattern->getDecl();
+      path = path.slice(1);
+      break;
     }
 
     case ConstraintLocator::ImplicitConversion:
