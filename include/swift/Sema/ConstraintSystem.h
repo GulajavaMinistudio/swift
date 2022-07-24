@@ -5096,7 +5096,8 @@ public:
   ///
   /// An expression needs type erasure if:
   ///  1. The expression is a return value.
-  ///  2. The enclosing function is dynamic or a dynamic replacement.
+  ///  2. The enclosing function is dynamic, a dynamic replacement, or
+  ///     `-enable-experimental-opaque-type-erasure` is used.
   ///  3. The enclosing function returns an opaque type.
   ///  4. The opaque type conforms to (exactly) one protocol, and the protocol
   ///     has a declared type eraser.
@@ -6117,7 +6118,7 @@ public:
   bool isSymmetricOperator() const;
   bool isUnaryOperator() const;
 
-  void print(llvm::raw_ostream &Out, SourceManager *SM) const {
+  void print(llvm::raw_ostream &Out, SourceManager *SM, unsigned indent = 0) const {
     Out << "disjunction choice ";
     Choice->print(Out, SM);
   }
@@ -6149,9 +6150,9 @@ public:
 
   ConstraintLocator *getLocator() const { return Element->getLocator(); }
 
-  void print(llvm::raw_ostream &Out, SourceManager *SM) const {
+  void print(llvm::raw_ostream &Out, SourceManager *SM, unsigned indent) const {
     Out << "conjunction element ";
-    Element->print(Out, SM);
+    Element->print(Out, SM, indent);
   }
 
 private:
@@ -6186,7 +6187,7 @@ public:
   Optional<std::pair<ConstraintFix *, unsigned>>
   fixForHole(ConstraintSystem &cs) const;
 
-  void print(llvm::raw_ostream &Out, SourceManager *) const {
+  void print(llvm::raw_ostream &Out, SourceManager *, unsigned indent) const {
     PrintOptions PO;
     PO.PrintTypesForDebugging = true;
     Out << "type variable " << TypeVar->getString(PO)

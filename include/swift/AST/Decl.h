@@ -2262,12 +2262,19 @@ class ValueDecl : public Decl {
     /// Whether this declaration produces an implicitly unwrapped
     /// optional result.
     unsigned isIUO : 1;
+
+    /// Whether the "isMoveOnly" bit has been computed yet.
+    unsigned isMoveOnlyComputed : 1;
+
+    /// Whether this declaration can not be copied and thus is move only.
+    unsigned isMoveOnly : 1;
   } LazySemanticInfo = { };
 
   friend class DynamicallyReplacedDeclRequest;
   friend class OverriddenDeclsRequest;
   friend class IsObjCRequest;
   friend class IsFinalRequest;
+  friend class IsMoveOnlyRequest;
   friend class IsDynamicRequest;
   friend class IsImplicitlyUnwrappedOptionalRequest;
   friend class InterfaceTypeRequest;
@@ -2541,6 +2548,9 @@ public:
 
   /// Is this declaration 'final'?
   bool isFinal() const;
+
+  /// Is this declaration 'moveOnly'?
+  bool isMoveOnly() const;
 
   /// Is this declaration marked with 'dynamic'?
   bool isDynamic() const;
@@ -4231,15 +4241,7 @@ public:
 
   /// Whether the class uses the ObjC object model (reference counting,
   /// allocation, etc.), the Swift model, or has no reference counting at all.
-  ReferenceCounting getObjectModel() const {
-    if (isForeignReferenceType())
-      return ReferenceCounting::None;
-
-    if (checkAncestry(AncestryFlags::ObjCObjectModel))
-      return ReferenceCounting::ObjC;
-
-    return ReferenceCounting::Native;
-  }
+  ReferenceCounting getObjectModel() const;
 
   LayoutConstraintKind getLayoutConstraintKind() const {
     if (getObjectModel() == ReferenceCounting::ObjC)
@@ -4353,6 +4355,8 @@ public:
   /// non-reference-counted swift reference type that was imported from a C++
   /// record.
   bool isForeignReferenceType() const;
+
+  bool hasRefCountingAnnotations() const;
 };
 
 /// The set of known protocols for which derived conformances are supported.

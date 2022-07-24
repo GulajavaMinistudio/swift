@@ -15,11 +15,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/Decl.h"
+#include "swift/AST/ASTContext.h"
+#include "swift/AST/ASTMangler.h"
+#include "swift/AST/ASTWalker.h"
 #include "swift/AST/AccessRequests.h"
 #include "swift/AST/AccessScope.h"
-#include "swift/AST/ASTContext.h"
-#include "swift/AST/ASTWalker.h"
-#include "swift/AST/ASTMangler.h"
 #include "swift/AST/Attr.h"
 #include "swift/AST/CaptureInfo.h"
 #include "swift/AST/DiagnosticEngine.h"
@@ -32,7 +32,6 @@
 #include "swift/AST/GenericSignature.h"
 #include "swift/AST/Initializer.h"
 #include "swift/AST/LazyResolver.h"
-#include "swift/AST/ASTMangler.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/NameLookupRequests.h"
@@ -44,11 +43,17 @@
 #include "swift/AST/ResilienceExpansion.h"
 #include "swift/AST/SourceFile.h"
 #include "swift/AST/Stmt.h"
+#include "swift/AST/SwiftNameTranslation.h"
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/AST/TypeLoc.h"
-#include "swift/AST/SwiftNameTranslation.h"
 #include "swift/Basic/Defer.h"
+#include "swift/Basic/Range.h"
+#include "swift/Basic/Statistic.h"
+#include "swift/Basic/StringExtras.h"
+#include "swift/Basic/TypeID.h"
+#include "swift/ClangImporter/ClangImporterRequests.h"
 #include "swift/ClangImporter/ClangModule.h"
+#include "swift/Demangling/ManglingMacros.h"
 #include "swift/Parse/Lexer.h" // FIXME: Bad dependency
 #include "clang/Lex/MacroInfo.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -57,11 +62,6 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
-#include "swift/Basic/Range.h"
-#include "swift/Basic/StringExtras.h"
-#include "swift/Basic/Statistic.h"
-#include "swift/Basic/TypeID.h"
-#include "swift/Demangling/ManglingMacros.h"
 
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/Module.h"
@@ -3102,6 +3102,12 @@ bool ValueDecl::isFinal() const {
                            getAttrs().hasAttribute<FinalAttr>());
 }
 
+bool ValueDecl::isMoveOnly() const {
+  return evaluateOrDefault(getASTContext().evaluator,
+                           IsMoveOnlyRequest{const_cast<ValueDecl *>(this)},
+                           getAttrs().hasAttribute<MoveOnlyAttr>());
+}
+
 bool ValueDecl::isDynamic() const {
   ASTContext &ctx = getASTContext();
   return evaluateOrDefault(ctx.evaluator,
@@ -5225,6 +5231,25 @@ bool ClassDecl::walkSuperclasses(
 
 bool ClassDecl::isForeignReferenceType() const {
   return getClangDecl() && isa<clang::RecordDecl>(getClangDecl());
+}
+
+bool ClassDecl::hasRefCountingAnnotations() const {
+  return evaluateOrDefault(getASTContext().evaluator,
+                           CustomRefCountingOperation(
+                               {this, CustomRefCountingOperationKind::release}),
+                           {})
+             .kind != CustomRefCountingOperationResult::immortal;
+}
+
+ReferenceCounting ClassDecl::getObjectModel() const {
+  if (isForeignReferenceType())
+    return hasRefCountingAnnotations() ? ReferenceCounting::Custom
+                                       : ReferenceCounting::None;
+
+  if (checkAncestry(AncestryFlags::ObjCObjectModel))
+    return ReferenceCounting::ObjC;
+
+  return ReferenceCounting::Native;
 }
 
 EnumCaseDecl *EnumCaseDecl::create(SourceLoc CaseLoc,
