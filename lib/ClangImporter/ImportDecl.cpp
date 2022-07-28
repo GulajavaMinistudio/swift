@@ -1129,11 +1129,13 @@ namespace {
       for (auto redecl : decl->redecls())
         Impl.ImportedDecls[{redecl, getVersion()}] = enumDecl;
 
-      // Because a namespaces's decl context is the bridging header, make sure
-      // we add them to the bridging header lookup table.
-      addEntryToLookupTable(*Impl.BridgingHeaderLookupTable,
-                            const_cast<clang::NamespaceDecl *>(decl),
-                            Impl.getNameImporter());
+      for (auto redecl : decl->redecls()) {
+        // Because a namespaces's decl context is the bridging header, make sure
+        // we add them to the bridging header lookup table.
+        addEntryToLookupTable(*Impl.BridgingHeaderLookupTable,
+                              const_cast<clang::NamespaceDecl *>(redecl),
+                              Impl.getNameImporter());
+      }
 
       return enumDecl;
     }
@@ -8193,9 +8195,13 @@ ClangImporter::Implementation::importDeclForDeclContext(
   if (!contextDeclsWarnedAbout.insert(contextDecl).second)
     return nullptr;
 
-  auto getDeclName = [](const clang::Decl *D) -> StringRef {
-    if (auto ND = dyn_cast<clang::NamedDecl>(D))
-      return ND->getName();
+  auto getDeclName = [](const clang::Decl *D) -> std::string {
+    if (auto ND = dyn_cast<clang::NamedDecl>(D)) {
+      std::string name;
+      llvm::raw_string_ostream os(name);
+      ND->printName(os);
+      return name;
+    }
     return "<anonymous>";
   };
 
