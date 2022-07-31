@@ -102,10 +102,12 @@ static void writePrologue(raw_ostream &out, ASTContext &ctx,
         out << "#include <cstdint>\n"
                "#include <cstddef>\n"
                "#include <cstdbool>\n"
-               "#include <cstring>\n"
-               "#include <new>\n";
+               "#include <cstring>\n";
         out << "#include <stdlib.h>\n";
-        out << "#if defined(_WIN32)\n#include <malloc.h>\n#endif\n";
+        out << "#include <new>\n";
+        out << "#if __has_include(<shims/_SwiftCxxInteroperability.h>)\n";
+        out << "#include <shims/_SwiftCxxInteroperability.h>\n";
+        out << "#endif\n";
       },
       [&] {
         out << "#include <stdint.h>\n"
@@ -322,6 +324,15 @@ static void writePrologue(raw_ostream &out, ASTContext &ctx,
   emitMacro("SWIFT_INDIRECT_RESULT", "__attribute__((swift_indirect_result))");
   emitMacro("SWIFT_CONTEXT", "__attribute__((swift_context))");
   emitMacro("SWIFT_ERROR_RESULT", "__attribute__((swift_error_result))");
+  if (ctx.getStdlibModule()->isStaticLibrary()) {
+    emitMacro("SWIFT_IMPORT_STDLIB_SYMBOL");
+  } else {
+    out << "#if defined(_WIN32)\n";
+    emitMacro("SWIFT_IMPORT_STDLIB_SYMBOL", "__declspec(dllimport)");
+    out << "#else\n";
+    emitMacro("SWIFT_IMPORT_STDLIB_SYMBOL");
+    out << "#endif\n";
+  }
   // SWIFT_NOEXCEPT applies 'noexcept' in C++ mode only.
   emitCxxConditional(
       out, [&] { emitMacro("SWIFT_NOEXCEPT", "noexcept"); },

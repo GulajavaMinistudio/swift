@@ -29,10 +29,10 @@
 // CHECK-NEXT:  #include <cstddef>
 // CHECK-NEXT:  #include <cstdbool>
 // CHECK-NEXT:  #include <cstring>
-// CHECK-NEXT:  #include <new>
 // CHECK-NEXT:  #include <stdlib.h>
-// CHECK-NEXT:  #if defined(_WIN32)
-// CHECK-NEXT:  #include <malloc.h>
+// CHECK-NEXT:  #include <new>
+// CHECK-NEXT:  #if __has_include(<shims/_SwiftCxxInteroperability.h>)
+// CHECK-NEXT:  #include <shims/_SwiftCxxInteroperability.h>
 // CHECK-NEXT:  #endif
 // CHECK-NEXT:  #else
 // CHECK-NEXT:  #include <stdint.h>
