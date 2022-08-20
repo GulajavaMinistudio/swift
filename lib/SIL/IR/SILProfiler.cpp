@@ -196,6 +196,13 @@ static bool skipExpr(Expr *E) {
   return !E->getStartLoc().isValid() || !E->getEndLoc().isValid();
 }
 
+/// Whether the children of an unmapped decl should still be walked.
+static bool shouldWalkUnmappedDecl(const Decl *D) {
+  // We want to walk into the initializer for a pattern binding decl. This
+  // allows us to map LazyInitializerExprs.
+  return isa<PatternBindingDecl>(D);
+}
+
 /// An ASTWalker that maps ASTNodes to profiling counters.
 struct MapRegionCounters : public ASTWalker {
   /// The next counter value to assign.
@@ -206,6 +213,12 @@ struct MapRegionCounters : public ASTWalker {
 
   MapRegionCounters(llvm::DenseMap<ASTNode, unsigned> &CounterMap)
       : CounterMap(CounterMap) {}
+
+  LazyInitializerWalking getLazyInitializerWalkingBehavior() override {
+    // We want to walk lazy initializers present in the synthesized getter for
+    // a lazy variable.
+    return LazyInitializerWalking::InAccessor;
+  }
 
   void mapRegion(ASTNode N) {
     CounterMap[N] = NextCounter;
@@ -225,7 +238,7 @@ struct MapRegionCounters : public ASTWalker {
 
   bool walkToDeclPre(Decl *D) override {
     if (isUnmapped(D))
-      return false;
+      return shouldWalkUnmappedDecl(D);
 
     if (auto *AFD = dyn_cast<AbstractFunctionDecl>(D)) {
       return visitFunctionDecl(*this, AFD, [&] { mapRegion(AFD->getBody()); });
@@ -274,14 +287,8 @@ struct MapRegionCounters : public ASTWalker {
       mapRegion(IE->getThenExpr());
     }
 
-    // rdar://42792053
-    // TODO: There's an outstanding issue here with LazyInitializerExpr. A LIE
-    // is copied into the body of a property getter after type-checking (before
-    // coverage). ASTWalker only visits this expression once via the property's
-    // VarDecl, and does not visit it again within the getter. This results in
-    // missing coverage. SILGen treats the init expr as part of the getter, but
-    // its SILProfiler has no information about the init because the LIE isn't
-    // visited here.
+    if (isa<LazyInitializerExpr>(E))
+      mapRegion(E);
 
     return {true, E};
   }
@@ -341,29 +348,64 @@ public:
   /// Returns true if this is a Zero node.
   bool isZero() const { return K == Kind::Zero; }
 
+  /// Returns true if the counter is semantically a Zero node. This considers
+  /// the simplified version of the counter that has eliminated redundant
+  /// operations.
+  bool isSemanticallyZero() const {
+    // Run the counter through the counter builder to simplify it, using a dummy
+    // mapping of unique counter indices for each node reference. The value of
+    // the indices doesn't matter, but we need to ensure that e.g subtraction
+    // of a node from itself cancels out.
+    llvm::coverage::CounterExpressionBuilder Builder;
+    llvm::DenseMap<ASTNode, unsigned> DummyIndices;
+    unsigned LastIdx = 0;
+    auto Counter = expand(Builder, [&](auto Node) {
+      if (!DummyIndices.count(Node)) {
+        DummyIndices[Node] = LastIdx;
+        LastIdx += 1;
+      }
+      return DummyIndices[Node];
+    });
+    return Counter.isZero();
+  }
+
   /// Expand this node into an llvm::coverage::Counter.
   ///
   /// Updates \c Builder with any expressions that are needed to represent this
   /// counter.
   llvm::coverage::Counter
   expand(llvm::coverage::CounterExpressionBuilder &Builder,
-         llvm::DenseMap<ASTNode, unsigned> &Counters) const {
+         llvm::function_ref<unsigned(ASTNode)> GetCounterIdx) const {
     switch (K) {
     case Kind::Zero:
       return llvm::coverage::Counter::getZero();
     case Kind::Node:
-      return llvm::coverage::Counter::getCounter(Counters[Node]);
+      return llvm::coverage::Counter::getCounter(GetCounterIdx(Node));
     case Kind::Add:
-      return Builder.add(LHS->expand(Builder, Counters),
-                         RHS->expand(Builder, Counters));
+      return Builder.add(LHS->expand(Builder, GetCounterIdx),
+                         RHS->expand(Builder, GetCounterIdx));
     case Kind::Sub:
-      return Builder.subtract(LHS->expand(Builder, Counters),
-                              RHS->expand(Builder, Counters));
+      return Builder.subtract(LHS->expand(Builder, GetCounterIdx),
+                              RHS->expand(Builder, GetCounterIdx));
     case Kind::Ref:
-      return LHS->expand(Builder, Counters);
+      return LHS->expand(Builder, GetCounterIdx);
     }
 
     llvm_unreachable("Unhandled Kind in switch.");
+  }
+
+  /// Expand this node into an llvm::coverage::Counter.
+  ///
+  /// Updates \c Builder with any expressions that are needed to represent this
+  /// counter.
+  llvm::coverage::Counter
+  expand(llvm::coverage::CounterExpressionBuilder &Builder,
+         const llvm::DenseMap<ASTNode, unsigned> &Counters) const {
+    return expand(Builder, [&](auto Node) {
+      auto Result = Counters.find(Node);
+      assert(Result != Counters.end() && "Counter not found");
+      return Result->second;
+    });
   }
 
   void print(raw_ostream &OS) const {
@@ -545,7 +587,7 @@ struct PGOMapping : public ASTWalker {
 
   bool walkToDeclPre(Decl *D) override {
     if (isUnmapped(D))
-      return false;
+      return shouldWalkUnmappedDecl(D);
     if (auto *AFD = dyn_cast<AbstractFunctionDecl>(D)) {
       return visitFunctionDecl(*this, AFD, [&] {
         setKnownExecutionCount(AFD->getBody());
@@ -555,6 +597,12 @@ struct PGOMapping : public ASTWalker {
       setKnownExecutionCount(TLCD->getBody());
 
     return true;
+  }
+
+  LazyInitializerWalking getLazyInitializerWalkingBehavior() override {
+    // We want to walk lazy initializers present in the synthesized getter for
+    // a lazy variable.
+    return LazyInitializerWalking::InAccessor;
   }
 
   std::pair<bool, Stmt *> walkToStmtPre(Stmt *S) override {
@@ -640,6 +688,9 @@ struct PGOMapping : public ASTWalker {
       }
       setExecutionCount(elseExpr, subtract(count, thenCount));
     }
+    if (isa<LazyInitializerExpr>(E))
+      setKnownExecutionCount(E);
+
     return {true, E};
   }
 };
@@ -749,7 +800,7 @@ private:
     CounterExpr *JumpsToLabel = nullptr;
     Stmt *ParentStmt = Parent.getAsStmt();
     if (ParentStmt) {
-      if (isa<DoStmt>(ParentStmt) || isa<DoCatchStmt>(ParentStmt))
+      if (isa<DoCatchStmt>(ParentStmt))
         return;
       auto caseStmt = dyn_cast_or_null<CaseStmt>(ParentStmt);
       if (caseStmt && caseStmt->getParentKind() == CaseParentKind::DoCatch)
@@ -769,7 +820,17 @@ private:
     if (ControlFlowAdjust)
       Count = &createCounter(CounterExpr::Sub(*Count, *ControlFlowAdjust));
 
-    RegionStack.emplace_back(ASTNode(), *Count, getEndLoc(Scope), None);
+    if (Count->isSemanticallyZero()) {
+      // If the counter is semantically zero, form an 'incomplete' region with
+      // no starting location. This prevents forming unreachable regions unless
+      // there is a following statement or expression to extend the region.
+      RegionStack.emplace_back(ASTNode(), *Count, None, None);
+    } else {
+      // Otherwise, we have a non-zero counter, so form a new region starting
+      // at the end of the previous scope. This ensures the user covers both
+      // branches of a condition.
+      RegionStack.emplace_back(ASTNode(), *Count, getEndLoc(Scope), None);
+    }
   }
 
   /// Push a region covering \c Node onto the stack.
@@ -859,6 +920,12 @@ private:
 public:
   CoverageMapping(const SourceManager &SM) : SM(SM) {}
 
+  LazyInitializerWalking getLazyInitializerWalkingBehavior() override {
+    // We want to walk lazy initializers present in the synthesized getter for
+    // a lazy variable.
+    return LazyInitializerWalking::InAccessor;
+  }
+
   /// Generate the coverage counter mapping regions from collected
   /// source regions.
   SILCoverageMap *emitSourceRegions(
@@ -886,7 +953,7 @@ public:
 
   bool walkToDeclPre(Decl *D) override {
     if (isUnmapped(D))
-      return false;
+      return shouldWalkUnmappedDecl(D);
 
     if (auto *AFD = dyn_cast<AbstractFunctionDecl>(D)) {
       return visitFunctionDecl(*this, AFD, [&] {
@@ -954,8 +1021,8 @@ public:
       if (caseStmt->getParentKind() == CaseParentKind::Switch)
         pushRegion(S);
     } else if (auto *DS = dyn_cast<DoStmt>(S)) {
+      assignCounter(DS, CounterExpr::Zero());
       assignCounter(DS->getBody(), CounterExpr::Ref(getCurrentCounter()));
-      assignCounter(DS);
 
     } else if (auto *DCS = dyn_cast<DoCatchStmt>(S)) {
       // The do-catch body is visited the same number of times as its parent.
@@ -1079,6 +1146,9 @@ public:
                       CounterExpr::Sub(getCurrentCounter(), ThenCounter));
       }
     }
+
+    if (isa<LazyInitializerExpr>(E))
+      assignCounter(E);
 
     if (hasCounter(E) && !Parent.isNull())
       pushRegion(E);
