@@ -41,6 +41,7 @@ static void forAllRequirementTypes(
   std::move(source).visitRequirements(TypeResolutionStage::Interface,
       [&](const Requirement &req, RequirementRepr *reqRepr) {
     switch (req.getKind()) {
+    case RequirementKind::SameCount:
     case RequirementKind::Conformance:
     case RequirementKind::SameType:
     case RequirementKind::Superclass:
@@ -1866,6 +1867,9 @@ public:
         auto wrapperType = P->getAttachedPropertyWrapperType(index);
         checkType(wrapperType, wrapperAttrs[index]->getTypeRepr(), fn);
       }
+
+      if (auto attr = P->getAttachedResultBuilder())
+        checkType(P->getResultBuilderType(), attr->getTypeRepr(), fn);
 
       checkType(P->getInterfaceType(), P->getTypeRepr(), fn);
     }
