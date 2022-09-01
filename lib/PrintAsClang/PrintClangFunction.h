@@ -19,6 +19,7 @@
 #include "swift/Basic/LLVM.h"
 #include "swift/ClangImporter/ClangImporter.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
@@ -141,11 +142,25 @@ public:
                                ModuleDecl *moduleContext,
                                OutputLanguageMode outputLang);
 
+  using PrinterTy =
+      llvm::function_ref<void(llvm::MapVector<Type, std::string> &)>;
+
+  /// Print generated C++ helper function
+  void printCustomCxxFunction(const SmallVector<Type> &neededTypes,
+                              PrinterTy retTypeAndNamePrinter,
+                              PrinterTy paramPrinter, bool isConstFunc,
+                              PrinterTy bodyPrinter, ModuleDecl *emittedModule,
+                              raw_ostream &outOfLineOS);
+
 private:
   void printCxxToCFunctionParameterUse(
       Type type, StringRef name, const ModuleDecl *moduleContext, bool isInOut,
       bool isIndirect = false,
       llvm::Optional<AdditionalParam::Role> paramRole = None);
+
+  // Print out the full type specifier that refers to the
+  // _impl::_impl_<typename> C++ class for the given Swift type.
+  void printTypeImplTypeSpecifier(Type type, const ModuleDecl *moduleContext);
 
   bool hasKnownOptionalNullableCxxMapping(Type type);
 
