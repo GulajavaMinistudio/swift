@@ -79,7 +79,7 @@ public:
 
   /// Information about any additional parameters.
   struct AdditionalParam {
-    enum class Role { GenericRequirement, Self, Error };
+    enum class Role { GenericRequirement, GenericTypeMetadata, Self, Error };
 
     Role role;
     Type type;
@@ -131,10 +131,10 @@ public:
                       ArrayRef<AdditionalParam> additionalParams);
 
   /// Print the C++ getter/setter method signature.
-  void printCxxPropertyAccessorMethod(const NominalTypeDecl *typeDeclContext,
-                                      const AccessorDecl *accessor,
-                                      StringRef swiftSymbolName, Type resultTy,
-                                      bool isDefinition);
+  void printCxxPropertyAccessorMethod(
+      const NominalTypeDecl *typeDeclContext, const AccessorDecl *accessor,
+      StringRef swiftSymbolName, Type resultTy, bool isDefinition,
+      ArrayRef<AdditionalParam> additionalParams);
 
   /// Print Swift type as C/C++ type, as the return type of a C/C++ function.
   ClangRepresentation
