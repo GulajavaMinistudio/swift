@@ -2921,6 +2921,8 @@ static bool usesFeatureBuiltinCopy(Decl *decl) { return false; }
 
 static bool usesFeatureBuiltinTaskRunInline(Decl *) { return false; }
 
+static bool usesFeatureBuiltinUnprotectedAddressOf(Decl *) { return false; }
+
 static bool usesFeatureSpecializeAttributeWithAvailability(Decl *decl) {
   if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
     for (auto specialize : func->getAttrs().getAttributes<SpecializeAttr>()) {
@@ -2933,6 +2935,14 @@ static bool usesFeatureSpecializeAttributeWithAvailability(Decl *decl) {
 
 static bool usesFeatureTypeWrappers(Decl *decl) {
   return decl->getAttrs().hasAttribute<TypeWrapperAttr>();
+}
+
+static bool usesFeatureParserRoundTrip(Decl *decl) {
+  return false;
+}
+
+static bool usesFeatureParserValidation(Decl *decl) {
+  return false;
 }
 
 static void suppressingFeatureSpecializeAttributeWithAvailability(
