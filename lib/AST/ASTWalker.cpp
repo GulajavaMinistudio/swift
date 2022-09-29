@@ -863,8 +863,8 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
       }
     }
 
-    ClosureExpr *body = expr->getClosureBody();
-    if ((body = cast_or_null<ClosureExpr>(doIt(body))))
+    AbstractClosureExpr *body = expr->getClosureBody();
+    if ((body = cast_or_null<AbstractClosureExpr>(doIt(body))))
       expr->setClosureBody(body);
     else
       return nullptr;
@@ -1010,9 +1010,8 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
 
     return E;
   }
-  
-  
-  Expr *visitIfExpr(IfExpr *E) {
+
+  Expr *visitTernaryExpr(TernaryExpr *E) {
     if (Expr *Cond = E->getCondExpr()) {
       Cond = doIt(Cond);
       if (!Cond) return nullptr;
