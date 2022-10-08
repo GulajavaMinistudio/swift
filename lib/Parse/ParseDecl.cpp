@@ -160,6 +160,19 @@ namespace {
   };
 } // end anonymous namespace
 
+extern "C" void parseTopLevelSwift(const char *buffer,
+                                   void *declContext,
+                                   void *astContext,
+                                   void *outputContext,
+                                   void (*)(void *, void *));
+
+static void appendToVector(void *declPtr, void *vecPtr) {
+  auto vec = static_cast<SmallVectorImpl<Decl *> *>(vecPtr);
+  auto decl = static_cast<Decl *>(declPtr);
+
+  vec->push_back(decl);
+}
+
 /// Main entrypoint for the parser.
 ///
 /// \verbatim
@@ -169,6 +182,23 @@ namespace {
 ///     decl-sil-stage [[only in SIL mode]
 /// \endverbatim
 void Parser::parseTopLevel(SmallVectorImpl<Decl *> &decls) {
+  StringRef contents =
+      SourceMgr.extractText(SourceMgr.getRangeForBuffer(L->getBufferID()));
+
+#ifdef SWIFT_SWIFT_PARSER
+  if (Context.LangOpts.hasFeature(Feature::ParserASTGen) &&
+      !SourceMgr.hasCodeCompletionBuffer() &&
+      SF.Kind != SourceFileKind::SIL) {
+    parseTopLevelSwift(contents.data(), CurDeclContext, &Context, &decls, appendToVector);
+
+    // Spin the C++ parser to the end; we won't be using it.
+    while (!Tok.is(tok::eof)) {
+      consumeToken();
+    }
+    return;
+  }
+#endif
+  
   // Prime the lexer.
   if (Tok.is(tok::NUM_TOKENS))
     consumeTokenWithoutFeedingReceiver();
@@ -6166,16 +6196,11 @@ ParserResult<TypeDecl> Parser::parseDeclAssociatedType(Parser::ParseDeclOptions 
 
 /// This function creates an accessor function (with no body) for a computed
 /// property or subscript.
-static AccessorDecl *createAccessorFunc(SourceLoc DeclLoc,
-                                    ParameterList *param,
-                                    GenericParamList *GenericParams,
-                                    ParameterList *Indices,
-                                    SourceLoc StaticLoc,
-                                    Parser::ParseDeclOptions Flags,
-                                    AccessorKind Kind,
-                                    AbstractStorageDecl *storage,
-                                    Parser *P, SourceLoc AccessorKeywordLoc,
-                                    SourceLoc asyncLoc, SourceLoc throwsLoc) {
+static AccessorDecl *createAccessorFunc(
+    SourceLoc DeclLoc, ParameterList *param, ParameterList *Indices,
+    SourceLoc StaticLoc, Parser::ParseDeclOptions Flags, AccessorKind Kind,
+    AbstractStorageDecl *storage, Parser *P, SourceLoc AccessorKeywordLoc,
+    SourceLoc asyncLoc, SourceLoc throwsLoc) {
   // First task, set up the value argument list.  This is the "newValue" name
   // (for setters) followed by the index list (for subscripts).  For
   // non-subscript getters, this degenerates down to "()".
@@ -6230,18 +6255,11 @@ static AccessorDecl *createAccessorFunc(SourceLoc DeclLoc,
   }
 
   // Start the function.
-  auto *D = AccessorDecl::create(P->Context,
-                                 /*FIXME FuncLoc=*/DeclLoc,
-                                 AccessorKeywordLoc,
-                                 Kind, storage,
-                                 StaticLoc, StaticSpellingKind::None,
-                                 asyncLoc.isValid(), asyncLoc,
-                                 throwsLoc.isValid(), throwsLoc,
-                                 (GenericParams
-                                  ? GenericParams->clone(P->CurDeclContext)
-                                  : nullptr),
-                                 ValueArg, Type(),
-                                 P->CurDeclContext);
+  auto *D = AccessorDecl::create(
+      P->Context,
+      /*FIXME FuncLoc=*/DeclLoc, AccessorKeywordLoc, Kind, storage, StaticLoc,
+      StaticSpellingKind::None, asyncLoc.isValid(), asyncLoc,
+      throwsLoc.isValid(), throwsLoc, ValueArg, Type(), P->CurDeclContext);
 
   return D;
 }
@@ -6595,9 +6613,8 @@ ParserStatus Parser::parseGetEffectSpecifier(ParsedAccessors &accessors,
   return Status;
 }
 
-ParserStatus Parser::parseGetSet(ParseDeclOptions Flags,
-                                 GenericParamList *GenericParams,
-                                 ParameterList *Indices, TypeRepr *ResultType,
+ParserStatus Parser::parseGetSet(ParseDeclOptions Flags, ParameterList *Indices,
+                                 TypeRepr *ResultType,
                                  ParsedAccessors &accessors,
                                  AbstractStorageDecl *storage,
                                  SourceLoc StaticLoc) {
@@ -6652,11 +6669,10 @@ ParserStatus Parser::parseGetSet(ParseDeclOptions Flags,
     assert(Tok.is(tok::l_brace));
     accessors.LBLoc = Tok.getLoc();
     auto getter =
-        createAccessorFunc(Tok.getLoc(), /*ValueNamePattern*/ nullptr,
-                           GenericParams, Indices, StaticLoc, Flags,
-                           AccessorKind::Get, storage, this,
+        createAccessorFunc(Tok.getLoc(), /*ValueNamePattern*/ nullptr, Indices,
+                           StaticLoc, Flags, AccessorKind::Get, storage, this,
                            /*AccessorKeywordLoc*/ SourceLoc(),
-                           /*asyncLoc*/SourceLoc(), /*throwsLoc*/SourceLoc());
+                           /*asyncLoc*/ SourceLoc(), /*throwsLoc*/ SourceLoc());
     accessors.add(getter);
     parseAbstractFunctionBody(getter);
     accessors.RBLoc = getter->getEndLoc();
@@ -6755,10 +6771,9 @@ ParserStatus Parser::parseGetSet(ParseDeclOptions Flags,
                                       hasEffectfulGet, Kind, Loc);
 
     // Set up a function declaration.
-    auto accessor = createAccessorFunc(Loc, ValueNamePattern, GenericParams,
-                                       Indices, StaticLoc, Flags,
-                                       Kind, storage, this, Loc,
-                                       asyncLoc, throwsLoc);
+    auto accessor =
+        createAccessorFunc(Loc, ValueNamePattern, Indices, StaticLoc, Flags,
+                           Kind, storage, this, Loc, asyncLoc, throwsLoc);
     accessor->getAttrs() = Attributes;
 
     // Collect this accessor and detect conflicts.
@@ -6875,8 +6890,7 @@ Parser::parseDeclVarGetSet(PatternBindingEntry &entry, ParseDeclOptions Flags,
   ParsedAccessors accessors;
   auto typedPattern = dyn_cast<TypedPattern>(pattern);
   auto *resultTypeRepr = typedPattern ? typedPattern->getTypeRepr() : nullptr;
-  auto AccessorStatus = parseGetSet(Flags, /*GenericParams=*/nullptr,
-                                    /*Indices=*/nullptr, resultTypeRepr,
+  auto AccessorStatus = parseGetSet(Flags, /*Indices=*/nullptr, resultTypeRepr,
                                     accessors, storage, StaticLoc);
   if (AccessorStatus.hasCodeCompletion())
     return makeParserCodeCompletionStatus();
@@ -8490,8 +8504,8 @@ Parser::parseDeclSubscript(SourceLoc StaticLoc,
       Status.setIsParseError();
     }
   } else if (!Status.hasCodeCompletion()) {
-    Status |= parseGetSet(Flags, GenericParams, Indices.get(), ElementTy.get(),
-                          accessors, Subscript, StaticLoc);
+    Status |= parseGetSet(Flags, Indices.get(), ElementTy.get(), accessors,
+                          Subscript, StaticLoc);
   }
 
   // Now that it's been parsed, set the end location.
