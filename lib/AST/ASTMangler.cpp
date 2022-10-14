@@ -861,6 +861,28 @@ std::string ASTMangler::mangleGenericSignature(const GenericSignature sig) {
   return finalize();
 }
 
+std::string ASTMangler::mangleHasSymbolQuery(const ValueDecl *Decl) {
+  beginMangling();
+
+  if (auto Ctor = dyn_cast<ConstructorDecl>(Decl)) {
+    appendConstructorEntity(Ctor, /*isAllocating=*/false);
+  } else if (auto Dtor = dyn_cast<DestructorDecl>(Decl)) {
+    appendDestructorEntity(Dtor, /*isDeallocating=*/false);
+  } else if (auto GTD = dyn_cast<GenericTypeDecl>(Decl)) {
+    appendAnyGenericType(GTD);
+  } else if (isa<AssociatedTypeDecl>(Decl)) {
+    appendContextOf(Decl);
+    appendDeclName(Decl);
+    appendOperator("Qa");
+  } else {
+    appendEntity(Decl);
+  }
+
+  appendSymbolKind(ASTMangler::SymbolKind::HasSymbolQuery);
+
+  return finalize();
+}
+
 void ASTMangler::appendSymbolKind(SymbolKind SKind) {
   switch (SKind) {
     case SymbolKind::Default: return;
@@ -872,6 +894,7 @@ void ASTMangler::appendSymbolKind(SymbolKind SKind) {
     case SymbolKind::AccessibleFunctionRecord: return appendOperator("HF");
     case SymbolKind::BackDeploymentThunk: return appendOperator("Twb");
     case SymbolKind::BackDeploymentFallback: return appendOperator("TwB");
+    case SymbolKind::HasSymbolQuery: return appendOperator("TwS");
   }
 }
 
@@ -1367,7 +1390,7 @@ void ASTMangler::appendType(Type type, GenericSignature sig,
 
       // type ::= archetype
     case TypeKind::PrimaryArchetype:
-    case TypeKind::SequenceArchetype:
+    case TypeKind::PackArchetype:
       llvm_unreachable("Cannot mangle free-standing archetypes");
 
     case TypeKind::OpenedArchetype: {

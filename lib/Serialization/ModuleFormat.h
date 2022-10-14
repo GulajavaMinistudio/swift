@@ -58,7 +58,8 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 714; // New flag in SIL_ARG_EFFECTS_ATTR
+const uint16_t SWIFTMODULE_VERSION_MINOR =
+    715; // New test_specification instruction
 
 /// A standard hash seed used for all string hashes in a serialized module.
 ///
@@ -1046,7 +1047,7 @@ namespace decls_block {
 
   TYPE_LAYOUT(GenericTypeParamTypeLayout,
     GENERIC_TYPE_PARAM_TYPE,
-    BCFixed<1>,  // type sequence?
+    BCFixed<1>,  // parameter pack?
     DeclIDField, // generic type parameter decl or depth
     BCVBR<4> // index + 1, or zero if we have a generic type
             // parameter decl
@@ -1137,8 +1138,8 @@ namespace decls_block {
     SubstitutionMapIDField // the arguments
   );
 
-  TYPE_LAYOUT(SequenceArchetypeTypeLayout,
-    SEQUENCE_ARCHETYPE_TYPE,
+  TYPE_LAYOUT(PackArchetypeTypeLayout,
+    PACK_ARCHETYPE_TYPE,
     GenericSignatureIDField, // generic environment
     TypeIDField              // interface type
   );
@@ -1272,7 +1273,7 @@ namespace decls_block {
   using GenericTypeParamDeclLayout = BCRecordLayout<GENERIC_TYPE_PARAM_DECL,
     IdentifierIDField, // name
     BCFixed<1>,        // implicit flag
-    BCFixed<1>,        // type sequence?
+    BCFixed<1>,        // parameter pack?
     BCVBR<4>,          // depth
     BCVBR<4>,          // index
     BCFixed<1>         // opaque type?
