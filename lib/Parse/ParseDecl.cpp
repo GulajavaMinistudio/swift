@@ -173,6 +173,22 @@ static void appendToVector(void *declPtr, void *vecPtr) {
   vec->push_back(decl);
 }
 
+/// Parse a source file.
+extern "C" void *swift_ASTGen_parseSourceFile(const char *buffer,
+                                              size_t bufferLength,
+                                              const char *moduleName,
+                                              const char *filename);
+
+/// Destroy a source file parsed with swift_ASTGen_parseSourceFile.
+extern "C" void swift_ASTGen_destroySourceFile(void *sourceFile);
+
+// Build AST nodes for the top-level entities in the syntax.
+extern "C" void swift_ASTGen_buildTopLevelASTNodes(void *sourceFile,
+                                                   void *declContext,
+                                                   void *astContext,
+                                                   void *outputContext,
+                                                   void (*)(void *, void *));
+
 /// Main entrypoint for the parser.
 ///
 /// \verbatim
@@ -182,20 +198,36 @@ static void appendToVector(void *declPtr, void *vecPtr) {
 ///     decl-sil-stage [[only in SIL mode]
 /// \endverbatim
 void Parser::parseTopLevel(SmallVectorImpl<Decl *> &decls) {
-  StringRef contents =
-      SourceMgr.extractText(SourceMgr.getRangeForBuffer(L->getBufferID()));
-
 #ifdef SWIFT_SWIFT_PARSER
-  if (Context.LangOpts.hasFeature(Feature::ParserASTGen) &&
+  if ((Context.LangOpts.hasFeature(Feature::BuiltinMacros) ||
+       Context.LangOpts.hasFeature(Feature::ParserASTGen)) &&
       !SourceMgr.hasCodeCompletionBuffer() &&
       SF.Kind != SourceFileKind::SIL) {
-    parseTopLevelSwift(contents.data(), CurDeclContext, &Context, &decls, appendToVector);
+    StringRef contents =
+        SourceMgr.extractText(SourceMgr.getRangeForBuffer(L->getBufferID()));
 
-    // Spin the C++ parser to the end; we won't be using it.
-    while (!Tok.is(tok::eof)) {
-      consumeToken();
+    // Parse the source file.
+    auto exportedSourceFile = swift_ASTGen_parseSourceFile(
+        contents.begin(), contents.size(),
+        SF.getParentModule()->getName().str().str().c_str(),
+        SF.getFilename().str().c_str());
+    SF.exportedSourceFile = exportedSourceFile;
+    Context.addCleanup([exportedSourceFile] {
+      swift_ASTGen_destroySourceFile(exportedSourceFile);
+    });
+
+    // If we want to do ASTGen, do so now.
+    if (Context.LangOpts.hasFeature(Feature::ParserASTGen)) {
+      swift_ASTGen_buildTopLevelASTNodes(
+          exportedSourceFile, CurDeclContext, &Context, &decls, appendToVector);
+
+      // Spin the C++ parser to the end; we won't be using it.
+      while (!Tok.is(tok::eof)) {
+        consumeToken();
+      }
+
+      return;
     }
-    return;
   }
 #endif
   
@@ -4898,6 +4930,10 @@ Parser::parseDecl(ParseDeclOptions Flags,
       consumeToken(tok::code_complete);
       DeclResult = makeParserCodeCompletionResult<Decl>();
       break;
+    } else if (Context.LangOpts.hasFeature(Feature::Macros)) {
+      DeclParsingContext.setCreateSyntax(SyntaxKind::MacroExpansionDecl);
+      DeclResult = parseDeclMacroExpansion(Flags, Attributes);
+      break;
     }
     LLVM_FALLTHROUGH;
 
@@ -9187,4 +9223,41 @@ Parser::parseDeclPrecedenceGroup(ParseDeclOptions flags,
   if (hasCodeCompletion)
     return makeParserCodeCompletionResult(result);
   return makeParserResult(result);
+}
+
+ParserResult<MacroExpansionDecl>
+Parser::parseDeclMacroExpansion(ParseDeclOptions flags,
+                                DeclAttributes &attributes) {
+  SourceLoc poundLoc = consumeToken(tok::pound);
+  DeclNameLoc macroNameLoc;
+  DeclNameRef macroNameRef = parseDeclNameRef(
+      macroNameLoc, diag::macro_expansion_decl_expected_macro_identifier,
+      DeclNameOptions());
+  if (!macroNameRef)
+    return makeParserError();
+
+  ArgumentList *argList = nullptr;
+  if (Tok.isFollowingLParen()) {
+    auto result = parseArgumentList(tok::l_paren, tok::r_paren,
+                                    /*isExprBasic*/ false,
+                                    /*allowTrailingClosure*/ true);
+    if (result.hasCodeCompletion())
+      return makeParserCodeCompletionResult<MacroExpansionDecl>();
+    if (result.isParseError())
+      return makeParserError();
+    argList = result.get();
+  } else if (Tok.is(tok::l_brace)) {
+    SmallVector<Argument, 2> trailingClosures;
+    auto status = parseTrailingClosures(/*isExprBasic*/ false,
+                                        macroNameLoc.getSourceRange(),
+                                        trailingClosures);
+    if (status.isError() || trailingClosures.empty())
+      return makeParserError();
+    argList = ArgumentList::createParsed(Context, SourceLoc(),
+                                         trailingClosures, SourceLoc(),
+                                         /*trailingClosureIdx*/ 0);
+  }
+
+  return makeParserResult(new (Context) MacroExpansionDecl(
+      CurDeclContext, poundLoc, macroNameRef, macroNameLoc, argList));
 }
