@@ -1620,8 +1620,10 @@ shouldOpenExistentialCallArgument(
   if (param->isVariadic())
     return None;
 
-  // Look through an inout type on the formal type of the parameter.
-  auto formalParamTy = param->getInterfaceType()->getInOutObjectType();
+  // Look through an inout and optional types on the formal type of the
+  // parameter.
+  auto formalParamTy = param->getInterfaceType()->getInOutObjectType()
+      ->lookThroughSingleOptionalType();
 
   // If the argument is of an existential metatype, look through the
   // metatype on the parameter.
@@ -1630,8 +1632,8 @@ shouldOpenExistentialCallArgument(
     paramTy = paramTy->getMetatypeInstanceType();
   }
 
-  // Look through an inout type on the parameter.
-  paramTy = paramTy->getInOutObjectType();
+  // Look through an inout and optional types on the parameter.
+  paramTy = paramTy->getInOutObjectType()->lookThroughSingleOptionalType();
 
   // The parameter type must be a type variable.
   auto paramTypeVar = paramTy->getAs<TypeVariableType>();
@@ -8464,20 +8466,11 @@ ConstraintSystem::simplifyPackElementOfConstraint(Type first, Type second,
 
   // Replace opened element archetypes with pack archetypes
   // for the resulting type of the pack expansion.
-  auto patternType = elementType.transform([&](Type type) -> Type {
-    auto *element = type->getAs<ElementArchetypeType>();
-    if (!element)
-      return type;
-
-    auto *elementParam = element->mapTypeOutOfContext()->getAs<GenericTypeParamType>();
-    auto *pack = GenericTypeParamType::get(/*isParameterPack*/true,
-                                           elementParam->getDepth(),
-                                           elementParam->getIndex(),
-                                           this->getASTContext());
-    return this->DC->mapTypeIntoContext(pack);
-  });
-
+  auto *environment = DC->getGenericEnvironmentOfContext();
+  auto patternType = environment->mapElementTypeIntoPackContext(
+      elementType->mapTypeOutOfContext());
   addConstraint(ConstraintKind::Bind, second, patternType, locator);
+
   return SolutionKind::Solved;
 }
 
