@@ -4467,10 +4467,6 @@ NOTE(unowned_assignment_requires_strong,none,
      "a strong reference is required to prevent the instance from being "
      "deallocated", ())
 
-ERROR(isa_collection_downcast_pattern_value_unimplemented,none,
-      "collection downcast in cast pattern is not implemented; use an explicit "
-      "downcast to %0 instead", (Type))
-
 //------------------------------------------------------------------------------
 // MARK: Error-handling diagnostics
 //------------------------------------------------------------------------------
@@ -6710,8 +6706,8 @@ ERROR(experimental_no_metadata_feature_can_only_be_used_when_enabled,
 ERROR(expected_macro_expansion_expr,PointsToFirstBadToken,
       "expected macro expansion to produce an expression", ())
 ERROR(macro_undefined,PointsToFirstBadToken,
-      "macro '%0' is undefined; use `-load-plugin-library` to specify dynamic "
-      "libraries that contain this macro", (StringRef))
+      "macro %0 is undefined; use `-load-plugin-library` to specify dynamic "
+      "libraries that contain this macro", (Identifier))
 
 #define UNDEFINE_DIAGNOSTIC_MACROS
 #include "DefineDiagnosticMacros.h"
