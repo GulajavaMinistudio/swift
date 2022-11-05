@@ -1183,7 +1183,8 @@ void OpaqueStorageAllocation::removeAllocation(SILValue value) {
   storage.storageAddress = nullptr;
 
   // It's only use should be dealloc_stacks.
-  for (Operand *use : allocInst->getUses()) {
+  SmallVector<Operand *, 4> uses(allocInst->getUses());
+  for (Operand *use : uses) {
     pass.deleter.forceDelete(cast<DeallocStackInst>(use->getUser()));
   }
   pass.deleter.forceDelete(allocInst);
@@ -2609,12 +2610,17 @@ protected:
 
   void visitYieldInst(YieldInst *yield) {
     SILValue addr = addrMat.materializeAddress(use->get());
-    yield->setOperand(0, addr);
+    yield->setOperand(use->getOperandNumber(), addr);
   }
 
   void visitValueMetatypeInst(ValueMetatypeInst *vmi) {
     SILValue opAddr = addrMat.materializeAddress(use->get());
     vmi->setOperand(opAddr);
+  }
+
+  void visitExistentialMetatypeInst(ExistentialMetatypeInst *emi) {
+    SILValue opAddr = addrMat.materializeAddress(use->get());
+    emi->setOperand(opAddr);
   }
 
   void visitAddressOfBorrowBuiltinInst(BuiltinInst *bi, bool stackProtected) {
@@ -2649,6 +2655,13 @@ protected:
   void visitBeginBorrowInst(BeginBorrowInst *borrow);
 
   void visitEndBorrowInst(EndBorrowInst *end) {}
+
+  void visitFixLifetimeInst(FixLifetimeInst *fli) {
+    SILValue value = fli->getOperand();
+    SILValue address = pass.valueStorageMap.getStorage(value).storageAddress;
+    builder.createFixLifetime(fli->getLoc(), address);
+    pass.deleter.forceDelete(fli);
+  }
 
   void visitBranchInst(BranchInst *) {
     pass.getPhiRewriter().materializeOperand(use);
@@ -2738,6 +2751,21 @@ protected:
 
   void emitExtract(SingleValueInstruction *extractInst);
 
+  void visitSelectEnumInst(SelectEnumInst *sei) {
+    SmallVector<std::pair<EnumElementDecl *, SILValue>> caseValues;
+    for (unsigned index = 0, count = sei->getNumCases(); index < count;
+         ++index) {
+      caseValues.push_back(sei->getCase(index));
+    }
+
+    SILValue opAddr = addrMat.materializeAddress(use->get());
+    SILValue addr =
+        builder.createSelectEnumAddr(sei->getLoc(), opAddr, sei->getType(),
+                                     sei->getDefaultResult(), caseValues);
+    sei->replaceAllUsesWith(addr);
+    pass.deleter.forceDelete(sei);
+  }
+
   // Extract from an opaque struct.
   void visitStructExtractInst(StructExtractInst *extractInst);
 
@@ -2768,7 +2796,26 @@ protected:
         uncheckedCastInst->getLoc(), srcAddr,
         uncheckedCastInst->getType().getAddressType());
 
-    markRewritten(uncheckedCastInst, destAddr);
+    if (uncheckedCastInst->getType().isAddressOnly(*pass.function)) {
+      markRewritten(uncheckedCastInst, destAddr);
+      return;
+    }
+
+    // For loadable cast destination type, replace copies with load copies.
+    if (Operand *use = uncheckedCastInst->getSingleUse()) {
+      if (auto *cvi = dyn_cast<CopyValueInst>(use->getUser())) {
+        auto *load = builder.createLoad(cvi->getLoc(), destAddr,
+                                        LoadOwnershipQualifier::Copy);
+        cvi->replaceAllUsesWith(load);
+        pass.deleter.forceDelete(cvi);
+        return;
+      }
+    }
+    SILValue load =
+        builder.emitLoadBorrowOperation(uncheckedCastInst->getLoc(), destAddr);
+    uncheckedCastInst->replaceAllUsesWith(load);
+    pass.deleter.forceDelete(uncheckedCastInst);
+    emitEndBorrows(load);
   }
 
   void visitUnconditionalCheckedCastInst(
