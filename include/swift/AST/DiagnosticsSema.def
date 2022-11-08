@@ -1538,6 +1538,8 @@ ERROR(expose_inside_unexposed_decl,none,
 ERROR(expose_invalid_name_pattern_init,none,
       "invalid declaration name '%0' specified in an @_expose attribute; "
       "exposed initializer name must start with 'init'", (StringRef))
+ERROR(expose_unsupported_async_decl_to_cxx,none,
+      "async %0 %1 can not be exposed to C++", (DescriptiveDeclKind, ValueDecl *))
 ERROR(expose_unsupported_actor_isolated_to_cxx,none,
       "actor-isolated %0 %1 can not be exposed to C++", (DescriptiveDeclKind, ValueDecl *))
 
@@ -6528,6 +6530,11 @@ ERROR(experimental_moveonly_feature_can_only_be_used_when_enabled,
       none, "Can not use feature when experimental move only is disabled! Pass"
       " the frontend flag -enable-experimental-move-only to swift to enable "
       "the usage of this language feature", ())
+ERROR(experimental_moveonly_feature_can_only_be_imported_when_enabled,
+      none, "Can not import module %0 that uses move only features when "
+      "experimental move only is disabled! Pass the frontend flag "
+      "-enable-experimental-move-only to swift to enable the usage of this "
+      "language feature", (Identifier))
 ERROR(noimplicitcopy_attr_valid_only_on_local_let_params,
       none, "'@_noImplicitCopy' attribute can only be applied to local lets and params", ())
 ERROR(noimplicitcopy_attr_invalid_in_generic_context,
@@ -6611,7 +6618,8 @@ ERROR(type_wrapper_requires_two_generic_params,none,
       "wrapped and storage types", ())
 
 ERROR(cannot_use_multiple_type_wrappers,none,
-      "type %0 cannot use more than one type wrapper", ())
+      "%0 %1 cannot use more than one type wrapper",
+      (DescriptiveDeclKind, DeclName))
 
 ERROR(type_wrapper_requires_memberwise_init,none,
       "type wrapper type %0 does not contain a required initializer"
