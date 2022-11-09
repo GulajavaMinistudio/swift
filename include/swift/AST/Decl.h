@@ -159,10 +159,12 @@ enum class DescriptiveDeclKind : uint8_t {
   Enum,
   Struct,
   Class,
+  Actor,
   Protocol,
   GenericEnum,
   GenericStruct,
   GenericClass,
+  GenericActor,
   GenericType,
   Subscript,
   StaticSubscript,
@@ -4721,7 +4723,7 @@ public:
   AssociatedTypeDecl *getAssociatedType(Identifier name) const;
 
   /// Returns the existential type for this protocol.
-  Type getExistentialType() const {
+  Type getDeclaredExistentialType() const {
     return ExistentialType::get(getDeclaredInterfaceType());
   }
 
