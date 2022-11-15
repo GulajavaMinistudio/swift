@@ -3553,8 +3553,7 @@ public:
 /// Inject or get `$Storage` type which has all of the stored properties
 /// of the given type with a type wrapper.
 class GetTypeWrapperStorage
-    : public SimpleRequest<GetTypeWrapperStorage,
-                           NominalTypeDecl *(NominalTypeDecl *),
+    : public SimpleRequest<GetTypeWrapperStorage, TypeDecl *(NominalTypeDecl *),
                            RequestFlags::Cached> {
 public:
   using SimpleRequest::SimpleRequest;
@@ -3562,7 +3561,7 @@ public:
 private:
   friend SimpleRequest;
 
-  NominalTypeDecl *evaluate(Evaluator &evaluator, NominalTypeDecl *) const;
+  TypeDecl *evaluate(Evaluator &evaluator, NominalTypeDecl *) const;
 
 public:
   bool isCached() const { return true; }
@@ -3738,7 +3737,7 @@ public:
 /// module.
 class MacroLookupRequest
     : public SimpleRequest<MacroLookupRequest,
-                           ArrayRef<Macro *>(Identifier, ModuleDecl *),
+                           ArrayRef<MacroDecl *>(Identifier, ModuleDecl *),
                            RequestFlags::Cached> {
 public:
   using SimpleRequest::SimpleRequest;
@@ -3746,8 +3745,8 @@ public:
 private:
   friend SimpleRequest;
 
-  ArrayRef<Macro *> evaluate(Evaluator &evaluator,
-                             Identifier macroName, ModuleDecl *mod) const;
+  ArrayRef<MacroDecl *> evaluate(Evaluator &evaluator,
+                                 Identifier macroName, ModuleDecl *mod) const;
 
 public:
   bool isCached() const { return true; }
@@ -3758,7 +3757,6 @@ void simple_display(llvm::raw_ostream &out, Type value);
 void simple_display(llvm::raw_ostream &out, const TypeRepr *TyR);
 void simple_display(llvm::raw_ostream &out, ImplicitMemberAction action);
 void simple_display(llvm::raw_ostream &out, ResultBuilderBodyPreCheck pck);
-void simple_display(llvm::raw_ostream &out, const Macro *macro);
 
 #define SWIFT_TYPEID_ZONE TypeChecker
 #define SWIFT_TYPEID_HEADER "swift/AST/TypeCheckerTypeIDZone.def"
