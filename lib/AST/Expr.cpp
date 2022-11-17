@@ -215,8 +215,12 @@ bool Expr::printConstExprValue(llvm::raw_ostream *OS,
   }
   case ExprKind::IntegerLiteral:
   case ExprKind::FloatLiteral:  {
-    auto digits = cast<NumberLiteralExpr>(E)->getDigitsText();
+    const auto *NE = cast<NumberLiteralExpr>(E);
+    auto digits = NE->getDigitsText();
     assert(!digits.empty());
+    if (NE->getMinusLoc().isValid()) {
+      print("-");
+    }
     print(digits);
     return true;
   }
@@ -1183,7 +1187,7 @@ ObjectLiteralExpr::create(ASTContext &ctx, SourceLoc poundLoc, LiteralKind kind,
 StringRef ObjectLiteralExpr::getLiteralKindRawName() const {
   switch (getLiteralKind()) {
 #define POUND_OBJECT_LITERAL(Name, Desc, Proto) case Name: return #Name;
-#include "swift/Syntax/TokenKinds.def"    
+#include "swift/AST/TokenKinds.def"    
   }
   llvm_unreachable("unspecified literal");
 }
@@ -1191,7 +1195,7 @@ StringRef ObjectLiteralExpr::getLiteralKindRawName() const {
 StringRef ObjectLiteralExpr::getLiteralKindPlainName() const {
   switch (getLiteralKind()) {
 #define POUND_OBJECT_LITERAL(Name, Desc, Proto) case Name: return Desc;
-#include "swift/Syntax/TokenKinds.def"    
+#include "swift/AST/TokenKinds.def"    
   }
   llvm_unreachable("unspecified literal");
 }
