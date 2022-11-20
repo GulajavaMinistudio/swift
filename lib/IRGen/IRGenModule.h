@@ -432,9 +432,6 @@ public:
   /// Emit coverage mapping info.
   void emitCoverageMapping();
 
-  /// Emit helper functions for `if #_hasSymbol(...)` conditions.
-  void emitHasSymbolFunctions();
-
   /// Checks if metadata for this type can be emitted lazily. This is true for
   /// non-public types as well as imported types, except for classes and
   /// protocols which are always emitted eagerly.
@@ -1575,8 +1572,6 @@ public:
   void appendLLVMUsedConditionalEntry(llvm::GlobalVariable *var,
                                       const ProtocolConformance *conformance);
 
-  void setColocateMetadataSection(llvm::Function *f);
-
   llvm::Constant *
   getAddrOfTypeMetadata(CanType concreteType,
                         TypeMetadataCanonicality canonicality =
@@ -1832,7 +1827,7 @@ public:
   void emitRuntimeRegistration();
   void emitVTableStubs();
   void emitTypeVerifier();
-  void emitHasSymbolFunctions();
+  llvm::Function *emitHasSymbolFunction(ValueDecl *decl);
 
   /// Create llvm metadata which encodes the branch weights given by
   /// \p TrueCount and \p FalseCount.
