@@ -97,7 +97,7 @@ public:
       : Core(coreDependency) {}
 
     bool isLoaded() const {
-      return Import.hasValue() && Import->importedModule != nullptr;
+      return Import.has_value() && Import->importedModule != nullptr;
     }
 
     bool isExported() const {
@@ -480,6 +480,10 @@ public:
     return Core->UserModuleVersion;
   }
 
+  ArrayRef<StringRef> getAllowableClientNames() const {
+    return Core->AllowableClientNames;
+  }
+
   /// The Swift compatibility version in use when this module was built.
   const version::Version &getCompatibilityVersion() const {
     return Core->CompatibilityVersion;
@@ -709,6 +713,10 @@ public:
     if (!Core->ModuleInterfacePath.empty())
       return Core->ModuleInterfacePath;
     // FIXME: This seems fragile, maybe store the filename separately ?
+    return Core->ModuleInputBuffer->getBufferIdentifier();
+  }
+
+  StringRef getModuleLoadedFilename() const {
     return Core->ModuleInputBuffer->getBufferIdentifier();
   }
 
