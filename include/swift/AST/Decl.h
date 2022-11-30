@@ -3565,10 +3565,6 @@ class NominalTypeDecl : public GenericTypeDecl, public IterableDeclContext {
   /// Prepare to traverse the list of extensions.
   void prepareExtensions();
 
-  /// Add loaded members from all extensions. Eagerly load any members that we
-  /// can't lazily load.
-  void addLoadedExtensions();
-
   /// Retrieve the conformance loader (if any), and removing it in the
   /// same operation. The caller is responsible for loading the
   /// conformances.
@@ -3583,13 +3579,19 @@ class NominalTypeDecl : public GenericTypeDecl, public IterableDeclContext {
   std::pair<LazyMemberLoader *, uint64_t> takeConformanceLoaderSlow();
 
   /// A lookup table containing all of the members of this type and
-  /// its extensions.
+  /// its extensions, together with a bit indicating if the table
+  /// has been prepared.
   ///
   /// The table itself is lazily constructed and updated when
   /// lookupDirect() is called.
-  MemberLookupTable *LookupTable = nullptr;
+  llvm::PointerIntPair<MemberLookupTable *, 1, bool> LookupTable;
+
+  /// Get the lookup table, lazily constructing an empty table if
+  /// necessary.
+  MemberLookupTable *getLookupTable();
 
   /// Prepare the lookup table to make it ready for lookups.
+  /// Does nothing when called more than once.
   void prepareLookupTable();
 
   /// Note that we have added a member into the iterable declaration context,
@@ -8278,43 +8280,46 @@ public:
 /// representation in the source code, but are still declarations.
 class MacroDecl : public GenericContext, public ValueDecl {
 public:
-  /// The kind of macro, which determines how it can be used in source code.
-  enum Kind: uint8_t {
-    /// An expression macro.
-    Expression,
-  };
+  /// The location of the 'macro' keyword.
+  SourceLoc macroLoc;
 
-  /// Describes how the macro is implemented.
-  enum class ImplementationKind: uint8_t {
-    /// The macro is built-in to the compiler, linked against the same
-    /// underlying syntax tree libraries.
-    Builtin,
+  /// The parameter list for a function-like macro.
+  ParameterList *parameterList;
 
-    /// The macro was defined in a compiler plugin.
-    Plugin,
-  };
+  /// Where the '->' or ':' is located, for a function- or value-like macro,
+  /// respectively.
+  SourceLoc arrowOrColonLoc;
 
-  /// The kind of macro.
-  const Kind kind;
+  /// The result type.
+  TypeLoc resultType;
 
-  /// How the macro is implemented.
-  const ImplementationKind implementationKind;
+  /// The module name for the external macro definition.
+  Identifier externalModuleName;
 
-  /// Supplemental modules that should be imported when
-  const ArrayRef<ModuleDecl *> supplementalSignatureModules;
+  /// The location of the module name for the external macro definition.
+  SourceLoc externalModuleNameLoc;
 
-  /// An opaque handle to the representation of the macro.
-  void * const opaqueHandle;
+  /// The type name for the external macro definition.
+  Identifier externalMacroTypeName;
 
-public:
-  MacroDecl(
-    Kind kind, ImplementationKind implementationKind, Identifier name,
-    ModuleDecl *owningModule,
-    ArrayRef<ModuleDecl *> supplementalSignatureModules,
-    void *opaqueHandle
-  );
+  /// The location of the type name for the external macro definition.
+  SourceLoc externalMacroTypeNameLoc;
+
+  MacroDecl(SourceLoc macroLoc, DeclName name, SourceLoc nameLoc,
+            GenericParamList *genericParams,
+            ParameterList *parameterList,
+            SourceLoc arrowOrColonLoc,
+            TypeRepr *resultType,
+            Identifier externalModuleName,
+            SourceLoc externalModuleNameLoc,
+            Identifier externalMacroTypeName,
+            SourceLoc externalMacroTypeNameLoc,
+            DeclContext *parent);
 
   SourceRange getSourceRange() const;
+
+  /// Retrieve the interface type produced when expanding this macro.
+  Type getResultInterfaceType() const;
 
   static bool classof(const DeclContext *C) {
     if (auto D = C->getAsDecl())
@@ -8479,6 +8484,8 @@ inline bool ValueDecl::hasCurriedSelf() const {
 inline bool ValueDecl::hasParameterList() const {
   if (auto *eed = dyn_cast<EnumElementDecl>(this))
     return eed->hasAssociatedValues();
+  if (auto *macro = dyn_cast<MacroDecl>(this))
+    return macro->parameterList != nullptr;
   return isa<AbstractFunctionDecl>(this) || isa<SubscriptDecl>(this);
 }
 

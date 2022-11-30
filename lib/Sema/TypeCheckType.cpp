@@ -153,6 +153,7 @@ static unsigned getGenericRequirementKind(TypeResolutionOptions options) {
   case TypeResolverContext::FunctionResult:
   case TypeResolverContext::SubscriptDecl:
   case TypeResolverContext::EnumElementDecl:
+  case TypeResolverContext::MacroDecl:
   case TypeResolverContext::EnumPatternPayload:
   case TypeResolverContext::ProtocolMetatypeBase:
   case TypeResolverContext::ImmediateOptionalTypeArgument:
@@ -4132,6 +4133,7 @@ NeverNullType TypeResolver::resolveImplicitlyUnwrappedOptionalType(
   case TypeResolverContext::ExplicitCastExpr:
   case TypeResolverContext::SubscriptDecl:
   case TypeResolverContext::EnumElementDecl:
+  case TypeResolverContext::MacroDecl:
   case TypeResolverContext::EnumPatternPayload:
   case TypeResolverContext::TypeAliasDecl:
   case TypeResolverContext::GenericTypeAliasDecl:
@@ -4623,7 +4625,7 @@ Type TypeChecker::substMemberTypeWithBase(ModuleDecl *module,
 
   auto *aliasDecl = dyn_cast<TypeAliasDecl>(member);
   if (aliasDecl) {
-    if (aliasDecl->getGenericParams()) {
+    if (aliasDecl->isGeneric()) {
       return UnboundGenericType::get(
           aliasDecl, baseTy,
           aliasDecl->getASTContext());
@@ -4647,7 +4649,7 @@ Type TypeChecker::substMemberTypeWithBase(ModuleDecl *module,
     if (baseTy->is<ErrorType>())
       return ErrorType::get(memberType);
 
-    subs = baseTy->getContextSubstitutionMap(module, member->getDeclContext());
+    subs = baseTy->getMemberSubstitutionMap(module, member);
     resultType = memberType.subst(subs);
   } else {
     resultType = memberType;
@@ -4878,6 +4880,9 @@ void TypeChecker::checkExistentialTypes(Decl *decl) {
       checkExistentialTypes(ctx, funcDecl->getGenericParams());
       checkExistentialTypes(ctx, funcDecl->getTrailingWhereClause());
     }
+  } else if (auto *macroDecl = dyn_cast<MacroDecl>(decl)) {
+    checkExistentialTypes(ctx, macroDecl->getGenericParams());
+    checkExistentialTypes(ctx, macroDecl->getTrailingWhereClause());
   }
 
   if (isa<TypeDecl>(decl) || isa<ExtensionDecl>(decl))
