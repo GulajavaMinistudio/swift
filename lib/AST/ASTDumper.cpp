@@ -3141,6 +3141,12 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
 
+  void visitPackReferenceTypeRepr(PackReferenceTypeRepr *T) {
+    printCommon("pack_reference");
+    printRec(T->getPackType());
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+  }
+
   void visitTupleTypeRepr(TupleTypeRepr *T) {
     printCommon("type_tuple");
 
@@ -3942,6 +3948,7 @@ namespace {
       printField("index", T->getIndex());
       if (auto decl = T->getDecl())
         printField("decl", decl->printRef());
+      printFlag(T->isParameterPack(), "pack");
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
 

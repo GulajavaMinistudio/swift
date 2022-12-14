@@ -132,6 +132,7 @@ PrintOptions PrintOptions::printSwiftInterfaceFile(ModuleDecl *ModuleToPrint,
                                                    bool preferTypeRepr,
                                                    bool printFullConvention,
                                                    bool printSPIs,
+                                                   bool useExportedModuleNames,
                                                    bool aliasModuleNames,
                                                    llvm::SmallSet<StringRef, 4>
                                                      *aliasModuleNamesTargets
@@ -145,7 +146,7 @@ PrintOptions PrintOptions::printSwiftInterfaceFile(ModuleDecl *ModuleToPrint,
   result.FullyQualifiedTypes = true;
   result.FullyQualifiedTypesIfAmbiguous = true;
   result.FullyQualifiedExtendedTypesIfAmbiguous = true;
-  result.UseExportedModuleNames = true;
+  result.UseExportedModuleNames = useExportedModuleNames;
   result.AllowNullTypes = false;
   result.SkipImports = true;
   result.OmitNameOfInaccessibleProperties = true;
@@ -3042,6 +3043,10 @@ static bool usesFeatureNoAsyncAvailability(Decl *decl) {
    return decl->getAttrs().getNoAsync(decl->getASTContext()) != nullptr;
 }
 
+static bool usesFeatureBuiltinIntLiteralAccessors(Decl *decl) {
+  return false;
+}
+
 static bool usesFeatureConciseMagicFile(Decl *decl) {
   return false;
 }
@@ -3067,6 +3072,10 @@ static bool usesFeatureVariadicGenerics(Decl *decl) {
 }
 
 static bool usesFeatureLayoutPrespecialization(Decl *decl) {
+  return false;
+}
+
+static bool usesFeatureModuleInterfaceExportAs(Decl *decl) {
   return false;
 }
 
@@ -7092,13 +7101,14 @@ swift::getInheritedForPrinting(
   llvm::SetVector<ProtocolDecl *> protocols;
   llvm::TinyPtrVector<ProtocolDecl *> uncheckedProtocols;
   for (auto attr : decl->getAttrs().getAttributes<SynthesizedProtocolAttr>()) {
-    if (auto *proto = ctx.getProtocol(attr->getProtocolKind())) {
+    if (auto *proto = attr->getProtocol()) {
       // The SerialExecutor conformance is only synthesized on the root
       // actor class, so we can just test resilience immediately.
       if (proto->isSpecificProtocol(KnownProtocolKind::SerialExecutor) &&
           cast<ClassDecl>(decl)->isResilient())
         continue;
-      if (attr->getProtocolKind() == KnownProtocolKind::RawRepresentable &&
+      if (proto->getKnownProtocolKind() &&
+          *proto->getKnownProtocolKind() == KnownProtocolKind::RawRepresentable &&
           isa<EnumDecl>(decl) &&
           cast<EnumDecl>(decl)->hasRawType())
         continue;
