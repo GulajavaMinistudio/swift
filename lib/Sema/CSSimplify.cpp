@@ -6017,6 +6017,13 @@ bool ConstraintSystem::repairFailures(
                           getConstraintLocator(anchor, path));
   }
 
+  case ConstraintLocator::PackShape: {
+    auto *shapeLocator = getConstraintLocator(locator);
+    auto *fix = SkipSameShapeRequirement::create(*this, lhs, rhs, shapeLocator);
+    conversionsOrFixes.push_back(fix);
+    break;
+  }
+
   case ConstraintLocator::SequenceElementType: {
     if (lhs->isPlaceholder() || rhs->isPlaceholder()) {
       recordAnyTypeVarAsPotentialHole(lhs);
@@ -8612,8 +8619,6 @@ ConstraintSystem::simplifyPackElementOfConstraint(Type first, Type second,
 
   // This constraint only exists to vend bindings.
   auto *packEnv = DC->getGenericEnvironmentOfContext();
-  if (auto *expansion = packType->getAs<PackExpansionType>())
-    packType = expansion->getPatternType();
   if (packType->isEqual(packEnv->mapElementTypeIntoPackContext
                         (elementType->mapTypeOutOfContext()))) {
     return SolutionKind::Solved;
