@@ -32,10 +32,17 @@ enum class MacroRole: uint32_t {
   /// An attached macro that declares accessors for a variable or subscript
   /// declaration.
   Accessor = 0x04,
+  /// An attached macro that generates attributes for the
+  /// members inside the declaration.
+  MemberAttribute = 0x08,
 };
 
 /// The contexts in which a particular macro declaration can be used.
 using MacroRoles = OptionSet<MacroRole>;
+
+/// Retrieve the string form of the given macro role, as written on the
+/// corresponding attribute.
+StringRef getMacroRoleString(MacroRole role);
 
 /// Whether a macro with the given set of macro contexts is freestanding, i.e.,
 /// written in the source code with the `#` syntax.
@@ -52,6 +59,12 @@ enum class MacroIntroducedDeclNameKind {
   Suffixed,
   Arbitrary,
 };
+
+/// Whether a macro-introduced name of this kind requires an argument.
+bool macroIntroducedNameRequiresArgument(MacroIntroducedDeclNameKind kind);
+
+StringRef getMacroIntroducedDeclNameString(
+    MacroIntroducedDeclNameKind kind);
 
 class MacroIntroducedDeclName {
 public:

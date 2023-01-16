@@ -2655,6 +2655,7 @@ getActualMacroRole(uint8_t context) {
   CASE(Expression)
   CASE(FreestandingDeclaration)
   CASE(Accessor)
+  CASE(MemberAttribute)
 #undef CASE
   default:
     return None;
@@ -5444,6 +5445,30 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
             peersAndMembersRef.take_front(numPeers),
             peersAndMembersRef.take_back(numMembers),
             isImplicit);
+        break;
+      }
+
+      case decls_block::Attached_DECL_ATTR: {
+        bool isImplicit;
+        uint8_t rawMacroRole;
+        uint64_t numNames;
+        ArrayRef<uint64_t> introducedDeclNames;
+        serialization::decls_block::AttachedDeclAttrLayout::
+            readRecord(scratch, isImplicit, rawMacroRole, numNames,
+                       introducedDeclNames);
+        auto role = *getActualMacroRole(rawMacroRole);
+        if (introducedDeclNames.size() != numNames * 2)
+          return MF.diagnoseFatal();
+        SmallVector<MacroIntroducedDeclName, 1> names;
+        for (unsigned i = 0; i < introducedDeclNames.size(); i += 2) {
+          auto kind = getActualMacroIntroducedDeclNameKind(
+              (uint8_t)introducedDeclNames[i]);
+          auto identifier =
+              MF.getIdentifier(IdentifierID(introducedDeclNames[i + 1]));
+          names.push_back(MacroIntroducedDeclName(*kind, identifier));
+        }
+        Attr = AttachedAttr::create(
+            ctx, SourceLoc(), SourceRange(), role, names, isImplicit);
         break;
       }
 
