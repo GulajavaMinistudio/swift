@@ -1885,8 +1885,8 @@ void AttributeChecker::visitAvailableAttr(AvailableAttr *attr) {
   // is fully contained within that declaration's range. If there is no such
   // enclosing declaration, then there is nothing to check.
   Optional<AvailabilityContext> EnclosingAnnotatedRange;
-  AvailabilityContext AttrRange{
-      VersionRange::allGTE(attr->Introduced.value())};
+  AvailabilityContext AttrRange =
+      AvailabilityInference::availableRange(attr, Ctx);
 
   if (auto *parent = getEnclosingDeclForDecl(D)) {
     if (auto enclosingUnavailable = parent->getSemanticUnavailableAttr()) {
@@ -1904,7 +1904,7 @@ void AttributeChecker::visitAvailableAttr(AvailableAttr *attr) {
       const AvailableAttr *enclosingAttr = enclosingAvailable.value().first;
       const Decl *enclosingDecl = enclosingAvailable.value().second;
       EnclosingAnnotatedRange.emplace(
-          VersionRange::allGTE(enclosingAttr->Introduced.value()));
+          AvailabilityInference::availableRange(enclosingAttr, Ctx));
       if (!AttrRange.isContainedIn(*EnclosingAnnotatedRange)) {
         // Members of extensions of nominal types with available ranges were
         // not diagnosed previously, so only emit a warning in that case.
@@ -7383,45 +7383,6 @@ ValueDecl *RenamedDeclRequest::evaluate(Evaluator &evaluator,
   }
 
   return renamedDecl;
-}
-
-SemanticDeclAttributes
-AttachedSemanticAttrsRequest::evaluate(Evaluator &evaluator, Decl *decl) const {
-  // For now, this returns the same thing as 'getAttrs' using
-  // the SemanticDeclAttribtues representation.
-  SemanticDeclAttributes semanticAttrs;
-  for (auto attr : decl->getAttrs()) {
-    semanticAttrs.add(attr);
-  }
-
-  auto *parentDecl = decl->getDeclContext()->getAsDecl();
-  if (!parentDecl)
-    return semanticAttrs;
-
-  auto parentAttrs = parentDecl->getSemanticAttrs();
-  for (auto customAttrConst: parentAttrs.getAttributes<CustomAttr>()) {
-    auto customAttr = const_cast<CustomAttr *>(customAttrConst);
-    auto customAttrDecl = evaluateOrDefault(
-        evaluator,
-        CustomAttrDeclRequest{
-          customAttr,
-          parentDecl->getInnermostDeclContext()
-        },
-        nullptr);
-    if (!customAttrDecl)
-      continue;
-
-    auto macroDecl = customAttrDecl.dyn_cast<MacroDecl *>();
-    if (!macroDecl)
-      continue;
-
-    if (!macroDecl->getMacroRoles().contains(MacroRole::MemberAttribute))
-      continue;
-
-    expandAttributes(customAttr, macroDecl, decl, semanticAttrs);
-  }
-
-  return semanticAttrs;
 }
 
 template <typename ATTR>
