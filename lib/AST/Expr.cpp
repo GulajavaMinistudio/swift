@@ -20,6 +20,7 @@
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/Decl.h" // FIXME: Bad dependency
+#include "swift/AST/MacroDiscriminatorContext.h"
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/Stmt.h"
 #include "swift/AST/ASTWalker.h"
@@ -1918,19 +1919,7 @@ void AbstractClosureExpr::setParameterList(ParameterList *P) {
     P->setDeclContextOfParamDecls(this);
 }
 
-bool AbstractClosureExpr::hasBody() const {
-  switch (getKind()) {
-    case ExprKind::Closure:
-    case ExprKind::AutoClosure:
-      return true;
-    default:
-      return false;
-  }
-}
-
 BraceStmt * AbstractClosureExpr::getBody() const {
-  if (!hasBody())
-    return nullptr;
   if (const AutoClosureExpr *autocls = dyn_cast<AutoClosureExpr>(this))
     return autocls->getBody();
   if (const ClosureExpr *cls = dyn_cast<ClosureExpr>(this))
@@ -2557,6 +2546,23 @@ SourceRange MacroExpansionExpr::getSourceRange() const {
     endLoc = MacroNameLoc.getEndLoc();
 
   return SourceRange(PoundLoc, endLoc);
+}
+
+unsigned MacroExpansionExpr::getDiscriminator() const {
+  if (getRawDiscriminator() != InvalidDiscriminator)
+    return getRawDiscriminator();
+
+  auto mutableThis = const_cast<MacroExpansionExpr *>(this);
+  auto dc = getDeclContext();
+  ASTContext &ctx = dc->getASTContext();
+  auto discriminatorContext =
+      MacroDiscriminatorContext::getParentOf(mutableThis);
+  mutableThis->setDiscriminator(
+      ctx.getNextMacroDiscriminator(
+          discriminatorContext, getMacroName().getBaseName()));
+
+  assert(getRawDiscriminator() != InvalidDiscriminator);
+  return getRawDiscriminator();
 }
 
 void swift::simple_display(llvm::raw_ostream &out, const ClosureExpr *CE) {
