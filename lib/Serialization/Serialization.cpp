@@ -1073,6 +1073,11 @@ void Serializer::writeHeader(const SerializationOptions &options) {
         PackageName.emit(ScratchRecord, M->getPackageName().str());
       }
 
+      if (!M->getExportAsName().empty()) {
+        options_block::ModuleExportAsNameLayout ExportAs(Out);
+        ExportAs.emit(ScratchRecord, M->getExportAsName().str());
+      }
+
       if (M->isConcurrencyChecked()) {
         options_block::IsConcurrencyCheckedLayout IsConcurrencyChecked(Out);
         IsConcurrencyChecked.emit(ScratchRecord);
@@ -2227,7 +2232,7 @@ static uint8_t getRawStableMacroRole(swift::MacroRole context) {
   CASE(Declaration)
   CASE(Accessor)
   CASE(MemberAttribute)
-  CASE(SynthesizedMembers)
+  CASE(Member)
   }
 #undef CASE
   llvm_unreachable("bad result declaration macro kind");

@@ -3,7 +3,8 @@
 // REQUIRES: concurrency
 // REQUIRES: concurrency_runtime
 
-// REQUIRES: rdar104332560
+// REQUIRES: rdar104762037
+
 // UNSUPPORTED: back_deployment_runtime
 // UNSUPPORTED: OS=linux-gnu
 
@@ -38,7 +39,7 @@ actor Waiter {
   }
 }
 
-func test_taskGroup_void_neverConsume() async {
+func test_discardingTaskGroup_neverConsume() async {
   print(">>> \(#function)")
   let until = 100
   let waiter = Waiter(until: until)
@@ -59,7 +60,7 @@ func test_taskGroup_void_neverConsume() async {
   print("all tasks: \(allTasks)")
 }
 
-func test_taskGroup_void_neverConsume(sleepBeforeGroupWaitAll: Duration) async {
+func test_discardingTaskGroup_neverConsume(sleepBeforeGroupWaitAll: Duration) async {
   print(">>> \(#function)")
   let until = 100
   let waiter = Waiter(until: until)
@@ -85,7 +86,7 @@ func test_taskGroup_void_neverConsume(sleepBeforeGroupWaitAll: Duration) async {
 
 @main struct Main {
   static func main() async {
-    await test_taskGroup_void_neverConsume()
-    await test_taskGroup_void_neverConsume(sleepBeforeGroupWaitAll: .milliseconds(500))
+    await test_discardingTaskGroup_neverConsume()
+    await test_discardingTaskGroup_neverConsume(sleepBeforeGroupWaitAll: .milliseconds(500))
   }
 }

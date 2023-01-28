@@ -384,7 +384,7 @@ void Decl::forEachAttachedMacro(MacroRole role,
     auto customAttr = const_cast<CustomAttr *>(customAttrConst);
     auto *macroDecl = evaluateOrDefault(
         ctx.evaluator,
-        ResolveAttachedMacroRequest{customAttr, dc},
+        ResolveMacroRequest{customAttr, getAttachedMacroRoles(), dc},
         nullptr);
 
     if (!macroDecl)
@@ -6848,11 +6848,8 @@ VarDecl::getAttachedPropertyWrapperTypeInfo(unsigned i) const {
     auto attr = attrs[i];
     auto dc = getDeclContext();
     ASTContext &ctx = getASTContext();
-    if (auto found = evaluateOrDefault(
-           ctx.evaluator, CustomAttrDeclRequest{attr, dc}, nullptr))
-      nominal = found.dyn_cast<NominalTypeDecl *>();
-    else
-      nominal = nullptr;
+    nominal = evaluateOrDefault(
+        ctx.evaluator, CustomAttrNominalRequest{attr, dc}, nullptr);
   }
 
   if (!nominal)
@@ -9725,10 +9722,10 @@ StringRef swift::getMacroRoleString(MacroRole role) {
     return "accessor";
 
   case MacroRole::MemberAttribute:
-    return "memberAttributes";
+    return "memberAttribute";
 
-  case MacroRole::SynthesizedMembers:
-    return "synthesizedMembers";
+  case MacroRole::Member:
+    return "member";
   }
 }
 
@@ -9774,14 +9771,22 @@ static MacroRoles freestandingMacroRoles =
 static MacroRoles attachedMacroRoles = (MacroRoles() |
                                         MacroRole::Accessor |
                                         MacroRole::MemberAttribute |
-                                        MacroRole::SynthesizedMembers);
+                                        MacroRole::Member);
 
 bool swift::isFreestandingMacro(MacroRoles contexts) {
   return bool(contexts & freestandingMacroRoles);
 }
 
+MacroRoles swift::getFreestandingMacroRoles() {
+  return freestandingMacroRoles;
+}
+
 bool swift::isAttachedMacro(MacroRoles contexts) {
   return bool(contexts & attachedMacroRoles);
+}
+
+MacroRoles swift::getAttachedMacroRoles() {
+  return attachedMacroRoles;
 }
 
 MacroDecl::MacroDecl(
@@ -9878,8 +9883,7 @@ NominalTypeDecl *
 ValueDecl::getRuntimeDiscoverableAttrTypeDecl(CustomAttr *attr) const {
   auto &ctx = getASTContext();
   auto *nominal = evaluateOrDefault(
-      ctx.evaluator, CustomAttrDeclRequest{attr, getDeclContext()}, nullptr)
-    .get<NominalTypeDecl *>();
+      ctx.evaluator, CustomAttrNominalRequest{attr, getDeclContext()}, nullptr);
   assert(nominal->getAttrs().hasAttribute<RuntimeMetadataAttr>());
   return nominal;
 }
@@ -9928,7 +9932,7 @@ MacroDiscriminatorContext MacroDiscriminatorContext::getParentOf(
 
   case GeneratedSourceInfo::AccessorMacroExpansion:
   case GeneratedSourceInfo::MemberAttributeMacroExpansion:
-  case GeneratedSourceInfo::SynthesizedMemberMacroExpansion:
+  case GeneratedSourceInfo::MemberMacroExpansion:
   case GeneratedSourceInfo::PrettyPrinted:
   case GeneratedSourceInfo::ReplacedFunctionBody:
     return origDC;
