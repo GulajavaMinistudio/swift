@@ -398,14 +398,8 @@ void Decl::forEachAttachedMacro(MacroRole role,
 }
 
 const Decl *Decl::getInnermostDeclWithAvailability() const {
-  const Decl *enclosingDecl = this;
-  // Find the innermost enclosing declaration with an @available annotation.
-  while (enclosingDecl != nullptr) {
-    if (enclosingDecl->getAttrs().hasAttribute<AvailableAttr>())
-      return enclosingDecl;
-
-    enclosingDecl = enclosingDecl->getDeclContext()->getAsDecl();
-  }
+  if (auto attrAndDecl = getSemanticAvailableRangeAttr())
+    return attrAndDecl.value().second;
 
   return nullptr;
 }
@@ -9888,8 +9882,8 @@ ValueDecl::getRuntimeDiscoverableAttrTypeDecl(CustomAttr *attr) const {
   return nominal;
 }
 
-ArrayRef<CustomAttr *> ValueDecl::getRuntimeDiscoverableAttrs() const {
-  auto *mutableSelf = const_cast<ValueDecl *>(this);
+ArrayRef<CustomAttr *> Decl::getRuntimeDiscoverableAttrs() const {
+  auto *mutableSelf = const_cast<Decl *>(this);
   return evaluateOrDefault(getASTContext().evaluator,
                            GetRuntimeDiscoverableAttributes{mutableSelf},
                            nullptr);
