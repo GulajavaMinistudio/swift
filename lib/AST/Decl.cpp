@@ -7125,6 +7125,15 @@ void VarDecl::emitLetToVarNoteIfSimple(DeclContext *UseDC) const {
   }
 }
 
+clang::PointerAuthQualifier VarDecl::getPointerAuthQualifier() const {
+  if (auto *clangDecl = getClangDecl()) {
+    if (auto *valueDecl = dyn_cast<clang::ValueDecl>(clangDecl)) {
+      return valueDecl->getType().getPointerAuth();
+    }
+  }
+  return clang::PointerAuthQualifier();
+}
+
 ParamDecl::ParamDecl(SourceLoc specifierLoc,
                      SourceLoc argumentNameLoc, Identifier argumentName,
                      SourceLoc parameterNameLoc, Identifier parameterName,
@@ -9894,7 +9903,7 @@ SourceRange MacroExpansionDecl::getSourceRange() const {
   else if (RightAngleLoc.isValid())
     endLoc = RightAngleLoc;
   else
-    endLoc = MacroLoc.getEndLoc();
+    endLoc = MacroNameLoc.getEndLoc();
 
   return SourceRange(PoundLoc, endLoc);
 }
@@ -9910,10 +9919,17 @@ unsigned MacroExpansionDecl::getDiscriminator() const {
       MacroDiscriminatorContext::getParentOf(mutableThis);
   mutableThis->setDiscriminator(
       ctx.getNextMacroDiscriminator(
-          discriminatorContext, getMacro().getBaseName()));
+          discriminatorContext, getMacroName().getBaseName()));
 
   assert(getRawDiscriminator() != InvalidDiscriminator);
   return getRawDiscriminator();
+}
+
+ArrayRef<Decl *> MacroExpansionDecl::getRewritten() const {
+  auto mutableThis = const_cast<MacroExpansionDecl *>(this);
+  return evaluateOrDefault(
+      getASTContext().evaluator,
+      ExpandMacroExpansionDeclRequest{mutableThis}, {});
 }
 
 NominalTypeDecl *
