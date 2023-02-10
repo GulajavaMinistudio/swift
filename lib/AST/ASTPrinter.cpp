@@ -1186,16 +1186,6 @@ void PrintAST::printAttributes(const Decl *D) {
 
   D->getAttrs().print(Printer, Options, D);
 
-  // We need to check whether this is a type with an inferred
-  // type wrapper attribute and if so print it explicitly.
-  if (auto *NTD = dyn_cast<NominalTypeDecl>(D)) {
-    auto typeWrapperInfo = NTD->getTypeWrapper();
-    // The attribute has been inferred and we have to print it.
-    if (typeWrapperInfo && typeWrapperInfo->IsInferred) {
-      typeWrapperInfo->Attr->print(Printer, Options, D);
-    }
-  }
-
   // Print the implicit 'final' attribute.
   if (auto VD = dyn_cast<ValueDecl>(D)) {
     auto VarD = dyn_cast<VarDecl>(D);
@@ -2975,10 +2965,6 @@ static bool usesFeatureSpecializeAttributeWithAvailability(Decl *decl) {
   return false;
 }
 
-static bool usesFeatureTypeWrappers(Decl *decl) {
-  return false;
-}
-
 static bool usesFeatureRuntimeDiscoverableAttrs(Decl *decl) {
   return false;
 }
@@ -3170,6 +3156,14 @@ static bool usesFeatureBuiltinMacros(Decl *decl) {
 }
 
 static bool usesFeatureImportSymbolicCXXDecls(Decl *decl) { return false; }
+
+static bool usesFeatureFreestandingExpressionMacros(Decl *decl) {
+  auto macro = dyn_cast<MacroDecl>(decl);
+  if (!macro)
+    return false;
+
+  return macro->getMacroRoles().contains(MacroRole::Expression);
+}
 
 static void
 suppressingFeatureNoAsyncAvailability(PrintOptions &options,
