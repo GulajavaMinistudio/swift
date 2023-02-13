@@ -5769,6 +5769,9 @@ public:
   /// that has an external effect on the function.
   bool hasExternalPropertyWrapper() const;
 
+  /// Whether this property has any attached runtime metadata attributes.
+  bool hasRuntimeMetadataAttributes() const;
+
   /// Whether all of the attached property wrappers have an init(wrappedValue:)
   /// initializer.
   bool allAttachedPropertyWrappersHaveWrappedValueInit() const;
@@ -8358,12 +8361,11 @@ public:
   /// The location of the 'macro' keyword.
   SourceLoc macroLoc;
 
-  /// The parameter list for a function-like macro.
+  /// The parameter list.
   ParameterList *parameterList;
 
-  /// Where the '->' or ':' is located, for a function- or value-like macro,
-  /// respectively.
-  SourceLoc arrowOrColonLoc;
+  /// Where the '->' is located, if present.
+  SourceLoc arrowLoc;
 
   /// The result type.
   TypeLoc resultType;
@@ -8375,7 +8377,7 @@ public:
   MacroDecl(SourceLoc macroLoc, DeclName name, SourceLoc nameLoc,
             GenericParamList *genericParams,
             ParameterList *parameterList,
-            SourceLoc arrowOrColonLoc,
+            SourceLoc arrowLoc,
             TypeRepr *resultType,
             Expr *definition,
             DeclContext *parent);

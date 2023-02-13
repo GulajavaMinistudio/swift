@@ -369,9 +369,9 @@ StringRef Decl::getDescriptiveKindName(DescriptiveDeclKind K) {
 
 DeclAttributes Decl::getSemanticAttrs() const {
   auto mutableThis = const_cast<Decl *>(this);
-  evaluateOrDefault(getASTContext().evaluator,
-                    ExpandMemberAttributeMacros{mutableThis},
-                    false);
+  (void)evaluateOrDefault(getASTContext().evaluator,
+                          ExpandMemberAttributeMacros{mutableThis},
+                          { });
 
   return getAttrs();
 }
@@ -6814,6 +6814,11 @@ bool VarDecl::hasAttachedPropertyWrapper() const {
   return false;
 }
 
+/// Whether this property has any attached runtime metadata attributes.
+bool VarDecl::hasRuntimeMetadataAttributes() const {
+  return !getRuntimeDiscoverableAttrs().empty();
+}
+
 bool VarDecl::hasImplicitPropertyWrapper() const {
   if (getAttrs().hasAttribute<CustomAttr>()) {
     if (!getAttachedPropertyWrappers().empty())
@@ -9753,6 +9758,9 @@ StringRef swift::getMacroRoleString(MacroRole role) {
 
   case MacroRole::Member:
     return "member";
+
+  case MacroRole::Peer:
+    return "peer";
   }
 }
 
@@ -9798,7 +9806,8 @@ static MacroRoles freestandingMacroRoles =
 static MacroRoles attachedMacroRoles = (MacroRoles() |
                                         MacroRole::Accessor |
                                         MacroRole::MemberAttribute |
-                                        MacroRole::Member);
+                                        MacroRole::Member |
+                                        MacroRole::Peer);
 
 bool swift::isFreestandingMacro(MacroRoles contexts) {
   return bool(contexts & freestandingMacroRoles);
@@ -9820,14 +9829,14 @@ MacroDecl::MacroDecl(
     SourceLoc macroLoc, DeclName name, SourceLoc nameLoc,
     GenericParamList *genericParams,
     ParameterList *parameterList,
-    SourceLoc arrowOrColonLoc,
+    SourceLoc arrowLoc,
     TypeRepr *resultType,
     Expr *definition,
     DeclContext *parent
 ) : GenericContext(DeclContextKind::MacroDecl, parent, genericParams),
     ValueDecl(DeclKind::Macro, parent, name, nameLoc),
     macroLoc(macroLoc), parameterList(parameterList),
-    arrowOrColonLoc(arrowOrColonLoc),
+    arrowLoc(arrowLoc),
     resultType(resultType),
     definition(definition) {
 
@@ -9849,6 +9858,8 @@ SourceRange MacroDecl::getSourceRange() const {
   SourceLoc endLoc = getNameLoc();
   if (parameterList)
     endLoc = parameterList->getEndLoc();
+  if (resultType.getSourceRange().isValid())
+    endLoc = resultType.getSourceRange().End;
   if (definition)
     endLoc = definition->getEndLoc();
   if (auto trailing = getTrailingWhereClause())
@@ -9974,6 +9985,7 @@ MacroDiscriminatorContext MacroDiscriminatorContext::getParentOf(
   case GeneratedSourceInfo::AccessorMacroExpansion:
   case GeneratedSourceInfo::MemberAttributeMacroExpansion:
   case GeneratedSourceInfo::MemberMacroExpansion:
+  case GeneratedSourceInfo::PeerMacroExpansion:
   case GeneratedSourceInfo::PrettyPrinted:
   case GeneratedSourceInfo::ReplacedFunctionBody:
     return origDC;

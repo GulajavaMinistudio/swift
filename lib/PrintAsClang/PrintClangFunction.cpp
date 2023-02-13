@@ -18,6 +18,7 @@
 #include "PrintClangClassType.h"
 #include "PrintClangValueType.h"
 #include "SwiftToClangInteropContext.h"
+#include "swift/ABI/MetadataValues.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/GenericParamList.h"
 #include "swift/AST/Module.h"
@@ -1084,7 +1085,8 @@ void DeclAndTypeClangFunctionPrinter::printCxxThunkBody(
     const AbstractFunctionDecl *FD, const LoweredFunctionSignature &signature,
     StringRef swiftSymbolName, const NominalTypeDecl *typeDeclContext,
     const ModuleDecl *moduleContext, Type resultTy, const ParameterList *params,
-    bool hasThrows, const AnyFunctionType *funcType, bool isStaticMethod) {
+    bool hasThrows, const AnyFunctionType *funcType, bool isStaticMethod,
+    Optional<IRABIDetailsProvider::MethodDispatchInfo> dispatchInfo) {
   if (typeDeclContext)
     ClangSyntaxPrinter(os).printNominalTypeOutsideMemberDeclInnerStaticAssert(
         typeDeclContext);
@@ -1096,9 +1098,49 @@ void DeclAndTypeClangFunctionPrinter::printCxxThunkBody(
     os << "  void* opaqueError = nullptr;\n";
     os << "  void* _ctx = nullptr;\n";
   }
+  Optional<StringRef> indirectFunctionVar;
+  using DispatchKindTy = IRABIDetailsProvider::MethodDispatchInfo::Kind;
+  if (dispatchInfo) {
+    switch (dispatchInfo->getKind()) {
+    case DispatchKindTy::Direct:
+      break;
+    case DispatchKindTy::IndirectVTableStaticOffset:
+      os << "void ***selfPtr_ = reinterpret_cast<void ***>( "
+            "::swift::_impl::_impl_RefCountedClass::getOpaquePointer(*this));"
+            "\n";
+
+      os << "#ifdef __arm64e__\n";
+      os << "void **vtable_ = ptrauth_auth_data(*selfPtr_, "
+            "ptrauth_key_process_independent_data, "
+            "ptrauth_blend_discriminator(selfPtr_,"
+         << SpecialPointerAuthDiscriminators::ObjCISA << "));\n";
+      os << "#else\n";
+      os << "void **vtable_ = *selfPtr_;\n";
+      os << "#endif\n";
+      os << "struct FTypeAddress {\n";
+      os << "decltype(" << cxx_synthesis::getCxxImplNamespaceName()
+         << "::" << swiftSymbolName << ") *";
+      if (auto ptrAuthDisc = dispatchInfo->getPointerAuthDiscriminator())
+        os << " __ptrauth_swift_class_method_pointer(" << ptrAuthDisc->value
+           << ')';
+      os << " func;\n";
+      os << "};\n";
+      os << "FTypeAddress *fptrptr_ = reinterpret_cast<FTypeAddress *>(vtable_ "
+            "+ "
+         << (dispatchInfo->getStaticBitOffset() / 8) << ");\n";
+      indirectFunctionVar = StringRef("fptrptr_->func");
+      break;
+    case DispatchKindTy::Thunk:
+      swiftSymbolName = dispatchInfo->getThunkSymbolName();
+      break;
+    }
+  }
   auto printCallToCFunc = [&](Optional<StringRef> additionalParam) {
-    os << cxx_synthesis::getCxxImplNamespaceName() << "::" << swiftSymbolName
-       << '(';
+    if (indirectFunctionVar)
+      os << "(* " << *indirectFunctionVar << ')';
+    else
+      os << cxx_synthesis::getCxxImplNamespaceName() << "::" << swiftSymbolName;
+    os << '(';
 
     bool needsComma = false;
     size_t paramIndex = 1;
@@ -1329,7 +1371,8 @@ static StringRef getConstructorName(const AbstractFunctionDecl *FD) {
 void DeclAndTypeClangFunctionPrinter::printCxxMethod(
     const NominalTypeDecl *typeDeclContext, const AbstractFunctionDecl *FD,
     const LoweredFunctionSignature &signature, StringRef swiftSymbolName,
-    Type resultTy, bool isStatic, bool isDefinition) {
+    Type resultTy, bool isStatic, bool isDefinition,
+    Optional<IRABIDetailsProvider::MethodDispatchInfo> dispatchInfo) {
   bool isConstructor = isa<ConstructorDecl>(FD);
   os << "  ";
 
@@ -1357,10 +1400,11 @@ void DeclAndTypeClangFunctionPrinter::printCxxMethod(
 
   os << " {\n";
   // FIXME: should it be objTy for resultTy?
-  printCxxThunkBody(
-      FD, signature, swiftSymbolName, typeDeclContext, FD->getModuleContext(),
-      resultTy, FD->getParameters(), FD->hasThrows(),
-      FD->getInterfaceType()->castTo<AnyFunctionType>(), isStatic);
+  printCxxThunkBody(FD, signature, swiftSymbolName, typeDeclContext,
+                    FD->getModuleContext(), resultTy, FD->getParameters(),
+                    FD->hasThrows(),
+                    FD->getInterfaceType()->castTo<AnyFunctionType>(), isStatic,
+                    dispatchInfo);
   os << "  }\n";
 }
 
@@ -1396,7 +1440,8 @@ static std::string remapPropertyName(const AccessorDecl *accessor,
 void DeclAndTypeClangFunctionPrinter::printCxxPropertyAccessorMethod(
     const NominalTypeDecl *typeDeclContext, const AccessorDecl *accessor,
     const LoweredFunctionSignature &signature, StringRef swiftSymbolName,
-    Type resultTy, bool isStatic, bool isDefinition) {
+    Type resultTy, bool isStatic, bool isDefinition,
+    Optional<IRABIDetailsProvider::MethodDispatchInfo> dispatchInfo) {
   assert(accessor->isSetter() || accessor->getParameters()->size() == 0);
   os << "  ";
 
@@ -1421,14 +1466,16 @@ void DeclAndTypeClangFunctionPrinter::printCxxPropertyAccessorMethod(
   // FIXME: should it be objTy for resultTy?
   printCxxThunkBody(accessor, signature, swiftSymbolName, typeDeclContext,
                     accessor->getModuleContext(), resultTy,
-                    accessor->getParameters());
+                    accessor->getParameters(),
+                    /*hasThrows=*/false, nullptr, isStatic, dispatchInfo);
   os << "  }\n";
 }
 
 void DeclAndTypeClangFunctionPrinter::printCxxSubscriptAccessorMethod(
     const NominalTypeDecl *typeDeclContext, const AccessorDecl *accessor,
     const LoweredFunctionSignature &signature, StringRef swiftSymbolName,
-    Type resultTy, bool isDefinition) {
+    Type resultTy, bool isDefinition,
+    Optional<IRABIDetailsProvider::MethodDispatchInfo> dispatchInfo) {
   assert(accessor->isGetter());
   FunctionSignatureModifiers modifiers;
   if (isDefinition)
@@ -1445,9 +1492,10 @@ void DeclAndTypeClangFunctionPrinter::printCxxSubscriptAccessorMethod(
   }
   os << " {\n";
   // FIXME: should it be objTy for resultTy?
-  printCxxThunkBody(accessor, signature, swiftSymbolName, typeDeclContext,
-                    accessor->getModuleContext(), resultTy,
-                    accessor->getParameters());
+  printCxxThunkBody(
+      accessor, signature, swiftSymbolName, typeDeclContext,
+      accessor->getModuleContext(), resultTy, accessor->getParameters(),
+      /*hasThrows=*/false, nullptr, /*isStatic=*/false, dispatchInfo);
   os << "  }\n";
 }
 
