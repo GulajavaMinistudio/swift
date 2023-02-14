@@ -804,9 +804,13 @@ ERROR(serialization_module_too_old,Fatal,
       "rebuild %0 and try again: %1",
       (Identifier, StringRef))
 ERROR(serialization_module_incompatible_revision,Fatal,
-      "compiled module was created by a different version of the compiler; "
-      "rebuild %0 and try again: %1",
-      (Identifier, StringRef))
+      "compiled module was created by a different version of the compiler '%0'; "
+      "rebuild %1 and try again: %2",
+      (StringRef, Identifier, StringRef))
+REMARK(serialization_module_problematic_revision, none,
+      "compiled module was created by a different version of the compiler '%0': "
+      "%1",
+      (StringRef, StringRef))
 ERROR(serialization_missing_single_dependency,Fatal,
       "missing required module '%0'", (StringRef))
 ERROR(serialization_missing_dependencies,Fatal,
@@ -3918,7 +3922,7 @@ ERROR(unresolved_member_no_inference,none,
 ERROR(cannot_infer_base_of_unresolved_member,none,
       "cannot infer contextual base in reference to member %0", (DeclNameRef))
 ERROR(cannot_infer_underlying_for_opaque_result,none,
-      "cannot infer underlying type for opaque result %0 from return expression",
+      "underlying type for opaque result type %0 could not be inferred from return expression",
       (Type))
 ERROR(unresolved_nil_literal,none,
       "'nil' requires a contextual type", ())
@@ -6855,12 +6859,9 @@ ERROR(moveonly_copyable_type_that_contains_moveonly_type, none,
 NOTE(moveonly_copyable_type_that_contains_moveonly_type_location, none,
      "contained move-only %0 '%1.%2'",
      (DescriptiveDeclKind, StringRef, StringRef))
-ERROR(moveonly_cannot_conform_to_protocol, none,
-     "move-only %0 %1 cannot conform yet to any protocols",
-     (DescriptiveDeclKind, DeclName))
-ERROR(moveonly_cannot_conform_to_protocol_with_name, none,
-     "move-only %0 %1 cannot conform to protocol %2",
-     (DescriptiveDeclKind, DeclName, DeclName))
+ERROR(moveonly_cannot_conform_to_type, none,
+     "move-only %0 %1 cannot conform to %2",
+     (DescriptiveDeclKind, DeclName, Type))
 ERROR(moveonly_non_final_class_cannot_contain_moveonly_field, none,
      "non-final classes containing move only fields is not yet supported", ())
 
