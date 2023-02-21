@@ -1,4 +1,4 @@
-//===--- MoveOnlyAddressChecker.cpp ---------------------------------------===//
+//===--- MoveOnlyAddressCheckerUtils.cpp ----------------------------------===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -156,9 +156,11 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 
-#include "MoveOnlyBorrowToDestructure.h"
+#include "MoveOnlyAddressCheckerUtils.h"
+#include "MoveOnlyBorrowToDestructureUtils.h"
 #include "MoveOnlyDiagnostics.h"
-#include "MoveOnlyObjectChecker.h"
+#include "MoveOnlyObjectCheckerUtils.h"
+#include "MoveOnlyUtils.h"
 
 #include <utility>
 
@@ -312,8 +314,14 @@ static bool memInstMustConsume(Operand *memOper) {
     return applySite.getArgumentOperandConvention(*memOper).isOwnedConvention();
   }
   case SILInstructionKind::PartialApplyInst: {
-    // If we are on the stack, we do not consume. Otherwise, we do.
-    return !cast<PartialApplyInst>(memInst)->isOnStack();
+    // If we are on the stack or have an inout convention, we do not
+    // consume. Otherwise, we do.
+    auto *pai = cast<PartialApplyInst>(memInst);
+    if (pai->isOnStack())
+      return false;
+    ApplySite applySite(pai);
+    auto convention = applySite.getArgumentConvention(*memOper);
+    return convention.isInoutConvention();
   }
   case SILInstructionKind::DestroyAddrInst:
     return true;
@@ -364,59 +372,24 @@ static bool isInOutDefThatNeedsEndOfFunctionLiveness(SILValue value) {
 }
 
 //===----------------------------------------------------------------------===//
-//                  MARK: Cleanup After Emitting Diagnostic
+//                   MARK: Find Candidate Mark Must Checks
 //===----------------------------------------------------------------------===//
 
-static bool cleanupAfterEmittingDiagnostic(SILFunction *fn) {
-  bool changed = false;
+void swift::siloptimizer::searchForCandidateAddressMarkMustChecks(
+    SILFunction *fn,
+    llvm::SmallSetVector<MarkMustCheckInst *, 32> &moveIntroducersToProcess,
+    DiagnosticEmitter &diagnosticEmitter) {
   for (auto &block : *fn) {
     for (auto ii = block.begin(), ie = block.end(); ii != ie;) {
-      auto *inst = &*ii;
+      auto *mmci = dyn_cast<MarkMustCheckInst>(&*ii);
       ++ii;
 
-      // Convert load [copy] -> load_borrow + explicit_copy_value.
-      if (auto *li = dyn_cast<LoadInst>(inst)) {
-        if (li->getOwnershipQualifier() == LoadOwnershipQualifier::Copy) {
-          SILBuilderWithScope builder(li);
-          auto *lbi = builder.createLoadBorrow(li->getLoc(), li->getOperand());
-          auto *cvi = builder.createExplicitCopyValue(li->getLoc(), lbi);
-          builder.createEndBorrow(li->getLoc(), lbi);
-          li->replaceAllUsesWith(cvi);
-          li->eraseFromParent();
-          changed = true;
-        }
-      }
-
-      // Convert copy_addr !take of src to its explicit value form so we don't
-      // error.
-      if (auto *copyAddr = dyn_cast<CopyAddrInst>(inst)) {
-        if (!copyAddr->isTakeOfSrc()) {
-          SILBuilderWithScope builder(copyAddr);
-          builder.createExplicitCopyAddr(
-              copyAddr->getLoc(), copyAddr->getSrc(), copyAddr->getDest(),
-              IsTake_t(copyAddr->isTakeOfSrc()),
-              IsInitialization_t(copyAddr->isInitializationOfDest()));
-          copyAddr->eraseFromParent();
-          changed = true;
-        }
-      }
-
-      // Convert any copy_value of move_only type to explicit copy value.
-      if (auto *cvi = dyn_cast<CopyValueInst>(inst)) {
-        if (!cvi->getOperand()->getType().isMoveOnly())
-          continue;
-        SILBuilderWithScope b(cvi);
-        auto *expCopy =
-            b.createExplicitCopyValue(cvi->getLoc(), cvi->getOperand());
-        cvi->replaceAllUsesWith(expCopy);
-        cvi->eraseFromParent();
-        changed = true;
+      if (!mmci || !mmci->hasMoveCheckerKind() || !mmci->getType().isAddress())
         continue;
-      }
+
+      moveIntroducersToProcess.insert(mmci);
     }
   }
-
-  return changed;
 }
 
 //===----------------------------------------------------------------------===//
@@ -645,7 +618,7 @@ void UseState::initializeLiveness(
   // See if our address is from a closure guaranteed box that we did not promote
   // to an address. In such a case, just treat our mark_must_check as the init
   // of our value.
-  if (auto *projectBox = dyn_cast<ProjectBoxInst>(address->getOperand())) {
+  if (auto *projectBox = dyn_cast<ProjectBoxInst>(stripAccessMarkers(address->getOperand()))) {
     if (auto *fArg = dyn_cast<SILFunctionArgument>(projectBox->getOperand())) {
       if (fArg->isClosureCapture()) {
         assert(fArg->getArgumentConvention() ==
@@ -659,12 +632,19 @@ void UseState::initializeLiveness(
         initInsts.insert({address, liveness.getTopLevelSpan()});
         liveness.initializeDef(address, liveness.getTopLevelSpan());
       }
+    } else if (auto *box = dyn_cast<AllocBoxInst>(
+                   lookThroughOwnershipInsts(projectBox->getOperand()))) {
+      LLVM_DEBUG(llvm::dbgs() << "Found move only var allocbox use... "
+                 "adding mark_must_check as init!\n");
+      initInsts.insert({address, liveness.getTopLevelSpan()});
+      liveness.initializeDef(address, liveness.getTopLevelSpan());
     }
   }
 
   // Check if our address is from a ref_element_addr. In such a case, we treat
   // the mark_must_check as the initialization.
-  if (auto *refEltAddr = dyn_cast<RefElementAddrInst>(address->getOperand())) {
+  if (auto *refEltAddr = dyn_cast<RefElementAddrInst>(
+          stripAccessMarkers(address->getOperand()))) {
     LLVM_DEBUG(llvm::dbgs() << "Found ref_element_addr use... "
                                "adding mark_must_check as init!\n");
     initInsts.insert({address, liveness.getTopLevelSpan()});
@@ -673,7 +653,8 @@ void UseState::initializeLiveness(
 
   // Check if our address is from a global_addr. In such a case, we treat the
   // mark_must_check as the initialization.
-  if (auto *globalAddr = dyn_cast<GlobalAddrInst>(address->getOperand())) {
+  if (auto *globalAddr =
+          dyn_cast<GlobalAddrInst>(stripAccessMarkers(address->getOperand()))) {
     LLVM_DEBUG(llvm::dbgs() << "Found global_addr use... "
                                "adding mark_must_check as init!\n");
     initInsts.insert({address, liveness.getTopLevelSpan()});
@@ -730,12 +711,11 @@ void UseState::initializeLiveness(
         liveness.updateForUse(endAccess, livenessInstAndValue.second,
                               false /*lifetime ending*/);
       }
-    } else {
-      for (auto *ebi : li->getConsumingUses()) {
-        liveness.updateForUse(ebi->getUser(), livenessInstAndValue.second,
-                              false /*lifetime ending*/);
-      }
     }
+    // NOTE: We used to add the destroy_value of our loads here to liveness. We
+    // instead add them to the livenessUses array so that we can successfully
+    // find them later when performing a forward traversal to find them for
+    // error purposes.
     LLVM_DEBUG(llvm::dbgs() << "Added liveness for borrow: "
                             << *livenessInstAndValue.first;
                liveness.print(llvm::dbgs()));
@@ -920,7 +900,7 @@ public:
   ConsumeInfo &operator=(ConsumeInfo const &) = delete;
 };
 
-struct MoveOnlyChecker {
+struct MoveOnlyAddressCheckerPImpl {
   bool changed = false;
 
   SILFunction *fn;
@@ -939,20 +919,23 @@ struct MoveOnlyChecker {
 
   /// Diagnostic emission routines wrapped around a consuming use cache. This
   /// ensures that we only emit a single error per use per marked value.
-  DiagnosticEmitter diagnosticEmitter;
+  DiagnosticEmitter &diagnosticEmitter;
 
   /// Information about destroys that we use when inserting destroys.
   ConsumeInfo consumes;
 
-  /// Allocator used by the BorrowToDestructureTransform.
-  borrowtodestructure::IntervalMapAllocator allocator;
-
   /// PostOrderAnalysis used by the BorrowToDestructureTransform.
   PostOrderAnalysis *poa;
 
-  MoveOnlyChecker(SILFunction *fn, DeadEndBlocks *deBlocks,
-                  DominanceInfo *domTree, PostOrderAnalysis *poa)
-      : fn(fn), deleter(), canonicalizer(), diagnosticEmitter(), poa(poa) {
+  /// Allocator used by the BorrowToDestructureTransform.
+  borrowtodestructure::IntervalMapAllocator &allocator;
+
+  MoveOnlyAddressCheckerPImpl(
+      SILFunction *fn, DiagnosticEmitter &diagnosticEmitter,
+      DominanceInfo *domTree, PostOrderAnalysis *poa,
+      borrowtodestructure::IntervalMapAllocator &allocator)
+      : fn(fn), deleter(), canonicalizer(),
+        diagnosticEmitter(diagnosticEmitter), poa(poa), allocator(allocator) {
     deleter.setCallbacks(std::move(
         InstModCallbacks().onDelete([&](SILInstruction *instToDelete) {
           if (auto *mvi = dyn_cast<MarkMustCheckInst>(instToDelete))
@@ -960,7 +943,7 @@ struct MoveOnlyChecker {
           instToDelete->eraseFromParent();
         })));
     canonicalizer.init(fn, domTree, deleter);
-    diagnosticEmitter.init(fn, &canonicalizer);
+    diagnosticEmitter.initCanonicalizer(&canonicalizer);
   }
 
   /// Search through the current function for candidate mark_must_check
@@ -971,20 +954,10 @@ struct MoveOnlyChecker {
   /// Returns true if we emitted a diagnostic. Returns false otherwise.
   bool searchForCandidateMarkMustChecks();
 
-  /// After we have emitted a diagnostic, we need to clean up the instruction
-  /// stream by converting /all/ copies of move only typed things to use
-  /// explicit_copy_value so that we maintain the SIL invariant that in
-  /// canonical SIL move only types are not copied by normal copies.
-  ///
-  /// Returns true if we actually changed any instructions.
-  void cleanupAfterEmittingDiagnostic();
-
   /// Emits an error diagnostic for \p markedValue.
   void performObjectCheck(MarkMustCheckInst *markedValue);
 
   bool performSingleCheck(MarkMustCheckInst *markedValue);
-
-  bool checkFunction();
 
   void insertDestroysOnBoundary(FieldSensitiveMultiDefPrunedLiveRange &liveness,
                                 FieldSensitivePrunedLivenessBoundary &boundary);
@@ -998,6 +971,141 @@ struct MoveOnlyChecker {
 } // namespace
 
 //===----------------------------------------------------------------------===//
+//                     MARK: CopiedLoadBorrowElimination
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// An early transform that we run to convert any load_borrow that are copied
+/// directly or that have any subelement that is copied to a load [copy]. This
+/// lets the rest of the optimization handle these as appropriate.
+struct CopiedLoadBorrowEliminationVisitor : public AccessUseVisitor {
+  SILFunction *fn;
+  StackList<LoadBorrowInst *> targets;
+
+  CopiedLoadBorrowEliminationVisitor(SILFunction *fn)
+      : AccessUseVisitor(AccessUseType::Overlapping,
+                         NestedAccessType::IgnoreAccessBegin),
+        fn(fn), targets(fn) {}
+
+  bool visitUse(Operand *op, AccessUseType useTy) override {
+    LLVM_DEBUG(llvm::dbgs() << "CopiedLBElim. Visiting: " << *op->getUser());
+    auto *lbi = dyn_cast<LoadBorrowInst>(op->getUser());
+    if (!lbi)
+      return true;
+
+    LLVM_DEBUG(llvm::dbgs() << "Found load_borrow: " << *lbi);
+
+    StackList<Operand *> useWorklist(lbi->getFunction());
+    for (auto *use : lbi->getUses())
+      useWorklist.push_back(use);
+
+    bool shouldConvertToLoadCopy = false;
+    while (!useWorklist.empty()) {
+      auto *nextUse = useWorklist.pop_back_val();
+      switch (nextUse->getOperandOwnership()) {
+      case OperandOwnership::NonUse:
+      case OperandOwnership::ForwardingUnowned:
+      case OperandOwnership::PointerEscape:
+        continue;
+
+        // These might be uses that we need to perform a destructure or insert
+        // struct_extracts for.
+      case OperandOwnership::TrivialUse:
+      case OperandOwnership::InstantaneousUse:
+      case OperandOwnership::UnownedInstantaneousUse:
+      case OperandOwnership::InteriorPointer:
+      case OperandOwnership::BitwiseEscape: {
+        // Look through copy_value of a move only value. We treat copy_value of
+        // copyable values as normal uses.
+        if (auto *cvi = dyn_cast<CopyValueInst>(nextUse->getUser())) {
+          if (cvi->getOperand()->getType().isMoveOnly()) {
+            shouldConvertToLoadCopy = true;
+            break;
+          }
+        }
+        continue;
+      }
+
+      case OperandOwnership::ForwardingConsume:
+      case OperandOwnership::DestroyingConsume:
+        // We can only hit this if our load_borrow was copied.
+        llvm_unreachable("We should never hit this");
+
+      case OperandOwnership::GuaranteedForwarding:
+        // If we have a switch_enum, we always need to convert it to a load
+        // [copy] since we need to destructure through it.
+        shouldConvertToLoadCopy |= isa<SwitchEnumInst>(nextUse->getUser());
+
+        ForwardingOperand(nextUse).visitForwardedValues([&](SILValue value) {
+          for (auto *use : value->getUses()) {
+            useWorklist.push_back(use);
+          }
+          return true;
+        });
+        continue;
+
+      case OperandOwnership::Borrow:
+        LLVM_DEBUG(llvm::dbgs() << "        Found recursive borrow!\n");
+        // Look through borrows.
+        for (auto value : nextUse->getUser()->getResults()) {
+          for (auto *use : value->getUses()) {
+            useWorklist.push_back(use);
+          }
+        }
+        continue;
+      case OperandOwnership::EndBorrow:
+        LLVM_DEBUG(llvm::dbgs() << "        Found end borrow!\n");
+        continue;
+      case OperandOwnership::Reborrow:
+        llvm_unreachable("Unsupported for now?!");
+      }
+
+      if (shouldConvertToLoadCopy)
+        break;
+    }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "Load Borrow was copied: "
+               << (shouldConvertToLoadCopy ? "true" : "false") << '\n');
+    if (!shouldConvertToLoadCopy)
+      return true;
+
+    targets.push_back(lbi);
+    return true;
+  }
+
+  void process() {
+    if (targets.empty())
+      return;
+
+    while (!targets.empty()) {
+      auto *lbi = targets.pop_back_val();
+      SILBuilderWithScope builder(lbi);
+      SILValue li = builder.emitLoadValueOperation(
+          lbi->getLoc(), lbi->getOperand(), LoadOwnershipQualifier::Copy);
+      SILValue borrow = builder.createBeginBorrow(lbi->getLoc(), li);
+
+      for (auto *ebi : lbi->getEndBorrows()) {
+        auto *next = ebi->getNextInstruction();
+        SILBuilderWithScope builder(next);
+        auto loc = RegularLocation::getAutoGeneratedLocation();
+        builder.emitDestroyValueOperation(loc, li);
+      }
+
+      lbi->replaceAllUsesWith(borrow);
+      lbi->eraseFromParent();
+    }
+
+    LLVM_DEBUG(llvm::dbgs() << "After Load Borrow Elim. Func Dump Start! ";
+               fn->print(llvm::dbgs()));
+    LLVM_DEBUG(llvm::dbgs() << "After Load Borrow Elim. Func Dump End!\n");
+  }
+};
+
+} // namespace
+
+//===----------------------------------------------------------------------===//
 //                   MARK: GatherLexicalLifetimeUseVisitor
 //===----------------------------------------------------------------------===//
 
@@ -1005,7 +1113,7 @@ namespace {
 
 /// Visit all of the uses of value in preparation for running our algorithm.
 struct GatherUsesVisitor : public AccessUseVisitor {
-  MoveOnlyChecker &moveChecker;
+  MoveOnlyAddressCheckerPImpl &moveChecker;
   UseState &useState;
   MarkMustCheckInst *markedValue;
   bool emittedEarlyDiagnostic = false;
@@ -1015,8 +1123,8 @@ struct GatherUsesVisitor : public AccessUseVisitor {
   // converted to load_borrow without violating exclusivity.
   SSAPrunedLiveness &liveness;
 
-  GatherUsesVisitor(MoveOnlyChecker &moveChecker, UseState &useState,
-                    MarkMustCheckInst *markedValue,
+  GatherUsesVisitor(MoveOnlyAddressCheckerPImpl &moveChecker,
+                    UseState &useState, MarkMustCheckInst *markedValue,
                     DiagnosticEmitter &diagnosticEmitter,
                     SSAPrunedLiveness &gatherUsesLiveness)
       : AccessUseVisitor(AccessUseType::Overlapping,
@@ -1232,20 +1340,27 @@ bool GatherUsesVisitor::visitUse(Operand *op, AccessUseType useTy) {
       }
 
       // Canonicalize the lifetime of the load [take], load [copy].
+      LLVM_DEBUG(llvm::dbgs() << "Running copy propagation!\n");
       moveChecker.changed |= moveChecker.canonicalizer.canonicalize(li);
 
       // If we are asked to perform no_consume_or_assign checking or
       // assignable_but_not_consumable checking, if we found any consumes of our
       // load, then we need to emit an error.
-      if (markedValue->getCheckKind() ==
-              MarkMustCheckInst::CheckKind::NoConsumeOrAssign ||
-          markedValue->getCheckKind() ==
-              MarkMustCheckInst::CheckKind::AssignableButNotConsumable) {
+      auto checkKind = markedValue->getCheckKind();
+      if (checkKind != MarkMustCheckInst::CheckKind::ConsumableAndAssignable) {
         if (moveChecker.canonicalizer.foundAnyConsumingUses()) {
           LLVM_DEBUG(llvm::dbgs()
                      << "Found mark must check [nocopy] error: " << *user);
-          moveChecker.diagnosticEmitter.emitAddressInstLoadedAndConsumed(
-              markedValue);
+          auto *fArg = dyn_cast<SILFunctionArgument>(
+              stripAccessMarkers(markedValue->getOperand()));
+          if (fArg && fArg->isClosureCapture() && fArg->getType().isAddress()) {
+            moveChecker.diagnosticEmitter.emitPromotedBoxArgumentError(
+                markedValue, fArg);
+          } else {
+            moveChecker.diagnosticEmitter
+                .emitAddressEscapingClosureCaptureLoadedAndConsumed(
+                    markedValue);
+          }
           emittedEarlyDiagnostic = true;
           return true;
         }
@@ -1266,6 +1381,18 @@ bool GatherUsesVisitor::visitUse(Operand *op, AccessUseType useTy) {
         }
 
         useState.borrows.insert({user, *leafRange});
+
+        // If we had a load [copy], borrow then we know that all of its destroys
+        // must have been destroy_value. So we can just gather up those
+        // destroy_value and use then to create liveness to ensure that our
+        // value is alive over the entire borrow scope we are going to create.
+        LLVM_DEBUG(llvm::dbgs() << "Adding destroys from load as liveness uses "
+                                   "since they will become end_borrows.\n");
+        for (auto *consumeUse : li->getConsumingUses()) {
+          auto *dvi = cast<DestroyValueInst>(consumeUse->getUser());
+          useState.livenessUses.insert({dvi, *leafRange});
+        }
+
         return true;
       }
 
@@ -1302,6 +1429,16 @@ bool GatherUsesVisitor::visitUse(Operand *op, AccessUseType useTy) {
         }
 
         useState.borrows.insert({user, *leafRange});
+        // If we had a load [copy], borrow then we know that all of its destroys
+        // must have been destroy_value. So we can just gather up those
+        // destroy_value and use then to create liveness to ensure that our
+        // value is alive over the entire borrow scope we are going to create.
+        LLVM_DEBUG(llvm::dbgs() << "Adding destroys from load as liveness uses "
+                                   "since they will become end_borrows.\n");
+        for (auto *consumeUse : li->getConsumingUses()) {
+          auto *dvi = cast<DestroyValueInst>(consumeUse->getUser());
+          useState.livenessUses.insert({dvi, *leafRange});
+        }
       } else {
         // If we had a load [copy], store this into the copy list. These are the
         // things that we must merge into destroy_addr or reinits after we are
@@ -1328,20 +1465,16 @@ bool GatherUsesVisitor::visitUse(Operand *op, AccessUseType useTy) {
     useState.takeInsts.insert({user, *leafRange});
     return true;
   }
-  
-  auto insertLivenessUseForApply = [&](const Operand &op) -> bool {
-    auto leafRange = TypeTreeLeafTypeRange::get(op.get(), getRootAddress());
-    if (!leafRange)
-      return false;
-
-    useState.livenessUses.insert({user, *leafRange});
-    return true;
-  };
 
   if (auto fas = FullApplySite::isa(user)) {
     switch (fas.getArgumentConvention(*op)) {
     case SILArgumentConvention::Indirect_In_Guaranteed: {
-      return insertLivenessUseForApply(*op);
+      auto leafRange = TypeTreeLeafTypeRange::get(op->get(), getRootAddress());
+      if (!leafRange)
+        return false;
+
+      useState.livenessUses.insert({user, *leafRange});
+      return true;
     }
 
     case SILArgumentConvention::Indirect_Inout:
@@ -1358,15 +1491,29 @@ bool GatherUsesVisitor::visitUse(Operand *op, AccessUseType useTy) {
       break;
     }
   }
-  
-  if (PartialApplyInst *pas = dyn_cast<PartialApplyInst>(user)) {
+
+  if (auto *pas = dyn_cast<PartialApplyInst>(user)) {
     if (pas->isOnStack()) {
-      // On-stack partial applications are always a liveness use of their
-      // captures.
-      return insertLivenessUseForApply(*op);
+      LLVM_DEBUG(llvm::dbgs() << "Found on stack partial apply!\n");
+      // On-stack partial applications and their final consumes are always a
+      // liveness use of their captures.
+      auto leafRange = TypeTreeLeafTypeRange::get(op->get(), getRootAddress());
+      if (!leafRange) {
+        LLVM_DEBUG(llvm::dbgs() << "Failed to compute leaf range!\n");
+        return false;
+      }
+
+      useState.livenessUses.insert({user, *leafRange});
+      for (auto *use : pas->getConsumingUses()) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "Adding consuming use of partial apply as liveness use: "
+                   << *use->getUser());
+        useState.livenessUses.insert({use->getUser(), *leafRange});
+      }
+      return true;
     }
   }
-  
+
   // If we don't fit into any of those categories, just track as a liveness
   // use. We assume all such uses must only be reads to the memory. So we assert
   // to be careful.
@@ -1651,50 +1798,6 @@ bool GlobalLivenessChecker::compute() {
 //                       MARK: Main Pass Implementation
 //===----------------------------------------------------------------------===//
 
-void MoveOnlyChecker::cleanupAfterEmittingDiagnostic() {
-  changed |= ::cleanupAfterEmittingDiagnostic(fn);
-}
-
-bool MoveOnlyChecker::searchForCandidateMarkMustChecks() {
-  bool emittedDiagnostic = false;
-  for (auto &block : *fn) {
-    for (auto ii = block.begin(), ie = block.end(); ii != ie;) {
-      auto *mmci = dyn_cast<MarkMustCheckInst>(&*ii);
-      ++ii;
-
-      if (!mmci || !mmci->hasMoveCheckerKind() || !mmci->getType().isAddress())
-        continue;
-
-      // Skip any alloc_box due to heap to stack failing on a box capture. This
-      // will just cause an error.
-      if (auto *pbi = dyn_cast<ProjectBoxInst>(mmci->getOperand())) {
-        if (isa<AllocBoxInst>(pbi->getOperand())) {
-          LLVM_DEBUG(
-              llvm::dbgs()
-              << "Early emitting diagnostic for unsupported alloc box!\n");
-          diagnosticEmitter.emitCheckerDoesntUnderstandDiagnostic(mmci);
-          emittedDiagnostic = true;
-          continue;
-        }
-
-        if (auto *bbi = dyn_cast<BeginBorrowInst>(pbi->getOperand())) {
-          if (isa<AllocBoxInst>(bbi->getOperand())) {
-            LLVM_DEBUG(
-                llvm::dbgs()
-                << "Early emitting diagnostic for unsupported alloc box!\n");
-            diagnosticEmitter.emitCheckerDoesntUnderstandDiagnostic(mmci);
-            emittedDiagnostic = true;
-            continue;
-          }
-        }
-      }
-
-      moveIntroducersToProcess.insert(mmci);
-    }
-  }
-  return emittedDiagnostic;
-}
-
 /// Create a new destroy_value instruction before the specified instruction and
 /// record it as a final consume.
 static void insertDestroyBeforeInstruction(UseState &addressUseState,
@@ -1741,7 +1844,7 @@ static void insertDestroyBeforeInstruction(UseState &addressUseState,
   }
 }
 
-void MoveOnlyChecker::insertDestroysOnBoundary(
+void MoveOnlyAddressCheckerPImpl::insertDestroysOnBoundary(
     FieldSensitiveMultiDefPrunedLiveRange &liveness,
     FieldSensitivePrunedLivenessBoundary &boundary) {
   using IsInterestingUser = FieldSensitivePrunedLiveness::IsInterestingUser;
@@ -1831,9 +1934,10 @@ void MoveOnlyChecker::insertDestroysOnBoundary(
   consumes.finishRecordingFinalConsumes();
 }
 
-void MoveOnlyChecker::rewriteUses(
+void MoveOnlyAddressCheckerPImpl::rewriteUses(
     FieldSensitiveMultiDefPrunedLiveRange &liveness,
     const FieldSensitivePrunedLivenessBoundary &boundary) {
+  LLVM_DEBUG(llvm::dbgs() << "MoveOnlyAddressChecker Rewrite Uses!\n");
   // First remove all destroy_addr that have not been claimed.
   for (auto destroyPair : addressUseState.destroys) {
     if (!consumes.claimConsume(destroyPair.first, destroyPair.second)) {
@@ -1934,14 +2038,29 @@ void MoveOnlyChecker::rewriteUses(
 #endif
 }
 
-bool MoveOnlyChecker::performSingleCheck(MarkMustCheckInst *markedAddress) {
+bool MoveOnlyAddressCheckerPImpl::performSingleCheck(
+    MarkMustCheckInst *markedAddress) {
   SWIFT_DEFER { diagnosticEmitter.clearUsesWithDiagnostic(); };
+  unsigned diagCount = diagnosticEmitter.getDiagnosticCount();
 
   auto accessPathWithBase = AccessPathWithBase::compute(markedAddress);
   auto accessPath = accessPathWithBase.accessPath;
   if (!accessPath.isValid()) {
     LLVM_DEBUG(llvm::dbgs() << "Invalid access path: " << *markedAddress);
     return false;
+  }
+
+  // Before we do anything, convert any load_borrow + copy_value into load
+  // [copy] + begin_borrow for further processing.
+  {
+    CopiedLoadBorrowEliminationVisitor copiedLoadBorrowEliminator(fn);
+    if (!visitAccessPathBaseUses(copiedLoadBorrowEliminator, accessPathWithBase,
+                                 fn)) {
+      LLVM_DEBUG(llvm::dbgs() << "Failed copied load borrow eliminator visit: "
+                              << *markedAddress);
+      return false;
+    }
+    copiedLoadBorrowEliminator.process();
   }
 
   // Then gather all uses of our address by walking from def->uses. We use this
@@ -1969,7 +2088,7 @@ bool MoveOnlyChecker::performSingleCheck(MarkMustCheckInst *markedAddress) {
   // emitted a copy from the base address + a destroy_addr of the use. By
   // bailing here, we can make that assumption since we would have errored
   // earlier otherwise.
-  if (diagnosticEmitter.emittedAnyDiagnostics())
+  if (diagCount != diagnosticEmitter.getDiagnosticCount())
     return true;
 
   //===---
@@ -2000,144 +2119,28 @@ bool MoveOnlyChecker::performSingleCheck(MarkMustCheckInst *markedAddress) {
   return true;
 }
 
-bool MoveOnlyChecker::checkFunction() {
-  // First search for candidates to process and emit diagnostics on any
-  // mark_must_check [noimplicitcopy] we didn't recognize.
-  bool emittedDiagnostic = searchForCandidateMarkMustChecks();
+//===----------------------------------------------------------------------===//
+//                         MARK: Top Level Entrypoint
+//===----------------------------------------------------------------------===//
 
-  // If we didn't find any introducers to check, just return changed.
-  //
-  // NOTE: changed /can/ be true here if we had any mark_must_check
-  // [noimplicitcopy] that we didn't understand and emitting a diagnostic upon
-  // and then deleting.
-  if (moveIntroducersToProcess.empty()) {
-    if (emittedDiagnostic)
-      cleanupAfterEmittingDiagnostic();
-    return changed;
-  }
+bool MoveOnlyAddressChecker::check(
+    SmallSetVector<MarkMustCheckInst *, 32> &moveIntroducersToProcess) {
+  assert(moveIntroducersToProcess.size() &&
+         "Must have checks to process to call this function");
+  MoveOnlyAddressCheckerPImpl pimpl(fn, diagnosticEmitter, domTree, poa,
+                                    allocator);
 
   for (auto *markedValue : moveIntroducersToProcess) {
     LLVM_DEBUG(llvm::dbgs() << "Visiting: " << *markedValue);
 
     // Perform our address check.
-    if (!performSingleCheck(markedValue)) {
+    if (!pimpl.performSingleCheck(markedValue)) {
       LLVM_DEBUG(llvm::dbgs()
                  << "Failed to perform single check! Emitting error!\n");
       // If we fail the address check in some way, set the diagnose!
       diagnosticEmitter.emitCheckerDoesntUnderstandDiagnostic(markedValue);
     }
   }
-  emittedDiagnostic = diagnosticEmitter.emittedAnyDiagnostics();
 
-  // Ok, now that we have performed our checks, we need to eliminate all mark
-  // must check inst since it is invalid for these to be in canonical SIL and
-  // our work is done here.
-  while (!moveIntroducersToProcess.empty()) {
-    auto *markedInst = moveIntroducersToProcess.pop_back_val();
-    markedInst->replaceAllUsesWith(markedInst->getOperand());
-    markedInst->eraseFromParent();
-    changed = true;
-  }
-
-  // Once we have finished processing, if we emitted any diagnostics, then we
-  // may have copy_addr [init], load [copy] of @moveOnly typed values. This is
-  // not valid in Canonical SIL, so we need to ensure that those copy_value
-  // become explicit_copy_value. This is ok to do since we are already going to
-  // fail the compilation and just are trying to maintain SIL invariants.
-  //
-  // It is also ok that we use a little more compile time and go over the
-  // function again, since we are going to fail the compilation and not codegen.
-  if (emittedDiagnostic) {
-    cleanupAfterEmittingDiagnostic();
-  }
-
-  return changed;
-}
-
-//===----------------------------------------------------------------------===//
-//                        MARK: Missed Copy Diagnostic
-//===----------------------------------------------------------------------===//
-
-/// A small diagnostic helper that causes us to emit a diagnostic error upon any
-/// copies we did not eliminate and ask the user for a test case.
-static bool checkForMissedCopies(SILFunction *fn) {
-  bool emittedDiagnostic = false;
-  DiagnosticEmitter diagnosticEmitter;
-  for (auto &block : *fn) {
-    for (auto &inst : block) {
-      if (auto *cvi = dyn_cast<CopyValueInst>(&inst)) {
-        if (cvi->getOperand()->getType().isMoveOnly()) {
-          diagnosticEmitter.emitCheckedMissedCopyError(cvi);
-          emittedDiagnostic = true;
-        }
-        continue;
-      }
-
-      if (auto *li = dyn_cast<LoadInst>(&inst)) {
-        if (li->getOwnershipQualifier() == LoadOwnershipQualifier::Copy &&
-            li->getType().isMoveOnly()) {
-          diagnosticEmitter.emitCheckedMissedCopyError(li);
-          emittedDiagnostic = true;
-        }
-        continue;
-      }
-
-      if (auto *copyAddr = dyn_cast<CopyAddrInst>(&inst)) {
-        if (!copyAddr->isTakeOfSrc() &&
-            copyAddr->getSrc()->getType().isMoveOnly()) {
-          diagnosticEmitter.emitCheckedMissedCopyError(copyAddr);
-          emittedDiagnostic = true;
-        }
-        continue;
-      }
-    }
-  }
-
-  return emittedDiagnostic;
-}
-
-//===----------------------------------------------------------------------===//
-//                            Top Level Entrypoint
-//===----------------------------------------------------------------------===//
-
-namespace {
-
-class MoveOnlyCheckerPass : public SILFunctionTransform {
-  void run() override {
-    auto *fn = getFunction();
-
-    // Only run this pass if the move only language feature is enabled.
-    if (!fn->getASTContext().LangOpts.Features.contains(Feature::MoveOnly))
-      return;
-
-    // Don't rerun diagnostics on deserialized functions.
-    if (getFunction()->wasDeserializedCanonical())
-      return;
-
-    assert(fn->getModule().getStage() == SILStage::Raw &&
-           "Should only run on Raw SIL");
-    LLVM_DEBUG(llvm::dbgs() << "===> MoveOnly Addr Checker. Visiting: "
-                            << fn->getName() << '\n');
-    auto *dominanceAnalysis = getAnalysis<DominanceAnalysis>();
-    DominanceInfo *domTree = dominanceAnalysis->get(fn);
-    auto *deAnalysis = getAnalysis<DeadEndBlocksAnalysis>()->get(fn);
-    auto *poa = getAnalysis<PostOrderAnalysis>();
-
-    bool shouldInvalidate =
-        MoveOnlyChecker(getFunction(), deAnalysis, domTree, poa)
-            .checkFunction();
-    if (checkForMissedCopies(getFunction())) {
-      cleanupAfterEmittingDiagnostic(getFunction());
-      shouldInvalidate = true;
-    }
-    if (shouldInvalidate) {
-      invalidateAnalysis(SILAnalysis::InvalidationKind::Instructions);
-    }
-  }
-};
-
-} // anonymous namespace
-
-SILTransform *swift::createMoveOnlyAddressChecker() {
-  return new MoveOnlyCheckerPass();
+  return pimpl.changed;
 }
