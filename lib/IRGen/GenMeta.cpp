@@ -627,7 +627,7 @@ namespace {
       auto var = cast<llvm::GlobalVariable>(addr);
       
       var->setConstant(true);
-      IGM.setTrueConstGlobal(var);
+      IGM.setColocateTypeDescriptorSection(var);
     }
   };
 
@@ -685,7 +685,7 @@ namespace {
       auto var = cast<llvm::GlobalVariable>(addr);
       
       var->setConstant(true);
-      IGM.setTrueConstGlobal(var);
+      IGM.setColocateTypeDescriptorSection(var);
     }
   };
   
@@ -763,7 +763,7 @@ namespace {
       auto var = cast<llvm::GlobalVariable>(addr);
       
       var->setConstant(true);
-      IGM.setTrueConstGlobal(var);
+      IGM.setColocateTypeDescriptorSection(var);
     }
   };
 
@@ -831,7 +831,7 @@ namespace {
       auto var = cast<llvm::GlobalVariable>(addr);
 
       var->setConstant(true);
-      IGM.setTrueConstGlobal(var);
+      IGM.setColocateTypeDescriptorSection(var);
     }
 
     void addName() {
@@ -1361,7 +1361,7 @@ namespace {
       }
 
       var->setConstant(true);
-      IGM.setTrueConstGlobal(var);
+      IGM.setColocateTypeDescriptorSection(var);
       return var;
     }
 
@@ -2172,7 +2172,7 @@ namespace {
       auto var = cast<llvm::GlobalVariable>(addr);
       
       var->setConstant(true);
-      IGM.setTrueConstGlobal(var);
+      IGM.setColocateTypeDescriptorSection(var);
       IGM.emitOpaqueTypeDescriptorAccessor(O);
     }
     
@@ -4258,7 +4258,9 @@ namespace {
       }
 
       auto metadata = IGF.Builder.CreateCall(
-          IGM.getAllocateGenericClassMetadataFunctionPointer(),
+          getLayoutString() ?
+            IGM.getAllocateGenericClassMetadataWithLayoutStringFunctionPointer() :
+            IGM.getAllocateGenericClassMetadataFunctionPointer(),
           {descriptor, arguments, templatePointer});
 
       return metadata;
@@ -4985,6 +4987,8 @@ namespace {
       }
 
       return IGF.Builder.CreateCall(
+          getLayoutString() ?
+          IGM.getAllocateGenericValueMetadataWithLayoutStringFunctionPointer() :
           IGM.getAllocateGenericValueMetadataFunctionPointer(),
           {descriptor, arguments, templatePointer, extraSizeV});
     }
@@ -5412,7 +5416,9 @@ namespace {
       }
 
       return IGF.Builder.CreateCall(
-          IGM.getAllocateGenericValueMetadataFunctionPointer(),
+          getLayoutString() ?
+            IGM.getAllocateGenericValueMetadataWithLayoutStringFunctionPointer() :
+            IGM.getAllocateGenericValueMetadataFunctionPointer(),
           {descriptor, arguments, templatePointer, extraSizeV});
     }
 
