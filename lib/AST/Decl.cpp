@@ -547,7 +547,9 @@ llvm::raw_ostream &swift::operator<<(llvm::raw_ostream &OS,
   switch (SAK) {
   case SelfAccessKind::NonMutating: return OS << "'nonmutating'";
   case SelfAccessKind::Mutating: return OS << "'mutating'";
-  case SelfAccessKind::Consuming: return OS << "'__consuming'";
+  case SelfAccessKind::LegacyConsuming: return OS << "'__consuming'";
+  case SelfAccessKind::Consuming: return OS << "'consuming'";
+  case SelfAccessKind::Borrowing: return OS << "'borrowing'";
   }
   llvm_unreachable("Unknown SelfAccessKind");
 }
@@ -7681,6 +7683,11 @@ swift::findWrappedValuePlaceholder(Expr *init) {
   public:
     PropertyWrapperValuePlaceholderExpr *placeholder = nullptr;
 
+    /// Only walk the arguments of a macro, to represent the source as written.
+    MacroWalking getMacroWalkingBehavior() const override {
+      return MacroWalking::Arguments;
+    }
+
     virtual PreWalkResult<Expr *> walkToExprPre(Expr *E) override {
       if (placeholder)
         return Action::SkipChildren(E);
@@ -8375,6 +8382,11 @@ AbstractFunctionDecl::getBodyFingerprintIncludingLocalTypeMembers() const {
 
   public:
     HashCombiner(StableHasher &hasher) : hasher(hasher) {}
+
+    /// Only walk the arguments of a macro, to represent the source as written.
+    MacroWalking getMacroWalkingBehavior() const override {
+      return MacroWalking::Arguments;
+    }
 
     PreWalkAction walkToDeclPre(Decl *D) override {
       if (D->isImplicit())
