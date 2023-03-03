@@ -210,6 +210,10 @@ static void findRelatedIdents(StringRef Filename, int64_t Offset,
                               SourceKitCancellationToken CancellationToken,
                               ResponseReceiver Rec);
 
+static void findActiveRegions(StringRef Filename, ArrayRef<const char *> Args,
+                              SourceKitCancellationToken CancellationToken,
+                              ResponseReceiver Rec);
+
 static sourcekitd_response_t
 codeComplete(llvm::MemoryBuffer *InputBuf, int64_t Offset,
              Optional<RequestDict> optionsDict, ArrayRef<const char *> Args,
@@ -450,14 +454,33 @@ getInputBufForRequestOrEmitError(const RequestDict &Req,
   return buf;
 }
 
-/// Get 'key.sourcefile' value as a string. If it's missing, reply an error to
-/// \p Rec and return None.
+/// Get 'key.primary_file' value as a string. If it's missing, reply with an
+/// error and return \c None.
+///
+/// Fallsback to 'key.sourcefile' for compatibility.
 static Optional<StringRef>
-getSourceFileNameForRequestOrEmitError(const RequestDict &Req,
-                                       ResponseReceiver Rec) {
+getPrimaryFileForRequestOrEmitError(const RequestDict &Req,
+                                    ResponseReceiver Rec) {
+  Optional<StringRef> PrimaryFile = Req.getString(KeyPrimaryFile);
+  if (!PrimaryFile) {
+    // Fallback to the old key.sourcefile
+    PrimaryFile = Req.getString(KeySourceFile);
+    if (!PrimaryFile) {
+      Rec(createErrorRequestInvalid("missing 'key.primary_file'"));
+    }
+  }
+  return PrimaryFile;
+}
+
+/// Get 'key.source_file' value as a string. If it's missing, reply with an
+/// error and return \c None.
+static Optional<StringRef>
+getSourceFileForRequestOrEmitError(const RequestDict &Req,
+                                   ResponseReceiver Rec) {
   Optional<StringRef> SourceFile = Req.getString(KeySourceFile);
-  if (!SourceFile.has_value())
+  if (!SourceFile) {
     Rec(createErrorRequestInvalid("missing 'key.sourcefile'"));
+  }
   return SourceFile;
 }
 
@@ -1355,7 +1378,7 @@ static void handleRequestIndex(const RequestDict &Req,
     return;
 
   handleSemanticRequest(Req, Rec, [Req, Rec]() {
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
+    auto SourceFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
     if (!SourceFile)
       return;
     SmallVector<const char *, 8> Args;
@@ -1373,7 +1396,7 @@ handleRequestCursorInfo(const RequestDict &Req,
     LangSupport &Lang = getGlobalContext().getSwiftLangSupport();
 
     Optional<VFSOptions> vfsOptions = getVFSOptions(Req);
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
+    auto SourceFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
     if (!SourceFile)
       return;
     SmallVector<const char *, 8> Args;
@@ -1423,7 +1446,7 @@ static void handleRequestRangeInfo(const RequestDict &Req,
 
   handleSemanticRequest(Req, Rec, [Req, CancellationToken, Rec]() {
     LangSupport &Lang = getGlobalContext().getSwiftLangSupport();
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
+    auto SourceFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
     if (!SourceFile)
       return;
     SmallVector<const char *, 8> Args;
@@ -1458,8 +1481,8 @@ handleRequestSemanticRefactoring(const RequestDict &Req,
     return;
 
   handleSemanticRequest(Req, Rec, [Req, CancellationToken, Rec]() {
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
-    if (!SourceFile)
+    auto PrimaryFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
+    if (!PrimaryFile)
       return;
     SmallVector<const char *, 8> Args;
     if (getCompilerArgumentsForRequestOrEmitError(Req, Args, Rec))
@@ -1482,17 +1505,24 @@ handleRequestSemanticRefactoring(const RequestDict &Req,
     if (Info.Kind == SemanticRefactoringKind::None)
       return Rec(createErrorRequestInvalid("'key.actionuid' isn't recognized"));
 
+    auto SourceFile = getSourceFileForRequestOrEmitError(Req, Rec);
+    if (!SourceFile)
+      return;
+
     if (!Req.getInt64(KeyLine, Line, /*isOptional=*/false)) {
       if (!Req.getInt64(KeyColumn, Column, /*isOptional=*/false)) {
         Req.getInt64(KeyLength, Length, /*isOptional=*/true);
         if (auto N = Req.getString(KeyName))
           Info.PreferredName = *N;
         LangSupport &Lang = getGlobalContext().getSwiftLangSupport();
+        if (*PrimaryFile != *SourceFile) {
+          Info.SourceFile = *SourceFile;
+        }
         Info.Line = Line;
         Info.Column = Column;
         Info.Length = Length;
         return Lang.semanticRefactoring(
-            *SourceFile, Info, Args, CancellationToken,
+            *PrimaryFile, Info, Args, CancellationToken,
             [Rec](const RequestResult<ArrayRef<CategorizedEdits>> &Result) {
               Rec(createCategorizedEditsResponse(Result));
             });
@@ -1511,7 +1541,7 @@ handleRequestCollectExpressionType(const RequestDict &Req,
 
   handleSemanticRequest(Req, Rec, [Req, CancellationToken, Rec]() {
     LangSupport &Lang = getGlobalContext().getSwiftLangSupport();
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
+    auto SourceFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
     if (!SourceFile)
       return;
     SmallVector<const char *, 8> Args;
@@ -1543,7 +1573,7 @@ handleRequestCollectVariableType(const RequestDict &Req,
 
   handleSemanticRequest(Req, Rec, [Req, CancellationToken, Rec]() {
     LangSupport &Lang = getGlobalContext().getSwiftLangSupport();
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
+    auto SourceFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
     if (!SourceFile)
       return;
     SmallVector<const char *, 8> Args;
@@ -1571,7 +1601,7 @@ handleRequestFindLocalRenameRanges(const RequestDict &Req,
     return;
 
   handleSemanticRequest(Req, Rec, [Req, CancellationToken, Rec]() {
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
+    auto SourceFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
     if (!SourceFile)
       return;
     SmallVector<const char *, 8> Args;
@@ -1601,7 +1631,7 @@ handleRequestNameTranslation(const RequestDict &Req,
     return;
 
   handleSemanticRequest(Req, Rec, [Req, CancellationToken, Rec]() {
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
+    auto SourceFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
     if (!SourceFile)
       return;
     SmallVector<const char *, 8> Args;
@@ -1662,7 +1692,7 @@ handleRequestRelatedIdents(const RequestDict &Req,
     return;
 
   handleSemanticRequest(Req, Rec, [Req, CancellationToken, Rec]() {
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
+    auto SourceFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
     if (!SourceFile)
       return;
     SmallVector<const char *, 8> Args;
@@ -1683,12 +1713,31 @@ handleRequestRelatedIdents(const RequestDict &Req,
 }
 
 static void
+handleRequestActiveRegions(const RequestDict &Req,
+                           SourceKitCancellationToken CancellationToken,
+                           ResponseReceiver Rec) {
+  if (checkVFSNotSupported(Req, Rec))
+    return;
+
+  handleSemanticRequest(Req, Rec, [Req, CancellationToken, Rec]() {
+    auto SourceFile = getSourceFileForRequestOrEmitError(Req, Rec);
+    if (!SourceFile)
+      return;
+    SmallVector<const char *> Args;
+    if (getCompilerArgumentsForRequestOrEmitError(Req, Args, Rec))
+      return;
+
+    return findActiveRegions(*SourceFile, Args, CancellationToken, Rec);
+  });
+}
+
+static void
 handleRequestDiagnostics(const RequestDict &Req,
                          SourceKitCancellationToken CancellationToken,
                          ResponseReceiver Rec) {
   handleSemanticRequest(Req, Rec, [Req, CancellationToken, Rec]() {
     Optional<VFSOptions> vfsOptions = getVFSOptions(Req);
-    auto SourceFile = getSourceFileNameForRequestOrEmitError(Req, Rec);
+    auto SourceFile = getPrimaryFileForRequestOrEmitError(Req, Rec);
     if (!SourceFile)
       return;
     SmallVector<const char *, 8> Args;
@@ -1805,6 +1854,7 @@ void handleRequestImpl(sourcekitd_object_t ReqObj,
                  handleRequestFindLocalRenameRanges)
   HANDLE_REQUEST(RequestNameTranslation, handleRequestNameTranslation)
   HANDLE_REQUEST(RequestRelatedIdents, handleRequestRelatedIdents)
+  HANDLE_REQUEST(RequestActiveRegions, handleRequestActiveRegions)
   HANDLE_REQUEST(RequestDiagnostics, handleRequestDiagnostics)
 
   {
@@ -2570,6 +2620,38 @@ static void findRelatedIdents(StringRef Filename, int64_t Offset,
           auto Elem = Arr.appendDictionary();
           Elem.set(KeyOffset, R.first);
           Elem.set(KeyLength, R.second);
+        }
+
+        Rec(RespBuilder.createResponse());
+      });
+}
+
+//===----------------------------------------------------------------------===//
+// FindActiveRegions
+//===----------------------------------------------------------------------===//
+
+static void findActiveRegions(StringRef Filename, ArrayRef<const char *> Args,
+                              SourceKitCancellationToken CancellationToken,
+                              ResponseReceiver Rec) {
+  LangSupport &Lang = getGlobalContext().getSwiftLangSupport();
+
+  Lang.findActiveRegionsInFile(
+      Filename, Args, CancellationToken,
+      [Rec](const RequestResult<ActiveRegionsInfo> &Result) {
+        if (Result.isCancelled())
+          return Rec(createErrorRequestCancelled());
+        if (Result.isError())
+          return Rec(createErrorRequestFailed(Result.getError()));
+
+        const ActiveRegionsInfo &Info = Result.value();
+
+        ResponseBuilder RespBuilder;
+        auto Arr = RespBuilder.getDictionary().setArray(KeyResults);
+        for (auto Config : Info.Configs) {
+          auto Elem = Arr.appendDictionary();
+          Elem.set(KeyOffset, Config.Offset);
+          if (Config.IsActive)
+            Elem.setBool(KeyIsActive, true);
         }
 
         Rec(RespBuilder.createResponse());

@@ -893,6 +893,8 @@ IRGenModule::getAddrOfContextDescriptorForParent(DeclContext *parent,
             ConstantReference::Direct};
   }
       
+  case DeclContextKind::Package:
+    assert(false && "package decl context kind should not have been reached");
   case DeclContextKind::FileUnit:
   case DeclContextKind::MacroDecl:
     parent = parent->getParentModule();
@@ -5979,7 +5981,7 @@ void IRGenModule::setColocateTypeDescriptorSection(llvm::GlobalVariable *v) {
   switch (TargetInfo.OutputObjectFormat) {
   case llvm::Triple::MachO:
     if (IRGen.Opts.ColocateTypeDescriptors)
-      v->setSection("__TEXT,__textg_swiftt,regular");
+      v->setSection("__TEXT,__constg_swiftt");
     else
       setTrueConstGlobal(v);
     break;

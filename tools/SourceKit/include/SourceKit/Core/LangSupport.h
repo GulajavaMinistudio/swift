@@ -637,6 +637,10 @@ enum class SemanticRefactoringKind {
 
 struct SemanticRefactoringInfo {
   SemanticRefactoringKind Kind;
+  // The name of the source file to start the refactoring in. Empty if it is
+  // the primary file (in which case the primary file from the AST is used).
+  // This must match the buffer identifier stored in the source manager.
+  StringRef SourceFile;
   unsigned Line;
   unsigned Column;
   unsigned Length;
@@ -646,6 +650,20 @@ struct SemanticRefactoringInfo {
 struct RelatedIdentsInfo {
   /// (Offset,Length) pairs.
   ArrayRef<std::pair<unsigned, unsigned>> Ranges;
+};
+
+/// Represent one branch of an if config.
+/// Either `#if`, `#else` or `#elseif`.
+struct IfConfigInfo {
+  unsigned Offset;
+  bool IsActive;
+
+  IfConfigInfo(unsigned Offset, bool IsActive)
+      : Offset(Offset), IsActive(IsActive) {}
+};
+
+struct ActiveRegionsInfo {
+  ArrayRef<IfConfigInfo> Configs;
 };
 
 /// Filled out by LangSupport::findInterfaceDocument().
@@ -999,6 +1017,12 @@ public:
       std::function<void(const RequestResult<RelatedIdentsInfo> &)>
           Receiver) = 0;
 
+  virtual void findActiveRegionsInFile(
+      StringRef Filename, ArrayRef<const char *> Args,
+      SourceKitCancellationToken CancellationToken,
+      std::function<void(const RequestResult<ActiveRegionsInfo> &)>
+          Receiver) = 0;
+
   virtual llvm::Optional<std::pair<unsigned, unsigned>>
       findUSRRange(StringRef DocumentName, StringRef USR) = 0;
 
@@ -1025,7 +1049,7 @@ public:
                         SourceKitCancellationToken CancellationToken,
                         CategorizedRenameRangesReceiver Receiver) = 0;
 
-  virtual void semanticRefactoring(StringRef Filename,
+  virtual void semanticRefactoring(StringRef PrimaryFile,
                                    SemanticRefactoringInfo Info,
                                    ArrayRef<const char *> Args,
                                    SourceKitCancellationToken CancellationToken,

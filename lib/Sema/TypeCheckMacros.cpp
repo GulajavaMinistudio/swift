@@ -569,12 +569,6 @@ Expr *swift::expandMacroExpr(
       return nullptr;
     }
 
-    // Make sure macros are enabled before we expand.
-    if (!ctx.LangOpts.hasFeature(Feature::Macros)) {
-      ctx.Diags.diagnose(expr->getLoc(), diag::macro_experimental);
-      return nullptr;
-    }
-
 #if SWIFT_SWIFT_PARSER
     PrettyStackTraceExpr debugStack(ctx, "expanding macro", expr);
 
@@ -738,9 +732,11 @@ bool swift::expandFreestandingDeclarationMacro(
       return false;
     }
 
-    // Make sure macros are enabled before we expand.
-    if (!ctx.LangOpts.hasFeature(Feature::Macros)) {
-      med->diagnose(diag::macro_experimental);
+    // Make sure freestanding macros are enabled before we expand.
+    if (!ctx.LangOpts.hasFeature(Feature::FreestandingMacros) &&
+        !macro->getMacroRoles().contains(MacroRole::Expression)) {
+      med->diagnose(
+          diag::macro_experimental, "freestanding", "FreestandingMacros");
       return false;
     }
 
@@ -934,12 +930,6 @@ evaluateAttachedMacro(MacroDecl *macro, Decl *attachedTo, CustomAttr *attr,
                         macro->getName()
       );
       macro->diagnose(diag::decl_declared_here, macro->getName());
-      return nullptr;
-    }
-
-    // Make sure macros are enabled before we expand.
-    if (!ctx.LangOpts.hasFeature(Feature::Macros)) {
-      attachedTo->diagnose(diag::macro_experimental);
       return nullptr;
     }
 
@@ -1276,34 +1266,14 @@ swift::expandConformances(CustomAttr *attr, MacroDecl *macro,
     if (!extension)
       continue;
 
-    auto &extensionCtx = extension->getASTContext();
-
     // Bind the extension to the original nominal type.
     extension->setExtendedNominal(nominal);
+    nominal->addExtension(extension);
 
-    // Resolve the protocol type.
-    assert(extension->getInherited().size() == 1);
-    auto inheritedType = evaluateOrDefault(
-        extensionCtx.evaluator,
-        InheritedTypeRequest{extension, 0, TypeResolutionStage::Interface},
-        Type());
-
-    if (!inheritedType || inheritedType->hasError())
-      continue;
-
-    auto protocolType = inheritedType->getAs<ProtocolType>();
-    if (!protocolType)
-      continue;
-
-    // Create a synthesized conformance and register it with the nominal type.
-    auto conformance = extensionCtx.getConformance(
-        nominal->getDeclaredInterfaceType(), protocolType->getDecl(),
-        nominal->getLoc(), extension, ProtocolConformanceState::Incomplete,
-        /*isUnchecked=*/false);
-    conformance->setSourceKindAndImplyingConformance(
-        ConformanceEntryKind::Synthesized, nullptr);
-
-    nominal->registerProtocolConformance(conformance, /*synthesized=*/true);
+    // Make it accessible to getTopLevelDecls()
+    if (auto file = dyn_cast<FileUnit>(
+            decl->getDeclContext()->getModuleScopeContext()))
+      file->getOrCreateSynthesizedFile().addTopLevelDecl(extension);
   }
 
   return macroSourceFile->getBufferID();

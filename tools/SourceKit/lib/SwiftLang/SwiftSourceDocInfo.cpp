@@ -1522,7 +1522,7 @@ static void resolveCursor(
       if (Actionables && Length) {
         SmallVector<RefactoringKind, 8> Kinds;
         RangeConfig Range;
-        Range.BufferId = BufferID;
+        Range.BufferID = BufferID;
         auto Pair = SM.getLineAndColumnInBuffer(Loc);
         Range.Line = Pair.first;
         Range.Column = Pair.second;
@@ -2567,6 +2567,101 @@ void SwiftLangSupport::findRelatedIdentifiersInFile(
 }
 
 //===----------------------------------------------------------------------===//
+// SwiftLangSupport::findActiveRegionsInFile
+//===----------------------------------------------------------------------===//
+
+namespace {
+class IfConfigScanner : public SourceEntityWalker {
+  SmallVectorImpl<IfConfigInfo> &Infos;
+  SourceManager &SourceMgr;
+  unsigned BufferID = -1;
+  bool Cancelled = false;
+
+public:
+  explicit IfConfigScanner(SourceFile &SrcFile, unsigned BufferID,
+                           SmallVectorImpl<IfConfigInfo> &Infos)
+      : Infos(Infos), SourceMgr(SrcFile.getASTContext().SourceMgr),
+        BufferID(BufferID) {}
+
+private:
+  bool walkToDeclPre(Decl *D, CharSourceRange Range) override {
+    if (Cancelled)
+      return false;
+
+    if (auto *IfDecl = dyn_cast<IfConfigDecl>(D)) {
+      for (auto &Clause : IfDecl->getClauses()) {
+        unsigned Offset = SourceMgr.getLocOffsetInBuffer(Clause.Loc, BufferID);
+        Infos.emplace_back(Offset, Clause.isActive);
+      }
+    }
+
+    return true;
+  }
+};
+
+} // end anonymous namespace
+
+void SwiftLangSupport::findActiveRegionsInFile(
+    StringRef InputFile, ArrayRef<const char *> Args,
+    SourceKitCancellationToken CancellationToken,
+    std::function<void(const RequestResult<ActiveRegionsInfo> &)> Receiver) {
+
+  std::string Error;
+  SwiftInvocationRef Invok =
+      ASTMgr->getTypecheckInvocation(Args, InputFile, Error);
+  if (!Invok) {
+    LOG_WARN_FUNC("failed to create an ASTInvocation: " << Error);
+    Receiver(RequestResult<ActiveRegionsInfo>::fromError(Error));
+    return;
+  }
+
+  class IfConfigConsumer : public SwiftASTConsumer {
+    std::function<void(const RequestResult<ActiveRegionsInfo> &)> Receiver;
+    SwiftInvocationRef Invok;
+
+  public:
+    IfConfigConsumer(
+        std::function<void(const RequestResult<ActiveRegionsInfo> &)> Receiver,
+        SwiftInvocationRef Invok)
+        : Receiver(std::move(Receiver)), Invok(Invok) {}
+
+    void handlePrimaryAST(ASTUnitRef AstUnit) override {
+      auto &SrcFile = AstUnit->getPrimarySourceFile();
+      SmallVector<IfConfigInfo> Configs;
+      auto BufferID = SrcFile.getBufferID();
+      if (!BufferID)
+        return;
+      IfConfigScanner Scanner(SrcFile, *BufferID, Configs);
+      Scanner.walk(SrcFile);
+
+      // Sort by offset so nested decls are reported
+      // in source order (not tree order).
+      llvm::sort(Configs,
+                 [](const IfConfigInfo &LHS, const IfConfigInfo &RHS) -> bool {
+                   return LHS.Offset < RHS.Offset;
+                 });
+      ActiveRegionsInfo Info;
+      Info.Configs = Configs;
+      Receiver(RequestResult<ActiveRegionsInfo>::fromResult(Info));
+    }
+
+    void cancelled() override {
+      Receiver(RequestResult<ActiveRegionsInfo>::cancelled());
+    }
+
+    void failed(StringRef Error) override {
+      LOG_WARN_FUNC("inactive ranges failed: " << Error);
+      Receiver(RequestResult<ActiveRegionsInfo>::fromError(Error));
+    }
+  };
+
+  auto Consumer = std::make_shared<IfConfigConsumer>(Receiver, Invok);
+  ASTMgr->processASTAsync(Invok, std::move(Consumer),
+                          /*OncePerASTToken=*/nullptr, CancellationToken,
+                          llvm::vfs::getRealFileSystem());
+}
+
+//===----------------------------------------------------------------------===//
 // SwiftLangSupport::semanticRefactoring
 //===----------------------------------------------------------------------===//
 
@@ -2580,12 +2675,12 @@ static RefactoringKind getIDERefactoringKind(SemanticRefactoringInfo Info) {
 }
 
 void SwiftLangSupport::semanticRefactoring(
-    StringRef Filename, SemanticRefactoringInfo Info,
+    StringRef PrimaryFile, SemanticRefactoringInfo Info,
     ArrayRef<const char *> Args, SourceKitCancellationToken CancellationToken,
     CategorizedEditsReceiver Receiver) {
   std::string Error;
   SwiftInvocationRef Invok =
-      ASTMgr->getTypecheckInvocation(Args, Filename, Error);
+      ASTMgr->getTypecheckInvocation(Args, PrimaryFile, Error);
   if (!Invok) {
     LOG_WARN_FUNC("failed to create an ASTInvocation: " << Error);
     Receiver(RequestResult<ArrayRef<CategorizedEdits>>::fromError(Error));
@@ -2603,18 +2698,30 @@ void SwiftLangSupport::semanticRefactoring(
                                                 Receiver(std::move(Receiver)) {}
 
     void handlePrimaryAST(ASTUnitRef AstUnit) override {
+      RequestRefactoringEditConsumer EditConsumer(Receiver);
+
       auto &CompIns = AstUnit->getCompilerInstance();
-      ModuleDecl *MainModule = CompIns.getMainModule();
+      auto &SM = CompIns.getSourceMgr();
+
       RefactoringOptions Opts(getIDERefactoringKind(Info));
-      Opts.Range.BufferId =  AstUnit->getPrimarySourceFile().getBufferID().
-        value();
+
+      Optional<unsigned> BufferID;
+      if (Info.SourceFile.empty()) {
+        BufferID = AstUnit->getPrimarySourceFile().getBufferID();
+      } else {
+        BufferID = SM.getIDForBufferIdentifier(Info.SourceFile);
+      }
+      if (!BufferID)
+        return;
+
+      Opts.Range.BufferID = *BufferID;
       Opts.Range.Line = Info.Line;
       Opts.Range.Column = Info.Column;
       Opts.Range.Length = Info.Length;
       Opts.PreferredName = Info.PreferredName.str();
 
-      RequestRefactoringEditConsumer EditConsumer(Receiver);
-      refactorSwiftModule(MainModule, Opts, EditConsumer, EditConsumer);
+      refactorSwiftModule(CompIns.getMainModule(), Opts, EditConsumer,
+                          EditConsumer);
     }
 
     void cancelled() override {
