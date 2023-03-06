@@ -487,6 +487,11 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   Opts.DisableImplicitStringProcessingModuleImport |=
     Args.hasArg(OPT_disable_implicit_string_processing_module_import);
 
+  Opts.DisableImplicitBacktracingModuleImport =
+    Args.hasFlag(OPT_disable_implicit_backtracing_module_import,
+                 OPT_enable_implicit_backtracing_module_import,
+                 true);
+
   if (Args.hasArg(OPT_enable_experimental_async_top_level))
     Diags.diagnose(SourceLoc(), diag::warn_flag_deprecated,
                    "-enable-experimental-async-top-level");
@@ -737,6 +742,16 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
                        contents);
       }
     }
+  }
+
+  if (const Arg *A = Args.getLastArg(OPT_package_name)) {
+    auto pkgName = A->getValue();
+    if (!Lexer::isIdentifier(pkgName))
+      Diags.diagnose(SourceLoc(), diag::error_bad_package_name, pkgName);
+    else if (pkgName == STDLIB_NAME)
+      Diags.diagnose(SourceLoc(), diag::error_stdlib_package_name, pkgName);
+    else
+      Opts.PackageName = pkgName;
   }
 
   if (const Arg *A = Args.getLastArg(OPT_require_explicit_availability_EQ)) {
@@ -2545,10 +2560,6 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
                    OPT_disable_emit_generic_class_ro_t_list,
                    Opts.EmitGenericRODatas);
 
-  Opts.LegacyPassManager =
-      Args.hasFlag(OPT_disable_new_llvm_pass_manager,
-                   OPT_enable_new_llvm_pass_manager,
-                   Opts.LegacyPassManager);
   Opts.ColocateTypeDescriptors = Args.hasFlag(OPT_enable_colocate_type_descriptors,
                                               OPT_disable_colocate_type_descriptors,
                                               Opts.ColocateTypeDescriptors);

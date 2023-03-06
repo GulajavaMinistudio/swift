@@ -55,7 +55,7 @@ static const llvm::opt::OptTable::Info InfoTable[] = {
 // Create OptTable class for parsing actual command line arguments
 class TestOptTable : public llvm::opt::OptTable {
 public:
-  TestOptTable() : OptTable(InfoTable, llvm::array_lengthof(InfoTable)){}
+  TestOptTable() : OptTable(InfoTable, std::size(InfoTable)){}
 };
 
 } // end anonymous namespace
@@ -453,6 +453,10 @@ bool TestOptions::parseArgs(llvm::ArrayRef<const char *> Args) {
 
     case OPT_disable_implicit_string_processing_module_import:
       DisableImplicitStringProcessingModuleImport = true;
+      break;
+
+    case OPT_disable_implicit_backtracing_module_import:
+      DisableImplicitBacktracingModuleImport = true;
       break;
 
     case OPT_UNKNOWN:

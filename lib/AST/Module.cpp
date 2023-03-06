@@ -170,6 +170,15 @@ class swift::SourceLookupCache {
   void addToUnqualifiedLookupCache(Range decls, bool onlyOperators);
   template<typename Range>
   void addToMemberCache(Range decls);
+
+  using MacroDeclMap = llvm::DenseMap<Identifier, TinyPtrVector<MacroDecl *>>;
+  MacroDeclMap MacroDecls;
+
+  using AuxiliaryDeclMap = llvm::DenseMap<DeclName, TinyPtrVector<MissingDecl *>>;
+  AuxiliaryDeclMap TopLevelAuxiliaryDecls;
+  SmallVector<ValueDecl *, 4> MayHaveAuxiliaryDecls;
+  void populateAuxiliaryDeclCache();
+
 public:
   SourceLookupCache(const SourceFile &SF);
   SourceLookupCache(const ModuleDecl &Mod);
@@ -234,6 +243,10 @@ void SourceLookupCache::addToUnqualifiedLookupCache(Range decls,
       if (onlyOperators ? VD->isOperator() : VD->hasName()) {
         // Cache the value under both its compound name and its full name.
         TopLevelValues.add(VD);
+
+        if (VD->getAttrs().hasAttribute<CustomAttr>()) {
+          MayHaveAuxiliaryDecls.push_back(VD);
+        }
       }
     }
 
@@ -256,6 +269,9 @@ void SourceLookupCache::addToUnqualifiedLookupCache(Range decls,
 
     if (auto *PG = dyn_cast<PrecedenceGroupDecl>(D))
       PrecedenceGroups[PG->getName()].push_back(PG);
+
+    if (auto *macro = dyn_cast<MacroDecl>(D))
+      MacroDecls[macro->getBaseIdentifier()].push_back(macro);
   }
 }
 
@@ -309,6 +325,53 @@ void SourceLookupCache::addToMemberCache(Range decls) {
   }
 }
 
+void SourceLookupCache::populateAuxiliaryDeclCache() {
+  for (auto *decl : MayHaveAuxiliaryDecls) {
+    // Gather macro-introduced peer names.
+    llvm::SmallDenseMap<CustomAttr *, llvm::SmallVector<DeclName, 2>> introducedNames;
+
+    // This code deliberately avoids `forEachAttachedMacro`, because it
+    // will perform overload resolution and possibly invoke unqualified
+    // lookup for macro arguments, which will recursively populate the
+    // auxiliary decl cache and cause request cycles.
+    //
+    // We do not need a fully resolved macro until expansion. Instead, we
+    // conservatively consider peer names for all macro declarations with a
+    // custom attribute name. Unqualified lookup for that name will later
+    // invoke expansion of the macro, and will yield no results if the resolved
+    // macro does not produce the requested name, so the only impact is possibly
+    // expanding earlier than needed / unnecessarily looking in the top-level
+    // auxiliary decl cache.
+    for (auto attrConst : decl->getSemanticAttrs().getAttributes<CustomAttr>()) {
+      auto *attr = const_cast<CustomAttr *>(attrConst);
+      UnresolvedMacroReference macroRef(attr);
+      auto macroName = macroRef.getMacroName().getBaseIdentifier();
+
+      auto found = MacroDecls.find(macroName);
+      if (found == MacroDecls.end())
+        continue;
+
+      for (const auto *macro : found->second) {
+        macro->getIntroducedNames(MacroRole::Peer,
+                                  decl, introducedNames[attr]);
+      }
+    }
+
+    // Add macro-introduced names to the top-level auxiliary decl cache as
+    // unexpanded peer decls represented by a MissingDecl.
+    for (auto macroNames : introducedNames) {
+      auto *macroAttr = macroNames.getFirst();
+      for (auto name : macroNames.getSecond()) {
+        auto *placeholder =
+            MissingDecl::forUnexpandedPeer(macroAttr, decl);
+        name.addToLookupTable(TopLevelAuxiliaryDecls, placeholder);
+      }
+    }
+  }
+
+  MayHaveAuxiliaryDecls.clear();
+}
+
 /// Populate our cache on the first name lookup.
 SourceLookupCache::SourceLookupCache(const SourceFile &SF) {
   FrontendStatsTracer tracer(SF.getASTContext().Stats,
@@ -339,6 +402,23 @@ void SourceLookupCache::lookupValue(DeclName Name, NLKind LookupKind,
   Result.reserve(I->second.size());
   for (ValueDecl *Elt : I->second)
     Result.push_back(Elt);
+
+  // Add top-level auxiliary decls to the result.
+  //
+  // FIXME: We need to not consider auxiliary decls if we're doing lookup
+  // from inside a macro argument at module scope.
+  populateAuxiliaryDeclCache();
+  auto auxDecls = TopLevelAuxiliaryDecls.find(Name);
+  if (auxDecls == TopLevelAuxiliaryDecls.end())
+    return;
+
+  for (auto *unexpandedDecl : auxDecls->second) {
+    // Add expanded peers to the result.
+    unexpandedDecl->forEachExpandedPeer(
+        [&](ValueDecl *expandedPeer) {
+          Result.push_back(expandedPeer);
+        });
+  }
 }
 
 void SourceLookupCache::getPrecedenceGroups(
@@ -1644,6 +1724,16 @@ LookupConformanceInModuleRequest::evaluate(
     return getBuiltinBuiltinTypeConformance(type, builtinType, protocol);
   }
 
+  // Specific handling of Copyable for pack expansions.
+  if (auto packExpansion = type->getAs<PackExpansionType>()) {
+    if (protocol->isSpecificProtocol(KnownProtocolKind::Copyable)) {
+      auto patternType = packExpansion->getPatternType();
+      return (patternType->isTypeParameter()
+               ? ProtocolConformanceRef(protocol)
+               : mod->lookupConformance(patternType, protocol));
+    }
+  }
+
   auto nominal = type->getAnyNominal();
 
   // If we don't have a nominal type, there are no conformances.
@@ -1688,9 +1778,12 @@ LookupConformanceInModuleRequest::evaluate(
       if (nominal->isMoveOnly()) {
         return ProtocolConformanceRef::forInvalid();
       } else {
-        // FIXME: this should probably follow the Sendable case in that
-        // we should synthesize and append a ProtocolConformance to the `conformances` list.
-       return ProtocolConformanceRef(protocol);
+        // Specifically do not create a concrete conformance to Copyable. At
+        // this stage, we don't even want Copyable to appear in swiftinterface
+        // files, which will happen for a marker protocol that's registered
+        // in a nominal type's conformance table. We can reconsider this
+        // decision later once there's a clearer picture of noncopyable generics
+        return ProtocolConformanceRef(protocol);
       }
     } else {
       // Was unable to infer the missing conformance.
@@ -1902,12 +1995,12 @@ SourceFile::getImportedModules(SmallVectorImpl<ImportedModule> &modules,
     if (desc.options.contains(ImportFlags::Exported))
       requiredFilter |= ModuleDecl::ImportFilterKind::Exported;
     else if (desc.options.contains(ImportFlags::ImplementationOnly) ||
-             (desc.accessLevel <= AccessLevel::Package && moduleIsResilient))
+             (desc.accessLevel <= AccessLevel::Internal && moduleIsResilient))
       requiredFilter |= ModuleDecl::ImportFilterKind::ImplementationOnly;
+    else if (desc.accessLevel <= AccessLevel::Package && moduleIsResilient)
+      requiredFilter |= ModuleDecl::ImportFilterKind::PackageOnly;
     else if (desc.options.contains(ImportFlags::SPIOnly))
       requiredFilter |= ModuleDecl::ImportFilterKind::SPIOnly;
-    else if (desc.options.contains(ImportFlags::SPIAccessControl))
-      requiredFilter |= ModuleDecl::ImportFilterKind::SPIAccessControl;
     else
       requiredFilter |= ModuleDecl::ImportFilterKind::Default;
 
@@ -2271,13 +2364,13 @@ SourceFile::collectLinkLibraries(ModuleDecl::LinkLibraryCallback callback) const
 
   ModuleDecl::ImportFilter filter = {
       ModuleDecl::ImportFilterKind::Exported,
-      ModuleDecl::ImportFilterKind::Default,
-      ModuleDecl::ImportFilterKind::SPIAccessControl};
+      ModuleDecl::ImportFilterKind::Default};
 
   auto *topLevel = getParentModule();
 
   ModuleDecl::ImportFilter topLevelFilter = filter;
   topLevelFilter |= ModuleDecl::ImportFilterKind::ImplementationOnly;
+  topLevelFilter |= ModuleDecl::ImportFilterKind::PackageOnly,
   topLevelFilter |= ModuleDecl::ImportFilterKind::SPIOnly;
   topLevel->getImportedModules(stack, topLevelFilter);
 
@@ -2985,7 +3078,8 @@ bool ModuleDecl::isImportedImplementationOnly(const ModuleDecl *module) const {
   ModuleDecl::ImportFilter filter = {
     ModuleDecl::ImportFilterKind::Exported,
     ModuleDecl::ImportFilterKind::Default,
-    ModuleDecl::ImportFilterKind::SPIAccessControl,
+    ModuleDecl::ImportFilterKind::PackageOnly,
+    ModuleDecl::ImportFilterKind::SPIOnly,
     ModuleDecl::ImportFilterKind::ShadowedByCrossImportOverlay};
   SmallVector<ImportedModule, 4> results;
   getImportedModules(results, filter);
@@ -3008,11 +3102,11 @@ canBeUsedForCrossModuleOptimization(DeclContext *ctxt) const {
     return true;
 
   // See if context is imported in a "regular" way, i.e. not with
-  // @_implementationOnly or @_spi.
+  // @_implementationOnly, `package import` or @_spiOnly.
   ModuleDecl::ImportFilter filter = {
     ModuleDecl::ImportFilterKind::ImplementationOnly,
-    ModuleDecl::ImportFilterKind::SPIOnly,
-    ModuleDecl::ImportFilterKind::SPIAccessControl
+    ModuleDecl::ImportFilterKind::PackageOnly,
+    ModuleDecl::ImportFilterKind::SPIOnly
   };
   SmallVector<ImportedModule, 4> results;
   getImportedModules(results, filter);

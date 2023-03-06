@@ -327,7 +327,10 @@ Parser::parseParameterClause(SourceLoc &leftParenLoc,
     
     // If let or var is being used as an argument label, allow it but
     // generate a warning.
-    if (!isClosure && Tok.isAny(tok::kw_let, tok::kw_var, tok::kw_inout)) {
+    if (!isClosure &&
+        (Tok.isAny(tok::kw_let, tok::kw_var) ||
+         (Context.LangOpts.hasFeature(Feature::ReferenceBindings) &&
+          Tok.isAny(tok::kw_inout)))) {
       diagnose(Tok, diag::parameter_let_var_as_attr, Tok.getText())
         .fixItReplace(Tok.getLoc(), "`" + Tok.getText().str() + "`");
     }
@@ -1105,15 +1108,25 @@ ParserResult<Pattern> Parser::parsePattern() {
     }
     return makeParserCodeCompletionStatus();
   case tok::kw_inout:
+    // If we don't have the reference binding feature, break if we have
+    // inout. Otherwise, go below.
+    if (!Context.LangOpts.hasFeature(Feature::ReferenceBindings))
+      break;
+    LLVM_FALLTHROUGH;
   case tok::kw_var:
   case tok::kw_let: {
     auto newBindingState = PatternBindingState(Tok);
     SourceLoc varLoc = consumeToken();
 
     // 'var', 'let', 'inout' patterns shouldn't nest.
-    if (InBindingPattern.getIntroducer().hasValue())
-      diagnose(varLoc, diag::var_pattern_in_var,
-               *newBindingState.getSelectIndexForIntroducer());
+    if (InBindingPattern.getIntroducer().hasValue()) {
+      auto diag = diag::var_pattern_in_var;
+      unsigned index = *newBindingState.getSelectIndexForIntroducer();
+      if (Context.LangOpts.hasFeature(Feature::ReferenceBindings)) {
+        diag = diag::var_pattern_in_var_inout;
+      }
+      diagnose(varLoc, diag, index);
+    }
 
     // 'let' isn't valid inside an implicitly immutable context, but var is.
     if (newBindingState.isLet() &&
@@ -1142,18 +1155,21 @@ ParserResult<Pattern> Parser::parsePattern() {
   }
       
   default:
-    if (Tok.isKeyword() &&
-        (peekToken().is(tok::colon) || peekToken().is(tok::equal))) {
-      diagnose(Tok, diag::keyword_cant_be_identifier, Tok.getText());
-      diagnose(Tok, diag::backticks_to_escape)
-        .fixItReplace(Tok.getLoc(), "`" + Tok.getText().str() + "`");
-      SourceLoc Loc = Tok.getLoc();
-      consumeToken();
-      return makeParserErrorResult(new (Context) AnyPattern(Loc));
-    }
-    diagnose(Tok, diag::expected_pattern);
-    return nullptr;
+    break;
   }
+
+  // Handle the default case.
+  if (Tok.isKeyword() &&
+      (peekToken().is(tok::colon) || peekToken().is(tok::equal))) {
+    diagnose(Tok, diag::keyword_cant_be_identifier, Tok.getText());
+    diagnose(Tok, diag::backticks_to_escape)
+      .fixItReplace(Tok.getLoc(), "`" + Tok.getText().str() + "`");
+    SourceLoc Loc = Tok.getLoc();
+    consumeToken();
+    return makeParserErrorResult(new (Context) AnyPattern(Loc));
+  }
+  diagnose(Tok, diag::expected_pattern);
+  return nullptr;
 }
 
 Pattern *Parser::createBindingFromPattern(SourceLoc loc, Identifier name,
@@ -1273,7 +1289,9 @@ ParserResult<Pattern> Parser::parseMatchingPattern(bool isExprBasic) {
   // through the expr parser for ambiguous productions.
 
   // Parse productions that can only be patterns.
-  if (Tok.isAny(tok::kw_var, tok::kw_let, tok::kw_inout)) {
+  if (Tok.isAny(tok::kw_var, tok::kw_let) ||
+      (Context.LangOpts.hasFeature(Feature::ReferenceBindings) &&
+       Tok.isAny(tok::kw_inout))) {
     assert(Tok.isAny(tok::kw_let, tok::kw_var, tok::kw_inout) && "expects var or let");
     auto newPatternBindingState = PatternBindingState(Tok);
     SourceLoc varLoc = consumeToken();
@@ -1329,9 +1347,13 @@ ParserResult<Pattern>
 Parser::parseMatchingPatternAsBinding(PatternBindingState newState,
                                       SourceLoc varLoc, bool isExprBasic) {
   // 'var', 'let', 'inout' patterns shouldn't nest.
-  if (InBindingPattern.getIntroducer().hasValue())
-    diagnose(varLoc, diag::var_pattern_in_var,
+  if (InBindingPattern.getIntroducer().hasValue()) {
+    auto diag = diag::var_pattern_in_var;
+    if (Context.LangOpts.hasFeature(Feature::ReferenceBindings))
+      diag = diag::var_pattern_in_var_inout;
+    diagnose(varLoc, diag,
              *newState.getSelectIndexForIntroducer());
+  }
 
   // 'let' isn't valid inside an implicitly immutable context, but var is.
   if (newState.isLet() &&
@@ -1356,7 +1378,9 @@ Parser::parseMatchingPatternAsBinding(PatternBindingState newState,
 }
 
 bool Parser::isOnlyStartOfMatchingPattern() {
-  return Tok.isAny(tok::kw_var, tok::kw_let, tok::kw_is, tok::kw_inout);
+  return Tok.isAny(tok::kw_var, tok::kw_let, tok::kw_is) ||
+         (Context.LangOpts.hasFeature(Feature::ReferenceBindings) &&
+          Tok.isAny(tok::kw_inout));
 }
 
 
@@ -1374,6 +1398,9 @@ static bool canParsePattern(Parser &P) {
     P.consumeToken();
     return true;
   case tok::kw_inout:
+    if (!P.Context.LangOpts.hasFeature(Feature::ReferenceBindings))
+      return false;
+    LLVM_FALLTHROUGH;
   case tok::kw_let:
   case tok::kw_var:
     P.consumeToken();

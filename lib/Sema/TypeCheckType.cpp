@@ -2301,7 +2301,6 @@ bool TypeResolver::diagnoseMoveOnlyMissingOwnership(
   diagnose(repr->getLoc(),
            diag::moveonly_parameter_missing_ownership);
 
-  // FIXME: this should be 'borrowing'
   diagnose(repr->getLoc(), diag::moveonly_parameter_ownership_suggestion,
            "borrowing", "for an immutable reference")
       .fixItInsert(repr->getStartLoc(), "borrowing ");
@@ -2310,7 +2309,6 @@ bool TypeResolver::diagnoseMoveOnlyMissingOwnership(
            "inout", "for a mutable reference")
       .fixItInsert(repr->getStartLoc(), "inout ");
 
-  // FIXME: this should be 'consuming'
   diagnose(repr->getLoc(), diag::moveonly_parameter_ownership_suggestion,
            "consuming", "to take the value from the caller")
       .fixItInsert(repr->getStartLoc(), "consuming ");
@@ -3352,7 +3350,7 @@ TypeResolver::resolveASTFunctionTypeParams(TupleTypeRepr *inputRepr,
     // must appear at the top level of a parameter type.
     auto *nestedRepr = eltTypeRepr->getWithoutParens();
 
-    ValueOwnership ownership = ValueOwnership::Default;
+    ParamSpecifier ownership = ParamSpecifier::Default;
 
     bool isolated = false;
     bool compileTimeConst = false;
@@ -3360,7 +3358,7 @@ TypeResolver::resolveASTFunctionTypeParams(TupleTypeRepr *inputRepr,
       if (auto *specifierRepr = dyn_cast<SpecifierTypeRepr>(nestedRepr)) {
         switch (specifierRepr->getKind()) {
         case TypeReprKind::Ownership:
-          ownership = cast<OwnershipTypeRepr>(specifierRepr)->getValueOwnership();
+          ownership = cast<OwnershipTypeRepr>(specifierRepr)->getSpecifier();
           nestedRepr = specifierRepr->getBase();
           continue;
         case TypeReprKind::Isolated:

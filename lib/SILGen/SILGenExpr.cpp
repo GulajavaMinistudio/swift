@@ -1531,7 +1531,14 @@ RValueEmitter::visitPackExpansionExpr(PackExpansionExpr *E,
 
 RValue
 RValueEmitter::visitPackElementExpr(PackElementExpr *E, SGFContext C) {
-  llvm_unreachable("not implemented for PackElementExpr");
+  FormalEvaluationScope scope(SGF);
+
+  LValue lv = SGF.emitLValue(E, SGFAccessKind::OwnedObjectRead);
+
+  // Otherwise, we can't load at +0 without further analysis, since the formal
+  // access into the lvalue will end immediately.
+  return SGF.emitLoadOfLValue(E, std::move(lv),
+                              C.withFollowingSideEffects());
 }
 
 RValue
@@ -3253,6 +3260,15 @@ static SILFunction *getOrCreateKeyPathSetter(SILGenModule &SGM,
                         strategy, propertyType,
                         std::move(subscriptIndices),
                         /*index for diags*/ nullptr);
+
+  // If the assigned value will need to be reabstracted, add a reabstraction
+  // component.
+  const auto loweredSubstType = subSGF.getLoweredType(lv.getSubstFormalType());
+  if (lv.getTypeOfRValue() != loweredSubstType.getObjectType()) {
+    // Logical components always re-abstract back to the substituted type.
+    assert(lv.isLastComponentPhysical());
+    lv.addOrigToSubstComponent(loweredSubstType);
+  }
 
   subSGF.emitAssignToLValue(loc,
     RValue(subSGF, loc, propertyType, valueSubst),

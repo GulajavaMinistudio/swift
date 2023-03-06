@@ -3247,17 +3247,7 @@ PackExpansionType::PackExpansionType(Type patternType, Type countType,
                                      RecursiveTypeProperties properties,
                                      const ASTContext *canCtx)
   : TypeBase(TypeKind::PackExpansion, canCtx, properties),
-    patternType(patternType), countType(countType) {
-
-  // TODO: it would be nice if the solver didn't stick PlaceholderTypes and
-  // UnresolvedTypes in here.
-  assert(countType->is<PackType>() ||
-         countType->is<TypeVariableType>() ||
-         countType->is<PackArchetypeType>() ||
-         countType->is<PlaceholderType>() ||
-         countType->is<UnresolvedType>() ||
-         countType->castTo<GenericTypeParamType>()->isParameterPack());
-}
+    patternType(patternType), countType(countType) {}
 
 CanPackExpansionType
 CanPackExpansionType::get(CanType patternType, CanType countType) {
@@ -3300,6 +3290,11 @@ void PackExpansionType::Profile(llvm::FoldingSetNodeID &ID,
 
 PackType *PackType::getEmpty(const ASTContext &C) {
   return cast<PackType>(CanType(C.TheEmptyPackType));
+}
+
+PackType *PackType::getSingletonPackExpansion(Type param) {
+  assert(param->isParameterPack() || param->is<PackArchetypeType>());
+  return get(param->getASTContext(), {PackExpansionType::get(param, param)});
 }
 
 CanPackType CanPackType::get(const ASTContext &C, ArrayRef<CanType> elements) {
@@ -3488,11 +3483,13 @@ AnyFunctionType::Param swift::computeSelfParam(AbstractFunctionDecl *AFD,
   auto flags = ParameterTypeFlags().withIsolated(isIsolated);
   switch (selfAccess) {
   case SelfAccessKind::LegacyConsuming:
+    flags = flags.withOwnershipSpecifier(ParamSpecifier::LegacyOwned);
+    break;
   case SelfAccessKind::Consuming:
-    flags = flags.withValueOwnership(ValueOwnership::Owned);
+    flags = flags.withOwnershipSpecifier(ParamSpecifier::Consuming);
     break;
   case SelfAccessKind::Borrowing:
-    flags = flags.withValueOwnership(ValueOwnership::Shared);
+    flags = flags.withOwnershipSpecifier(ParamSpecifier::Borrowing);
     break;
   case SelfAccessKind::Mutating:
     flags = flags.withInOut(true);

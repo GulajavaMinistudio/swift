@@ -811,10 +811,6 @@ ERROR(serialization_module_incompatible_revision,Fatal,
       "compiled module was created by a different version of the compiler '%0'; "
       "rebuild %1 and try again: %2",
       (StringRef, Identifier, StringRef))
-REMARK(serialization_module_problematic_revision, none,
-      "compiled module was created by a different version of the compiler '%0': "
-      "%1",
-      (StringRef, StringRef))
 ERROR(serialization_missing_single_dependency,Fatal,
       "missing required module '%0'", (StringRef))
 ERROR(serialization_missing_dependencies,Fatal,
@@ -5823,6 +5819,9 @@ ERROR(borrowed_with_objc_dynamic,none,
 ERROR(borrowed_on_objc_protocol_requirement,none,
       "%0 cannot be '@_borrowed' if it is an @objc protocol requirement",
       (DescriptiveDeclKind))
+ERROR(borrowed_with_effect,none,
+      "%0 cannot be '@_borrowed' if it is 'async' or 'throws'",
+      (DescriptiveDeclKind))
 
 //------------------------------------------------------------------------------
 // MARK: dynamic
@@ -6746,12 +6745,16 @@ ERROR(noimplicitcopy_attr_valid_only_on_local_let_params,
 ERROR(noimplicitcopy_attr_invalid_in_generic_context,
       none, "'@_noImplicitCopy' attribute cannot be applied to entities in generic contexts", ())
 ERROR(moveonly_generics, none, "move-only type %0 cannot be used with generics yet", (Type))
+ERROR(moveonly_effectful_getter,none,
+      "%0 of move-only type cannot be 'async' or 'throws'", (DescriptiveDeclKind))
 ERROR(noimplicitcopy_attr_not_allowed_on_moveonlytype,none,
       "'@_noImplicitCopy' has no effect when applied to a move only type", ())
 ERROR(moveonly_enums_do_not_support_indirect,none,
       "move-only enum %0 cannot be marked indirect or have indirect cases yet", (Identifier))
 ERROR(moveonly_cast,none,
       "move-only types cannot be conditionally cast", ())
+ERROR(moveonly_failable_init,none,
+      "move-only types cannot have failable initializers yet", ())
 
 //------------------------------------------------------------------------------
 // MARK: Type inference from default expressions
@@ -6913,6 +6916,18 @@ ERROR(external_macro_arg_not_type_name,none,
       "the external macro's %select{module|type}0", (unsigned))
 ERROR(attached_declaration_macro_not_supported,none,
       "attached declaration macros are not yet supported", ())
+ERROR(invalid_decl_in_macro_expansion,none,
+      "macro expansion cannot introduce %0",
+      (DescriptiveDeclKind))
+ERROR(invalid_main_type_in_macro_expansion,none,
+      "macro expansion cannot introduce '@main' type",
+      ())
+ERROR(literal_type_in_macro_expansion,none,
+      "macro expansion cannot introduce default literal type %0",
+      (Identifier))
+ERROR(invalid_macro_introduced_name,none,
+      "declaration name %0 is not covered by macro %1",
+      (DeclName, DeclName))
 
 //------------------------------------------------------------------------------
 // MARK: Move Only Errors

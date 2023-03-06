@@ -1215,7 +1215,7 @@ void Serializer::writeInputBlock(const SerializationOptions &options) {
                         {ModuleDecl::ImportFilterKind::Exported,
                          ModuleDecl::ImportFilterKind::Default,
                          ModuleDecl::ImportFilterKind::ImplementationOnly,
-                         ModuleDecl::ImportFilterKind::SPIAccessControl});
+                         ModuleDecl::ImportFilterKind::PackageOnly});
   ImportedModule::removeDuplicates(allImports);
 
   // Collect the public and private imports as a subset so that we can
@@ -1224,8 +1224,8 @@ void Serializer::writeInputBlock(const SerializationOptions &options) {
       getImportsAsSet(M, ModuleDecl::ImportFilterKind::Exported);
   ImportSet privateImportSet =
       getImportsAsSet(M, ModuleDecl::ImportFilterKind::Default);
-  ImportSet spiImportSet =
-      getImportsAsSet(M, ModuleDecl::ImportFilterKind::SPIAccessControl);
+  ImportSet packageOnlyImportSet =
+      getImportsAsSet(M, ModuleDecl::ImportFilterKind::PackageOnly);
 
   auto clangImporter =
     static_cast<ClangImporter *>(M->getASTContext().getClangModuleLoader());
@@ -1271,8 +1271,10 @@ void Serializer::writeInputBlock(const SerializationOptions &options) {
     // form here.
     if (publicImportSet.count(import))
       stableImportControl = ImportControl::Exported;
-    else if (privateImportSet.count(import) || spiImportSet.count(import))
+    else if (privateImportSet.count(import))
       stableImportControl = ImportControl::Normal;
+    else if (packageOnlyImportSet.count(import))
+      stableImportControl = ImportControl::PackageOnly;
     else
       stableImportControl = ImportControl::ImplementationOnly;
 
@@ -4785,18 +4787,6 @@ getRawStableReferenceOwnership(swift::ReferenceOwnership ownership) {
   }
   llvm_unreachable("bad ownership kind");
 }
-/// Translate from the AST ownership enum to the Serialization enum
-/// values, which are guaranteed to be stable.
-static uint8_t getRawStableValueOwnership(swift::ValueOwnership ownership) {
-  switch (ownership) {
-  SIMPLE_CASE(ValueOwnership, Default)
-  SIMPLE_CASE(ValueOwnership, InOut)
-  SIMPLE_CASE(ValueOwnership, Shared)
-  SIMPLE_CASE(ValueOwnership, Owned)
-  }
-  llvm_unreachable("bad ownership kind");
-}
-
 /// Translate from the AST ParameterConvention enum to the
 /// Serialization enum values, which are guaranteed to be stable.
 static uint8_t getRawStableParameterConvention(swift::ParameterConvention pc) {
@@ -5153,7 +5143,7 @@ public:
     for (auto &param : fnTy->getParams()) {
       auto paramFlags = param.getParameterFlags();
       auto rawOwnership =
-          getRawStableValueOwnership(paramFlags.getValueOwnership());
+          getRawStableParamDeclSpecifier(paramFlags.getOwnershipSpecifier());
       FunctionParamLayout::emitRecord(
           S.Out, S.ScratchRecord, abbrCode,
           S.addDeclBaseNameRef(param.getLabel()),

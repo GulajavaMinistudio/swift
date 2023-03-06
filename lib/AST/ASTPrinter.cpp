@@ -489,8 +489,10 @@ ASTPrinter &operator<<(ASTPrinter &printer, tok keyword) {
 }
 
 /// Determine whether to escape the given keyword in the given context.
-static bool escapeKeywordInContext(StringRef keyword, PrintNameContext context){
-
+bool swift::escapeKeywordInContext(
+    StringRef keyword,
+    PrintNameContext context
+) {
   bool isKeyword = llvm::StringSwitch<bool>(keyword)
 #define KEYWORD(KW) \
       .Case(#KW, true)
@@ -3140,6 +3142,10 @@ static bool usesFeatureLayoutStringValueWitnesses(Decl *decl) {
   return false;
 }
 
+static bool usesFeatureLayoutStringValueWitnessesInstantiation(Decl *decl) {
+  return false;
+}
+
 static bool usesFeatureModuleInterfaceExportAs(Decl *decl) {
   return false;
 }
@@ -3157,8 +3163,27 @@ static bool usesFeatureFlowSensitiveConcurrencyCaptures(Decl *decl) {
 }
 
 static bool usesFeatureMoveOnly(Decl *decl) {
-  if (auto nominal = dyn_cast<NominalTypeDecl>(decl))
-    return nominal->isMoveOnly();
+  if (auto *extension = dyn_cast<ExtensionDecl>(decl)) {
+    if (auto *nominal = extension->getSelfNominalTypeDecl())
+      if (nominal->isMoveOnly())
+        return true;
+  }
+
+  if (auto value = dyn_cast<ValueDecl>(decl)) {
+      if (value->isMoveOnly())
+        return true;
+
+    // Check for move-only types in the types of this declaration.
+    if (Type type = value->getInterfaceType()) {
+      bool hasMoveOnly = type.findIf([](Type type) {
+        return type->isPureMoveOnly();
+      });
+
+      if (hasMoveOnly)
+        return true;
+    }
+  }
+
   return false;
 }
 
@@ -3218,6 +3243,11 @@ suppressingFeatureNoAsyncAvailability(PrintOptions &options,
   llvm::SaveAndRestore<PrintOptions> orignalOptions(options);
   options.SuppressNoAsyncAvailabilityAttr = true;
   action();
+}
+
+static bool usesFeatureReferenceBindings(Decl *decl) {
+  auto *vd = dyn_cast<VarDecl>(decl);
+  return vd && vd->getIntroducer() == VarDecl::Introducer::InOut;
 }
 
 /// Suppress the printing of a particular feature.
@@ -3825,6 +3855,7 @@ static bool isEscaping(Type type) {
 
 static void printParameterFlags(ASTPrinter &printer,
                                 const PrintOptions &options,
+                                const ParamDecl *param,
                                 ParameterTypeFlags flags,
                                 bool escaping) {
   if (!options.excludeAttrKind(TAK_autoclosure) && flags.isAutoClosure())
@@ -3832,21 +3863,27 @@ static void printParameterFlags(ASTPrinter &printer,
   if (!options.excludeAttrKind(TAK_noDerivative) && flags.isNoDerivative())
     printer.printAttrName("@noDerivative ");
 
-  switch (flags.getValueOwnership()) {
-  case ValueOwnership::Default:
-    /* nothing */
+  switch (flags.getOwnershipSpecifier()) {
+  case ParamSpecifier::Default:
+    /*nothing*/
     break;
-  case ValueOwnership::InOut:
+  case ParamSpecifier::InOut:
     printer.printKeyword("inout", options, " ");
     break;
-  case ValueOwnership::Shared:
+  case ParamSpecifier::Borrowing:
+    printer.printKeyword("borrowing", options, " ");
+    break;
+  case ParamSpecifier::Consuming:
+    printer.printKeyword("consuming", options, " ");
+    break;
+  case ParamSpecifier::LegacyShared:
     printer.printKeyword("__shared", options, " ");
     break;
-  case ValueOwnership::Owned:
+  case ParamSpecifier::LegacyOwned:
     printer.printKeyword("__owned", options, " ");
     break;
   }
-
+  
   if (flags.isIsolated())
     printer.printKeyword("isolated", options, " ");
 
@@ -3981,7 +4018,7 @@ void PrintAST::printOneParameter(const ParamDecl *param,
     if (!param->isVariadic() &&
         !willUseTypeReprPrinting(TheTypeLoc, CurrentType, Options)) {
       auto type = TheTypeLoc.getType();
-      printParameterFlags(Printer, Options, paramFlags,
+      printParameterFlags(Printer, Options, param, paramFlags,
                           isEscaping(type));
     }
 
@@ -5537,7 +5574,6 @@ class TypePrinter : public TypeVisitor<TypePrinter> {
     // For the current module, consider both private and public imports.
     ModuleDecl::ImportFilter Filter = ModuleDecl::ImportFilterKind::Exported;
     Filter |= ModuleDecl::ImportFilterKind::Default;
-    Filter |= ModuleDecl::ImportFilterKind::SPIAccessControl;
     SmallVector<ImportedModule, 4> Imports;
     Options.CurrentModule->getImportedModules(Imports, Filter);
 
@@ -6270,7 +6306,7 @@ public:
         visit(type);
         Printer << "...";
       } else {
-        printParameterFlags(Printer, Options, Param.getParameterFlags(),
+        printParameterFlags(Printer, Options, nullptr, Param.getParameterFlags(),
                             isEscaping(type));
         visit(type);
       }

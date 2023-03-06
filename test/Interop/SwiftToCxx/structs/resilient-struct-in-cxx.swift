@@ -62,6 +62,14 @@ public struct FirstSmallStruct {
 // CHECK-EMPTY:
 // CHECK-NEXT:  swift::_impl::OpaqueStorage _storage;
 // CHECK-NEXT:  friend class _impl::_impl_FirstSmallStruct;
+// CHECK-NEXT: #pragma clang diagnostic push
+// CHECK-NEXT: #pragma clang diagnostic ignored "-Wc++17-extensions"
+// CHECK-NEXT: #pragma clang diagnostic push
+// CHECK-NEXT: #pragma clang diagnostic ignored "-Wreserved-identifier"
+// CHECK-NEXT:  typedef char $s7Structs16FirstSmallStructVD;
+// CHECK-NEXT:  static inline constexpr $s7Structs16FirstSmallStructVD __swift_mangled_name = 0;
+// CHECK-NEXT: #pragma clang diagnostic pop
+// CHECK-NEXT: #pragma clang diagnostic pop
 // CHECK-NEXT:};
 
 // CHECK: class _impl_FirstSmallStruct {
@@ -100,6 +108,14 @@ public struct FirstSmallStruct {
 // CHECK: class SWIFT_SYMBOL("s:7Structs12FrozenStructV") FrozenStruct final {
 // CHECK:        alignas(4) char _storage[4];
 // CHECK-NEXT:   friend class _impl::_impl_FrozenStruct;
+// CHECK-NEXT: #pragma clang diagnostic push
+// CHECK-NEXT: #pragma clang diagnostic ignored "-Wc++17-extensions"
+// CHECK-NEXT: #pragma clang diagnostic push
+// CHECK-NEXT: #pragma clang diagnostic ignored "-Wreserved-identifier"
+// CHECK-NEXT:  typedef char $s7Structs12FrozenStructVD;
+// CHECK-NEXT:  static inline constexpr $s7Structs12FrozenStructVD __swift_mangled_name = 0;
+// CHECK-NEXT: #pragma clang diagnostic pop
+// CHECK-NEXT: #pragma clang diagnostic pop
 // CHECK-NEXT: };
 
 public struct LargeStruct {
@@ -145,6 +161,14 @@ public struct LargeStruct {
 // CHECK-EMPTY:
 // CHECK-NEXT:  swift::_impl::OpaqueStorage _storage;
 // CHECK-NEXT:  friend class _impl::_impl_LargeStruct;
+// CHECK-NEXT: #pragma clang diagnostic push
+// CHECK-NEXT: #pragma clang diagnostic ignored "-Wc++17-extensions"
+// CHECK-NEXT: #pragma clang diagnostic push
+// CHECK-NEXT: #pragma clang diagnostic ignored "-Wreserved-identifier"
+// CHECK-NEXT:  typedef char $s7Structs11LargeStructVD;
+// CHECK-NEXT:  static inline constexpr $s7Structs11LargeStructVD __swift_mangled_name = 0;
+// CHECK-NEXT: #pragma clang diagnostic pop
+// CHECK-NEXT: #pragma clang diagnostic pop
 // CHECK-NEXT: };
 
 private class RefCountedClass {
@@ -197,13 +221,13 @@ public func mutateSmall(_ x: inout FirstSmallStruct) {
 }
 
 // CHECK:      SWIFT_INLINE_THUNK LargeStruct createLargeStruct(swift::Int x) noexcept SWIFT_SYMBOL({{.*}}) SWIFT_WARN_UNUSED_RESULT {
-// CHECK-NEXT:   return _impl::_impl_LargeStruct::returnNewValue([&](char * _Nonnull result) {
+// CHECK-NEXT:   return _impl::_impl_LargeStruct::returnNewValue([&](char * _Nonnull result) SWIFT_INLINE_THUNK_ATTRIBUTES {
 // CHECK-NEXT:     _impl::$s7Structs17createLargeStructyAA0cD0VSiF(result, x);
 // CHECK-NEXT:   });
 // CHECK-NEXT: }
 
 // CHECK:      SWIFT_INLINE_THUNK StructWithRefCountStoredProp createStructWithRefCountStoredProp() noexcept SWIFT_SYMBOL({{.*}}) SWIFT_WARN_UNUSED_RESULT {
-// CHECK-NEXT:   return _impl::_impl_StructWithRefCountStoredProp::returnNewValue([&](char * _Nonnull result) {
+// CHECK-NEXT:   return _impl::_impl_StructWithRefCountStoredProp::returnNewValue([&](char * _Nonnull result) SWIFT_INLINE_THUNK_ATTRIBUTES {
 // CHECK-NEXT:     _impl::$s7Structs34createStructWithRefCountStoredPropAA0cdefgH0VyF(result);
 // CHECK-NEXT:   });
 // CHECK-NEXT: }
@@ -233,7 +257,7 @@ public func mutateSmall(_ x: inout FirstSmallStruct) {
 // CHECK-NEXT: return _impl::$s7Structs11LargeStructV2x1Sivg(_getOpaquePointer());
 // CHECK-NEXT: }
 // CHECK-NEXT: SWIFT_INLINE_THUNK FirstSmallStruct LargeStruct::getFirstSmallStruct() const {
-// CHECK-NEXT: return _impl::_impl_FirstSmallStruct::returnNewValue([&](char * _Nonnull result) {
+// CHECK-NEXT: return _impl::_impl_FirstSmallStruct::returnNewValue([&](char * _Nonnull result) SWIFT_INLINE_THUNK_ATTRIBUTES {
 // CHECK-NEXT:   _impl::$s7Structs11LargeStructV010firstSmallC0AA05FirsteC0Vvg(result, _getOpaquePointer());
 // CHECK-NEXT: });
 // CHECK-NEXT: }

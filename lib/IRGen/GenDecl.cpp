@@ -2431,32 +2431,19 @@ swift::irgen::createLinkerDirectiveVariable(IRGenModule &IGM, StringRef name) {
 }
 
 void swift::irgen::disableAddressSanitizer(IRGenModule &IGM, llvm::GlobalVariable *var) {
-  // Add an operand to llvm.asan.globals denylisting this global variable.
-  llvm::Metadata *metadata[] = {
-    // The global variable to denylist.
-    llvm::ConstantAsMetadata::get(var),
-    
-    // Source location. Optional, unnecessary here.
-    nullptr,
-    
-    // Name. Optional, unnecessary here.
-    nullptr,
-    
-    // Whether the global is dynamically initialized.
-    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-      llvm::Type::getInt1Ty(IGM.Module.getContext()), false)),
-    
-    // Whether the global is denylisted.
-    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-      llvm::Type::getInt1Ty(IGM.Module.getContext()), true))};
-  
-  auto *globalNode = llvm::MDNode::get(IGM.Module.getContext(), metadata);
-  auto *asanMetadata = IGM.Module.getOrInsertNamedMetadata("llvm.asan.globals");
-  asanMetadata->addOperand(globalNode);
+  llvm::GlobalVariable::SanitizerMetadata Meta;
+  if (var->hasSanitizerMetadata())
+    Meta = var->getSanitizerMetadata();
+  Meta.IsDynInit = false;
+  Meta.NoAddress = true;
+  var->setSanitizerMetadata(Meta);
 }
 
 /// Emit a global declaration.
 void IRGenModule::emitGlobalDecl(Decl *D) {
+  D->visitAuxiliaryDecls([&](Decl *decl) {
+    emitGlobalDecl(decl);
+  });
   switch (D->getKind()) {
   case DeclKind::Extension:
     return emitExtension(cast<ExtensionDecl>(D));
@@ -2542,8 +2529,7 @@ void IRGenModule::emitGlobalDecl(Decl *D) {
     return;
 
   case DeclKind::MacroExpansion:
-    for (auto *rewritten : cast<MacroExpansionDecl>(D)->getRewritten())
-      emitGlobalDecl(rewritten);
+    // Expansion already visited as auxiliary decls.
     return;
   }
 
@@ -3309,10 +3295,12 @@ llvm::Function *IRGenModule::getAddrOfSILFunction(
   // This might generate new functions, so we should do it before computing
   // the insert-before point.
   llvm::Constant *clangAddr = nullptr;
+  bool isObjCDirect = false;
   if (auto clangDecl = f->getClangDecl()) {
     // If we have an Objective-C Clang declaration, it must be a direct
     // method and we want to generate the IR declaration ourselves.
     if (auto objcDecl = dyn_cast<clang::ObjCMethodDecl>(clangDecl)) {
+      isObjCDirect = true; 
       assert(objcDecl->isDirectMethod());
     } else {
       auto globalDecl = getClangGlobalDeclForFunction(clangDecl);
@@ -3385,7 +3373,7 @@ llvm::Function *IRGenModule::getAddrOfSILFunction(
   }
   auto fpKind = irgen::classifyFunctionPointerKind(f);
   Signature signature =
-      getSignature(f->getLoweredFunctionType(), fpKind);
+      getSignature(f->getLoweredFunctionType(), fpKind, isObjCDirect);
   addLLVMFunctionAttributes(f, signature);
 
   fn = createFunction(*this, link, signature, insertBefore,
@@ -5466,6 +5454,9 @@ Address IRGenModule::getAddrOfEnumCase(EnumElementDecl *Case,
 
 void IRGenModule::emitNestedTypeDecls(DeclRange members) {
   for (Decl *member : members) {
+    member->visitAuxiliaryDecls([&](Decl *decl) {
+      emitNestedTypeDecls({decl, nullptr});
+    });
     switch (member->getKind()) {
     case DeclKind::Import:
     case DeclKind::TopLevelCode:
@@ -5526,8 +5517,7 @@ void IRGenModule::emitNestedTypeDecls(DeclRange members) {
       emitClassDecl(cast<ClassDecl>(member));
       continue;
     case DeclKind::MacroExpansion:
-      for (auto *decl : cast<MacroExpansionDecl>(member)->getRewritten())
-        emitNestedTypeDecls({decl, nullptr});
+      // Expansion already visited as auxiliary decls.
       continue;
     }
   }

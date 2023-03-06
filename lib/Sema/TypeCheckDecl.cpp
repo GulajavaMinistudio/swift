@@ -1151,7 +1151,9 @@ static LiteralExpr *getAutomaticRawValueExpr(AutomaticEnumValueKind valueKind,
     }
 
     if (auto intLit = dyn_cast<IntegerLiteralExpr>(prevValue)) {
-      APInt nextVal = intLit->getRawValue().sextOrSelf(128) + 1;
+      APInt raw = intLit->getRawValue();
+      APInt sext = (raw.getBitWidth() < 128 ? raw.sext(128) : raw);
+      APInt nextVal = sext + 1;
       bool negative = nextVal.slt(0);
       if (negative)
         nextVal = -nextVal;
@@ -2827,12 +2829,6 @@ static ArrayRef<Decl *> evaluateMembersRequest(
       nullptr);
 
   for (auto *member : idc->getMembers()) {
-    // Expand peer macros.
-    (void)evaluateOrDefault(
-        ctx.evaluator,
-        ExpandPeerMacroRequest{member},
-        {});
-
     if (auto *var = dyn_cast<VarDecl>(member)) {
       // The projected storage wrapper ($foo) might have
       // dynamically-dispatched accessors, so force them to be synthesized.
@@ -2845,17 +2841,22 @@ static ArrayRef<Decl *> evaluateMembersRequest(
 
   SortedDeclList synthesizedMembers;
 
-  for (auto *member : idc->getMembers()) {
+  std::function<void(Decl *)> addResult;
+  addResult = [&](Decl *member) {
+    member->visitAuxiliaryDecls(addResult);
     if (auto *vd = dyn_cast<ValueDecl>(member)) {
       // Add synthesized members to a side table and sort them by their mangled
       // name, since they could have been added to the class in any order.
       if (vd->isSynthesized()) {
         synthesizedMembers.add(vd);
-        continue;
+        return;
       }
     }
-
     result.push_back(member);
+  };
+
+  for (auto *member : idc->getMembers()) {
+    addResult(member);
   }
 
   if (!synthesizedMembers.empty()) {
