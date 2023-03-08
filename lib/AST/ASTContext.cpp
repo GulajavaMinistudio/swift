@@ -3303,6 +3303,12 @@ CanPackType CanPackType::get(const ASTContext &C, ArrayRef<CanType> elements) {
   return CanPackType(PackType::get(C, ncElements));
 }
 
+CanPackType CanPackType::get(const ASTContext &C,
+                             CanTupleEltTypeArrayRef elements) {
+  SmallVector<Type, 8> ncElements(elements.begin(), elements.end());
+  return CanPackType(PackType::get(C, ncElements));
+}
+
 PackType *PackType::get(const ASTContext &C, ArrayRef<Type> elements) {
   RecursiveTypeProperties properties;
   bool isCanonical = true;
@@ -5147,6 +5153,7 @@ GenericEnvironment::forOpenedElement(GenericSignature signature,
   if (found != openedElementEnvironments.end()) {
     auto *existingEnv = found->second;
     assert(existingEnv->getGenericSignature().getPointer() == signature.getPointer());
+    assert(existingEnv->getOpenedElementShapeClass()->isEqual(shapeClass));
     assert(existingEnv->getOpenedElementUUID() == uuid);
 
     return existingEnv;
