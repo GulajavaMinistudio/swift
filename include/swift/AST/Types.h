@@ -2456,15 +2456,30 @@ BEGIN_CAN_TYPE_WRAPPER(TupleType, Type)
     return containsPackExpansionTypeImpl(*this);
   }
 
+  /// Induce a pack type from the elements of this tuple type.
+  inline CanTypeWrapper<PackType> getInducedPackType() const;
+
   /// Induce a pack type from a range of the elements of this tuple type.
   inline CanTypeWrapper<PackType>
   getInducedPackType(unsigned start, unsigned count) const;
+
+  /// Induce a formal pack type with the same shape as the elements
+  /// of this lowered tuple type, making a best effort to use the same
+  /// element types.
+  inline CanTypeWrapper<PackType>
+  getInducedApproximateFormalPackType() const;
 
 private:
   static bool containsPackExpansionTypeImpl(CanTupleType tuple);
 
   static CanTypeWrapper<PackType>
+  getInducedPackTypeImpl(CanTupleType tuple);
+
+  static CanTypeWrapper<PackType>
   getInducedPackTypeImpl(CanTupleType tuple, unsigned start, unsigned count);
+
+  static CanTypeWrapper<PackType>
+  getInducedApproximateFormalPackTypeImpl(CanTupleType tuple);
 END_CAN_TYPE_WRAPPER(TupleType, Type)
 
 /// UnboundGenericType - Represents a generic type where the type arguments have
@@ -5355,6 +5370,11 @@ public:
   /// as the shape, not a SIL pack type.
   CanTypeWrapper<PackType> getReducedShape() const;
 
+  /// Construct a formal pack type with the same shape as this
+  /// lowered pack type, making a best effort to use the same element
+  /// types.
+  CanTypeWrapper<PackType> getApproximateFormalPackType() const;
+
   bool containsPackExpansionType() const;
 
   void Profile(llvm::FoldingSetNodeID &ID) const {
@@ -6355,8 +6375,6 @@ public:
     return T->getKind() == TypeKind::PackArchetype;
   }
 
-  CanTypeWrapper<PackType> getSingletonPackType();
-
 private:
   PackArchetypeType(const ASTContext &Ctx, GenericEnvironment *GenericEnv,
                     Type InterfaceType, ArrayRef<ProtocolDecl *> ConformsTo,
@@ -6831,6 +6849,9 @@ BEGIN_CAN_TYPE_WRAPPER(PackType, Type)
   static CanPackType get(const ASTContext &ctx, ArrayRef<CanType> elements);
   static CanPackType get(const ASTContext &ctx, CanTupleEltTypeArrayRef elts);
 
+  static CanTypeWrapper<PackType>
+  getSingletonPackExpansion(CanType packParameter);
+
   CanType getElementType(unsigned elementNo) const {
     return CanType(getPointer()->getElementType(elementNo));
   }
@@ -6840,9 +6861,18 @@ BEGIN_CAN_TYPE_WRAPPER(PackType, Type)
   }
 END_CAN_TYPE_WRAPPER(PackType, Type)
 
+inline CanPackType CanTupleType::getInducedPackType() const {
+  return getInducedPackTypeImpl(*this);
+}
+
 inline CanPackType
 CanTupleType::getInducedPackType(unsigned start, unsigned end) const {
   return getInducedPackTypeImpl(*this, start, end);
+}
+
+inline CanPackType
+CanTupleType::getInducedApproximateFormalPackType() const {
+  return getInducedApproximateFormalPackTypeImpl(*this);
 }
 
 /// PackExpansionType - The interface type of the explicit expansion of a

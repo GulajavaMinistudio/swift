@@ -429,6 +429,20 @@ static void SaveModuleInterfaceArgs(ModuleInterfaceOptions &Opts,
   }
 }
 
+enum class CxxCompatMode {
+  invalid,
+  enabled,
+  off
+};
+
+static CxxCompatMode validateCxxInteropCompatibilityMode(StringRef mode) {
+  if (mode == "off")
+    return CxxCompatMode::off;
+  if (mode == "swift-5.9")
+    return CxxCompatMode::enabled;
+  return CxxCompatMode::invalid;
+}
+
 static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
                           DiagnosticEngine &Diags,
                           const FrontendOptions &FrontendOpts) {
@@ -899,7 +913,26 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     Opts.ClangTarget = llvm::Triple(A->getValue());
   }
 
-  Opts.EnableCXXInterop |= Args.hasArg(OPT_enable_experimental_cxx_interop);
+  if (Arg *A = Args.getLastArg(OPT_cxx_interoperability_mode)) {
+    if (Args.hasArg(OPT_enable_experimental_cxx_interop)) {
+      Diags.diagnose(SourceLoc(), diag::dont_enable_interop_and_compat);
+    }
+    
+    auto interopCompatMode = validateCxxInteropCompatibilityMode(A->getValue());
+    Opts.EnableCXXInterop |= (interopCompatMode == CxxCompatMode::enabled);
+
+    if (interopCompatMode == CxxCompatMode::invalid) {
+      Diags.diagnose(SourceLoc(), diag::invalid_interop_compat_mode);
+      Diags.diagnose(SourceLoc(), diag::swift_will_maintain_compat);
+    }
+  }
+  
+  if (Args.hasArg(OPT_enable_experimental_cxx_interop)) {
+    Diags.diagnose(SourceLoc(), diag::enable_interop_flag_deprecated);
+    Diags.diagnose(SourceLoc(), diag::swift_will_maintain_compat);
+    Opts.EnableCXXInterop |= true;
+  }
+
   Opts.EnableObjCInterop =
       Args.hasFlag(OPT_enable_objc_interop, OPT_disable_objc_interop,
                    Target.isOSDarwin());
@@ -1247,7 +1280,9 @@ static bool ValidateModulesOnceOptions(const ClangImporterOptions &Opts,
 static bool ParseClangImporterArgs(ClangImporterOptions &Opts,
                                    ArgList &Args,
                                    DiagnosticEngine &Diags,
-                                   StringRef workingDirectory) {
+                                   StringRef workingDirectory,
+                                   const LangOptions &LangOpts,
+                                   const FrontendOptions &FrontendOpts) {
   using namespace options;
 
   if (const Arg *a = Args.getLastArg(OPT_tools_directory)) {
@@ -1314,6 +1349,15 @@ static bool ParseClangImporterArgs(ClangImporterOptions &Opts,
   }
 
   Opts.DumpClangDiagnostics |= Args.hasArg(OPT_dump_clang_diagnostics);
+
+  // When the repl is invoked directly (ie. `lldb --repl="..."`) the action
+  // type seems to be NoneAction.
+  if (FrontendOpts.RequestedAction != FrontendOptions::ActionType::REPL &&
+      FrontendOpts.RequestedAction != FrontendOptions::ActionType::NoneAction &&
+      (Args.hasArg(OPT_enable_import_objc_forward_declarations) ||
+       LangOpts.isSwiftVersionAtLeast(6))) {
+    Opts.ImportForwardDeclarations = true;
+  }
 
   if (Args.hasArg(OPT_embed_bitcode))
     Opts.Mode = ClangImporterOptions::Modes::EmbedBitcode;
@@ -1460,6 +1504,15 @@ static bool ParseSearchPathArgs(SearchPathOptions &Opts,
 
   if (const Arg *A = Args.getLastArg(OPT_sdk))
     Opts.setSDKPath(A->getValue());
+
+  if (const Arg *A = Args.getLastArg(OPT_windows_sdk_root))
+    Opts.setWinSDKRoot(A->getValue());
+  if (const Arg *A = Args.getLastArg(OPT_windows_sdk_version))
+    Opts.setWinSDKVersion(A->getValue());
+  if (const Arg *A = Args.getLastArg(OPT_visualc_tools_root))
+    Opts.setVCToolsRoot(A->getValue());
+  if (const Arg *A = Args.getLastArg(OPT_visualc_tools_version))
+    Opts.setVCToolsVersion(A->getValue());
 
   if (const Arg *A = Args.getLastArg(OPT_resource_dir))
     Opts.RuntimeResourcePath = A->getValue();
@@ -2714,7 +2767,7 @@ bool CompilerInvocation::parseArgs(
   }
 
   if (ParseClangImporterArgs(ClangImporterOpts, ParsedArgs, Diags,
-                             workingDirectory)) {
+                             workingDirectory, LangOpts, FrontendOpts)) {
     return true;
   }
 

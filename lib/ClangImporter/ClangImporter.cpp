@@ -774,6 +774,23 @@ importer::addCommonInvocationArguments(
     invocationArgStrs.push_back("-mcx16");
   }
 
+  if (llvm::Optional<StringRef> R = ctx.SearchPathOpts.getWinSDKRoot()) {
+    invocationArgStrs.emplace_back("-Xmicrosoft-windows-sdk-root");
+    invocationArgStrs.emplace_back(*R);
+  }
+  if (llvm::Optional<StringRef> V = ctx.SearchPathOpts.getWinSDKVersion()) {
+    invocationArgStrs.emplace_back("-Xmicrosoft-windows-sdk-version");
+    invocationArgStrs.emplace_back(*V);
+  }
+  if (llvm::Optional<StringRef> R = ctx.SearchPathOpts.getVCToolsRoot()) {
+    invocationArgStrs.emplace_back("-Xmicrosoft-visualc-tools-root");
+    invocationArgStrs.emplace_back(*R);
+  }
+  if (llvm::Optional<StringRef> V = ctx.SearchPathOpts.getVCToolsVersion()) {
+    invocationArgStrs.emplace_back("-Xmicrosoft-visualc-tools-version");
+    invocationArgStrs.emplace_back(*V);
+  }
+
   if (!importerOpts.Optimization.empty()) {
     invocationArgStrs.push_back(importerOpts.Optimization);
   }
@@ -1102,8 +1119,25 @@ ClangImporter::create(ASTContext &ctx,
   auto fileMapping = getClangInvocationFileMapping(ctx);
   // Wrap Swift's FS to allow Clang to override the working directory
   llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS =
-      llvm::vfs::RedirectingFileSystem::create(fileMapping, true,
-                                               *ctx.SourceMgr.getFileSystem());
+      llvm::vfs::RedirectingFileSystem::create(
+          fileMapping.redirectedFiles, true, *ctx.SourceMgr.getFileSystem());
+  if (!fileMapping.overridenFiles.empty()) {
+    llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> overridenVFS =
+        new llvm::vfs::InMemoryFileSystem();
+    for (const auto &file : fileMapping.overridenFiles) {
+      auto contents = ctx.Allocate<char>(file.second.size() + 1);
+      std::copy(file.second.begin(), file.second.end(), contents.begin());
+      // null terminate the buffer.
+      contents[contents.size() - 1] = '\0';
+      overridenVFS->addFile(file.first, 0,
+                            llvm::MemoryBuffer::getMemBuffer(
+                                StringRef(contents.begin(), contents.size() - 1)));
+    }
+    llvm::IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> overlayVFS =
+        new llvm::vfs::OverlayFileSystem(VFS);
+    VFS = overlayVFS;
+    overlayVFS->pushOverlay(overridenVFS);
+  }
 
   // Create a new Clang compiler invocation.
   {
@@ -6209,7 +6243,15 @@ void ClangImporter::diagnoseTopLevelValue(const DeclName &name) {
 
 void ClangImporter::diagnoseMemberValue(const DeclName &name,
                                         const Type &baseType) {
-  if (!baseType->getAnyNominal())
+
+  // Return early for any type that namelookup::extractDirectlyReferencedNominalTypes
+  // does not know how to handle.
+  if (!(baseType->getAnyNominal() ||
+        baseType->is<ExistentialType>() ||
+        baseType->is<UnboundGenericType>() ||
+        baseType->is<ArchetypeType>() ||
+        baseType->is<ProtocolCompositionType>() ||
+        baseType->is<TupleType>()))
     return;
 
   SmallVector<NominalTypeDecl *, 4> nominalTypesToLookInto;
@@ -6220,6 +6262,41 @@ void ClangImporter::diagnoseMemberValue(const DeclName &name,
     if (clangContainerDecl && isa<clang::DeclContext>(clangContainerDecl)) {
       Impl.diagnoseMemberValue(name,
                                cast<clang::DeclContext>(clangContainerDecl));
+    }
+
+    if (Impl.ImportForwardDeclarations) {
+      const clang::Decl *clangContainerDecl = containerDecl->getClangDecl();
+      if (const clang::ObjCInterfaceDecl *objCInterfaceDecl =
+              llvm::dyn_cast_or_null<clang::ObjCInterfaceDecl>(
+                  clangContainerDecl); objCInterfaceDecl && !objCInterfaceDecl->hasDefinition()) {
+        // Emit a diagnostic about how the base type represents a forward
+        // declared ObjC interface and is in all likelihood missing members.
+        // We only attach this diagnostic in diagnoseMemberValue rather than
+        // in SwiftDeclConverter because it is only relevant when the user
+        // tries to access an unavailable member.
+        Impl.addImportDiagnostic(
+            objCInterfaceDecl,
+            Diagnostic(
+                diag::
+                    placeholder_for_forward_declared_interface_member_access_failure,
+                objCInterfaceDecl->getName()),
+            objCInterfaceDecl->getSourceRange().getBegin());
+        // Emit any diagnostics attached to the source Clang node (ie. forward
+        // declaration here note)
+        Impl.diagnoseTargetDirectly(clangContainerDecl);
+      } else if (const clang::ObjCProtocolDecl *objCProtocolDecl =
+                     llvm::dyn_cast_or_null<clang::ObjCProtocolDecl>(
+                         clangContainerDecl); objCProtocolDecl && !objCProtocolDecl->hasDefinition()) {
+        // Same as above but for protocols
+        Impl.addImportDiagnostic(
+            objCProtocolDecl,
+            Diagnostic(
+                diag::
+                    placeholder_for_forward_declared_protocol_member_access_failure,
+                objCProtocolDecl->getName()),
+            objCProtocolDecl->getSourceRange().getBegin());
+        Impl.diagnoseTargetDirectly(clangContainerDecl);
+      }
     }
   }
 }
