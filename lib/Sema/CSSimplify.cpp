@@ -5058,63 +5058,6 @@ bool ConstraintSystem::repairFailures(
     if (!anchor)
       return false;
 
-    if (auto *coercion = getAsExpr<CoerceExpr>(anchor)) {
-      // Coercion from T.Type to T.Protocol.
-      if (hasConversionOrRestriction(
-              ConversionRestrictionKind::MetatypeToExistentialMetatype))
-        return false;
-
-      if (hasConversionOrRestriction(ConversionRestrictionKind::Superclass))
-        return false;
-
-      // Let's check whether the sub-expression is an optional type which
-      // is possible to unwrap (either by force or `??`) to satisfy the cast,
-      // otherwise we'd have to fallback to force downcast.
-      if (repairViaOptionalUnwrap(*this, lhs, rhs, matchKind,
-                                  conversionsOrFixes,
-                                  getConstraintLocator(coercion->getSubExpr())))
-        return true;
-
-      // If the result type of the coercion has an value to optional conversion
-      // we can instead suggest the conditional downcast as it is safer in
-      // situations like conditional binding.
-      auto useConditionalCast =
-          llvm::any_of(ConstraintRestrictions, [&](const auto &restriction) {
-            Type type1, type2;
-            std::tie(type1, type2) = restriction.first;
-            auto restrictionKind = restriction.second;
-
-            if (restrictionKind != ConversionRestrictionKind::ValueToOptional)
-              return false;
-
-            return rhs->isEqual(type1);
-          });
-
-      // Repair a coercion ('as') with a runtime checked cast ('as!' or 'as?').
-      if (auto *coerceToCheckCastFix =
-              CoerceToCheckedCast::attempt(*this, lhs, rhs, useConditionalCast,
-                                           getConstraintLocator(locator))) {
-        conversionsOrFixes.push_back(coerceToCheckCastFix);
-        return true;
-      }
-
-      // If it has a deep equality restriction, defer the diagnostic to
-      // GenericMismatch.
-      if (hasConversionOrRestriction(ConversionRestrictionKind::DeepEquality) &&
-          !hasConversionOrRestriction(
-              ConversionRestrictionKind::OptionalToOptional)) {
-        return false;
-      }
-
-      if (hasConversionOrRestriction(ConversionRestrictionKind::Existential))
-        return false;
-
-      auto *fix = ContextualMismatch::create(*this, lhs, rhs,
-                                             getConstraintLocator(locator));
-      conversionsOrFixes.push_back(fix);
-      return true;
-    }
-
     // This could be:
     // - `InOutExpr` used with r-value e.g. `foo(&x)` where `x` is a `let`.
     // - `ForceValueExpr` e.g. `foo.bar! = 42` where `bar` or `foo` are
@@ -6449,6 +6392,64 @@ bool ConstraintSystem::repairFailures(
     break;
   }
 
+  case ConstraintLocator::CoercionOperand: {
+    auto *coercion = castToExpr<CoerceExpr>(anchor);
+
+    // Coercion from T.Type to T.Protocol.
+    if (hasConversionOrRestriction(
+            ConversionRestrictionKind::MetatypeToExistentialMetatype))
+      return false;
+
+    if (hasConversionOrRestriction(ConversionRestrictionKind::Superclass))
+      return false;
+
+    // Let's check whether the sub-expression is an optional type which
+    // is possible to unwrap (either by force or `??`) to satisfy the cast,
+    // otherwise we'd have to fallback to force downcast.
+    if (repairViaOptionalUnwrap(*this, lhs, rhs, matchKind,
+                                conversionsOrFixes,
+                                getConstraintLocator(coercion->getSubExpr())))
+      return true;
+
+    // If the result type of the coercion has an value to optional conversion
+    // we can instead suggest the conditional downcast as it is safer in
+    // situations like conditional binding.
+    auto useConditionalCast =
+        llvm::any_of(ConstraintRestrictions, [&](const auto &restriction) {
+          Type type1, type2;
+          std::tie(type1, type2) = restriction.first;
+          auto restrictionKind = restriction.second;
+
+          if (restrictionKind != ConversionRestrictionKind::ValueToOptional)
+            return false;
+
+          return rhs->isEqual(type1);
+        });
+
+    // Repair a coercion ('as') with a runtime checked cast ('as!' or 'as?').
+    if (auto *coerceToCheckCastFix =
+            CoerceToCheckedCast::attempt(*this, lhs, rhs, useConditionalCast,
+                                         getConstraintLocator(locator))) {
+      conversionsOrFixes.push_back(coerceToCheckCastFix);
+      return true;
+    }
+
+    // If it has a deep equality restriction, defer the diagnostic to
+    // GenericMismatch.
+    if (hasConversionOrRestriction(ConversionRestrictionKind::DeepEquality) &&
+        !hasConversionOrRestriction(
+            ConversionRestrictionKind::OptionalToOptional)) {
+      return false;
+    }
+
+    if (hasConversionOrRestriction(ConversionRestrictionKind::Existential))
+      return false;
+
+    auto *fix = ContextualMismatch::create(*this, lhs, rhs,
+                                           getConstraintLocator(locator));
+    conversionsOrFixes.push_back(fix);
+    return true;
+  }
   default:
     break;
   }
@@ -6963,7 +6964,8 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
                                    ArrayRef<LocatorPathElt> path) {
           // E.g. contextual conversion from coercion/cast
           // to some other type.
-          if (!path.empty())
+          if (!(path.empty() ||
+                path.back().is<LocatorPathElt::CoercionOperand>()))
             return false;
 
           return isExpr<CoerceExpr>(anchor) || isExpr<IsExpr>(anchor) ||
@@ -7389,6 +7391,14 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
                 if (type1->isArrayType()) {
                   conversionsOrFixes.push_back(
                       ConversionRestrictionKind::ArrayToPointer);
+
+                  // If regular array-to-pointer conversion doesn't work,
+                  // let's try C pointer conversion that has special semantics
+                  // for imported declarations.
+                  if (isArgumentOfImportedDecl(locator)) {
+                    conversionsOrFixes.push_back(
+                        ConversionRestrictionKind::ArrayToCPointer);
+                  }
                 }
 
                 // The pointer can be converted from a string, if the element
@@ -11320,7 +11330,7 @@ ConstraintSystem::simplifyBridgingConstraint(Type type1,
 
     SmallVector<LocatorPathElt, 4> elts;
     auto anchor = locator.getLocatorParts(elts);
-    if (!elts.empty())
+    if (elts.empty() || !elts.back().is<LocatorPathElt::CoercionOperand>())
       return false;
 
     auto *coercion = getAsExpr<CoerceExpr>(anchor);
@@ -13436,6 +13446,31 @@ ConstraintSystem::simplifyRestrictedConstraintImpl(
   case ConversionRestrictionKind::PointerToCPointer:
     return simplifyPointerToCPointerRestriction(type1, type2, flags, locator);
 
+  case ConversionRestrictionKind::ArrayToCPointer: {
+    auto ptr2 = type2->getDesugaredType()->lookThroughAllOptionalTypes();
+
+    PointerTypeKind pointerKind;
+    auto cPtr = ptr2->getAnyPointerElementType(pointerKind);
+
+    // If the parameter is a raw pointer or its element type is not a
+    // supported (un-)signed integer it implies a regular ArrayToPointer
+    // conversion.
+    if (isRawPointerKind(pointerKind) ||
+        !(cPtr->isInt()   || cPtr->isUInt()   ||
+          cPtr->isInt8()  || cPtr->isUInt8()  ||
+          cPtr->isInt16() || cPtr->isUInt16() ||
+          cPtr->isInt32() || cPtr->isUInt32() ||
+          cPtr->isInt64() || cPtr->isUInt64())) {
+      return SolutionKind::Error;
+    }
+
+    increaseScore(SK_ValueToPointerConversion);
+
+    type1 = getFixedTypeRecursive(type1->getInOutObjectType()->isArrayType(),
+                                  /*wantRValue=*/false);
+    LLVM_FALLTHROUGH;
+  }
+
   case ConversionRestrictionKind::InoutToCPointer: {
     SmallVector<Type, 2> optionals;
 
@@ -13699,12 +13734,7 @@ ConstraintSystem::simplifyPointerToCPointerRestriction(
     Type type1, Type type2, TypeMatchOptions flags,
     ConstraintLocatorBuilder locator) {
   bool inCorrectPosition = isArgumentOfImportedDecl(locator);
-
-  if (inCorrectPosition) {
-    // Make sure that solutions with implicit pointer conversions
-    // are always worse than the ones without them.
-    increaseScore(SK_ImplicitValueConversion);
-  } else {
+  if (!inCorrectPosition) {
     // If this is not an imported function, let's not proceed with
     // the conversion, unless in diagnostic mode.
     if (!shouldAttemptFixes())
@@ -13725,6 +13755,10 @@ ConstraintSystem::simplifyPointerToCPointerRestriction(
   assert(cPtr);
 
   auto markSupported = [&]() -> SolutionKind {
+    // Make sure that solutions with implicit pointer conversions
+    // are always worse than the ones without them.
+    increaseScore(SK_ImplicitValueConversion);
+
     if (inCorrectPosition)
       return SolutionKind::Solved;
 
@@ -13735,6 +13769,23 @@ ConstraintSystem::simplifyPointerToCPointerRestriction(
 
     return recordFix(fix) ? SolutionKind::Error : SolutionKind::Solved;
   };
+
+  auto elementLoc = locator.withPathElement(LocatorPathElt::GenericArgument(0));
+
+  if (swiftPtr->isTypeVariableOrMember()) {
+    // Inference between the equivalent pointer kinds is
+    // handled by regular pointer conversions.
+    if (swiftPtrKind == cPtrKind)
+      return SolutionKind::Error;
+
+    addConstraint(ConstraintKind::BindToPointerType, swiftPtr, cPtr,
+                  elementLoc);
+    return markSupported();
+  }
+
+  // If pointers have the same element type there is nothing to do.
+  if (swiftPtr->isEqual(cPtr))
+    return markSupported();
 
   // Unsafe[Mutable]RawPointer -> Unsafe[Mutable]Pointer<[U]Int8>
   if (swiftPtrKind == PTK_UnsafeRawPointer ||
@@ -13747,18 +13798,12 @@ ConstraintSystem::simplifyPointerToCPointerRestriction(
     // Unsafe[Mutable]Pointer<T> -> Unsafe[Mutable]Pointer<[U]Int8>
     if (cPtr->isInt8() || cPtr->isUInt8()) {
       // <T> can default to the type of C pointer.
-      addConstraint(
-          ConstraintKind::Defaultable, swiftPtr, cPtr,
-          locator.withPathElement(LocatorPathElt::GenericArgument(0)));
+      addConstraint(ConstraintKind::Defaultable, swiftPtr, cPtr, elementLoc);
       return markSupported();
     }
 
-    auto elementLoc =
-        locator.withPathElement(LocatorPathElt::GenericArgument(0));
-
     // Unsafe[Mutable]Pointer<Int{8, 16, ...}> <->
     // Unsafe[Mutable]Pointer<UInt{8, 16, ...}>
-
     if (swiftPtr->isInt() || swiftPtr->isUInt()) {
       addConstraint(ConstraintKind::Equal, cPtr,
                     swiftPtr->isUInt() ? ctx.getIntType() : ctx.getUIntType(),

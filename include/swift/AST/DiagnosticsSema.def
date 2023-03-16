@@ -1403,10 +1403,13 @@ WARNING(unlabeled_trailing_closure_deprecated,Deprecation,
 NOTE(decl_multiple_defaulted_closure_parameters,none,
      "%0 contains defaulted closure parameters %1 and %2",
      (DeclName, Identifier, Identifier))
+NOTE(candidate_with_extraneous_args_closure,none,
+     "candidate %0 requires %1 argument%s1, "
+     "but %2 %select{were|was}3 used in closure body",
+     (Type, unsigned, unsigned, bool))
 NOTE(candidate_with_extraneous_args,none,
-      "candidate %0 requires %1 argument%s1, "
-      "but %2 %select{were|was}3 %select{provided|used in closure body}4",
-      (Type, unsigned, unsigned, bool, bool))
+     "candidate %0 has %1 parameter%s1, but context %2 has %3",
+     (Type, unsigned, Type, unsigned))
 
 ERROR(no_accessible_initializers,none,
       "%0 cannot be constructed because it has no accessible initializers",
@@ -1681,8 +1684,9 @@ ERROR(access_control_open_bad_decl,none,
 WARNING(access_control_non_objc_open_member,none,
       "non-'@objc' %0 in extensions cannot be overridden; use 'public' instead",
       (DescriptiveDeclKind))
-ERROR(access_control_requires_package_name, none, "decl has a package access level but no -package-name was passed", ())
-
+ERROR(access_control_requires_package_name, none,
+      "decl has a package access level but no -package-name was passed",
+      ())
 ERROR(invalid_decl_attribute,none,
       "'%0' attribute cannot be applied to this declaration", (DeclAttribute))
 ERROR(attr_invalid_on_decl_kind,none,
@@ -6761,11 +6765,6 @@ ERROR(experimental_moveonly_feature_can_only_be_used_when_enabled,
       none, "Can not use feature when experimental move only is disabled! Pass"
       " the frontend flag -enable-experimental-move-only to swift to enable "
       "the usage of this language feature", ())
-ERROR(experimental_moveonly_feature_can_only_be_imported_when_enabled,
-      none, "Can not import module %0 that uses move only features when "
-      "experimental move only is disabled! Pass the frontend flag "
-      "-enable-experimental-move-only to swift to enable the usage of this "
-      "language feature", (Identifier))
 ERROR(noimplicitcopy_attr_valid_only_on_local_let_params,
       none, "'@_noImplicitCopy' attribute can only be applied to local lets and params", ())
 ERROR(noimplicitcopy_attr_invalid_in_generic_context,
@@ -6847,6 +6846,10 @@ ERROR(move_expression_not_passed_lvalue,none,
       "'consume' can only be applied to lvalues", ())
 ERROR(borrow_expression_not_passed_lvalue,none,
       "'borrow' can only be applied to lvalues", ())
+
+ERROR(moveOnly_requires_lexical_lifetimes,none,
+      "noncopyable types require lexical borrow scopes "
+      "(add -enable-lexical-borrow-scopes=true)", ())
 
 //------------------------------------------------------------------------------
 // MARK: #_hasSymbol

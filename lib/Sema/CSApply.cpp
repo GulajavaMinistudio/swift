@@ -4349,7 +4349,8 @@ namespace {
       // If we weren't explicitly told by the caller which disjunction choice,
       // get it from the solution to determine whether we've picked a coercion
       // or a bridging conversion.
-      auto *locator = cs.getConstraintLocator(expr);
+      auto *locator =
+          cs.getConstraintLocator(expr, ConstraintLocator::CoercionOperand);
       auto choice = solution.getDisjunctionChoice(locator);
 
       // Handle the coercion/bridging of the underlying subexpression, where
@@ -6879,7 +6880,8 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
       return result;
     }
 
-    case ConversionRestrictionKind::ArrayToPointer: {
+    case ConversionRestrictionKind::ArrayToPointer:
+    case ConversionRestrictionKind::ArrayToCPointer: {
       bool isOptional = false;
       Type unwrappedTy = toType;
       if (Type unwrapped = toType->getOptionalObjectType()) {

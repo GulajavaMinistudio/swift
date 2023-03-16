@@ -5856,6 +5856,7 @@ public:
   ASTPRINTER_PRINT_BUILTINTYPE(BuiltinJobType)
   ASTPRINTER_PRINT_BUILTINTYPE(BuiltinExecutorType)
   ASTPRINTER_PRINT_BUILTINTYPE(BuiltinDefaultActorStorageType)
+  ASTPRINTER_PRINT_BUILTINTYPE(BuiltinNonDefaultDistributedActorStorageType)
   ASTPRINTER_PRINT_BUILTINTYPE(BuiltinPackIndexType)
   ASTPRINTER_PRINT_BUILTINTYPE(BuiltinNativeObjectType)
   ASTPRINTER_PRINT_BUILTINTYPE(BuiltinBridgeObjectType)
@@ -6764,8 +6765,7 @@ public:
     auto sig = subs.getGenericSignature();
     auto params = sig.getGenericParams();
 
-    auto elementShapeClass =
-      env->getOpenedElementShapeClass()->mapTypeOutOfContext();
+    auto elementShapeClass = env->getOpenedElementShapeClass();
 
     // The element archetypes are at a depth one past the max depth
     // of the base signature.

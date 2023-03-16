@@ -1292,7 +1292,8 @@ Expected<GenericEnvironment *> ModuleFile::getGenericEnvironmentChecked(
   case GenericEnvironmentKind::OpenedElement:
     genericEnv = GenericEnvironment::forOpenedElement(
         parentSigOrError.get(), UUID::fromTime(),
-        existentialOrShapeTypeOrError.get()->getCanonicalType(),
+        cast<GenericTypeParamType>(
+          existentialOrShapeTypeOrError.get()->getCanonicalType()),
         contextSubsOrError.get());
   }
 
@@ -5482,17 +5483,6 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
       default:
         // We don't know how to deserialize this kind of attribute.
         MF.fatal(llvm::make_error<InvalidRecordKindError>(recordID));
-      }
-
-      // Do a quick check to see if this attribute is a move only attribute. If
-      // so, emit a nice error if we don't have experimental move only enabled.
-      if (Attr && Attr->getKind() == DeclAttrKind::DAK_MoveOnly &&
-          !MF.getContext().LangOpts.Features.contains(Feature::MoveOnly)) {
-        MF.getContext().Diags.diagnose(
-            SourceLoc(),
-            diag::
-                experimental_moveonly_feature_can_only_be_imported_when_enabled,
-            MF.getAssociatedModule()->getName());
       }
 
       if (!skipAttr) {
