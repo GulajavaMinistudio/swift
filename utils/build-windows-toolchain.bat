@@ -745,18 +745,22 @@ IF NOT "%SKIP_PACKAGING%"=="1" call :PackageToolchain
 SET SKIP_TEST=0
 FOR %%T IN (%SKIP_TESTS%) DO (IF /I %%T==swift SET SKIP_TEST=1)
 IF "%SKIP_TEST%"=="0" call :TestSwift
+IF %ERRORLEVEL% NEQ 0 (EXIT /B)
 
 SET SKIP_TEST=0
 FOR %%T IN (%SKIP_TESTS%) DO (IF /I %%T==dispatch SET SKIP_TEST=1)
 IF "%SKIP_TEST%"=="0" call :TestDispatch
+IF %ERRORLEVEL% NEQ 0 (EXIT /B)
 
 SET SKIP_TEST=0
 FOR %%T IN (%SKIP_TESTS%) DO (IF /I %%T==foundation SET SKIP_TEST=1)
 IF "%SKIP_TEST%"=="0" call :TestFoundation
+IF %ERRORLEVEL% NEQ 0 (EXIT /B)
 
 SET SKIP_TEST=0
 FOR %%T IN (%SKIP_TESTS%) DO (IF /I %%T==xctest SET SKIP_TEST=1)
 IF "%SKIP_TEST%"=="0" call :TestXCTest
+IF %ERRORLEVEL% NEQ 0 (EXIT /B)
 
 :: Clean up the module cache
 rd /s /q %LocalAppData%\clang\ModuleCache
@@ -924,6 +928,7 @@ setlocal enableextensions enabledelayedexpansion
 
 :: Package toolchain.msi
 msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\toolchain.wixproj ^
+  -restore ^
   -p:RunWixToolsOutOfProc=true ^
   -p:OutputPath=%PackageRoot%\toolchain\ ^
   -p:IntermediateOutputPath=%PackageRoot%\toolchain\ ^
@@ -934,6 +939,7 @@ msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\toolchain.wixproj
 
 :: Package sdk.msi
 msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\sdk.wixproj ^
+  -restore ^
   -p:RunWixToolsOutOfProc=true ^
   -p:OutputPath=%PackageRoot%\sdk\ ^
   -p:IntermediateOutputPath=%PackageRoot%\sdk\ ^
@@ -944,6 +950,7 @@ msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\sdk.wixproj ^
 
 :: Package runtime.msi
 msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\runtime.wixproj ^
+  -restore ^
   -p:RunWixToolsOutOfProc=true ^
   -p:OutputPath=%PackageRoot%\runtime\ ^
   -p:IntermediateOutputPath=%PackageRoot%\runtime\ ^
@@ -953,6 +960,7 @@ msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\runtime.wixproj ^
 
 :: Package devtools.msi
 msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\devtools.wixproj ^
+  -restore ^
   -p:RunWixToolsOutOfProc=true ^
   -p:OutputPath=%PackageRoot%\devtools\ ^
   -p:IntermediateOutputPath=%PackageRoot%\devtools\ ^
@@ -968,6 +976,7 @@ move %PackageRoot%\devtools\devtools.msi %PackageRoot% || (exit /b)
 
 :: Build Installer
 msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\installer.wixproj ^
+  -restore ^
   -p:RunWixToolsOutOfProc=true ^
   -p:OutputPath=%PackageRoot%\installer\ ^
   -p:IntermediateOutputPath=%PackageRoot%\installer\ ^
