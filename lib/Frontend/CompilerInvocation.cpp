@@ -552,6 +552,20 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     Diags.diagnose(SourceLoc(), diag::warn_flag_deprecated,
                    "-check-api-availability-only");
 
+  if (const Arg *A = Args.getLastArg(OPT_unavailable_decl_optimization_EQ)) {
+    auto value =
+        llvm::StringSwitch<Optional<UnavailableDeclOptimization>>(A->getValue())
+            .Case("none", UnavailableDeclOptimization::None)
+            .Case("complete", UnavailableDeclOptimization::Complete)
+            .Default(None);
+
+    if (value)
+      Opts.UnavailableDeclOptimizationMode = *value;
+    else
+      Diags.diagnose(SourceLoc(), diag::error_invalid_arg_value,
+                     A->getAsString(Args), A->getValue());
+  }
+
   Opts.WeakLinkAtTarget |= Args.hasArg(OPT_weak_link_at_target);
 
   if (auto A = Args.getLastArg(OPT_enable_conformance_availability_errors,
@@ -721,8 +735,12 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     Opts.Features.insert(Feature::NamedOpaqueTypes);
   if (Args.hasArg(OPT_enable_experimental_flow_sensitive_concurrent_captures))
     Opts.Features.insert(Feature::FlowSensitiveConcurrencyCaptures);
-  if (Args.hasArg(OPT_enable_experimental_move_only))
+  if (Args.hasArg(OPT_enable_experimental_move_only)) {
+    // FIXME: drop addition of Feature::MoveOnly once its queries are gone.
     Opts.Features.insert(Feature::MoveOnly);
+    Opts.Features.insert(Feature::NoImplicitCopy);
+    Opts.Features.insert(Feature::OldOwnershipOperatorSpellings);
+  }
   if (Args.hasArg(OPT_experimental_one_way_closure_params))
     Opts.Features.insert(Feature::OneWayClosureParameters);
   if (Args.hasArg(OPT_enable_experimental_associated_type_inference))
