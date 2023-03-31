@@ -1215,6 +1215,52 @@ public:
 
 protected:
   NullablePtr<const GenericParamList> genericParams() const override;
+  bool lookupLocalsOrMembers(DeclConsumer) const override;
+};
+
+/// The scope introduced for the definition of a macro, which follows the `=`.
+class MacroDefinitionScope final : public ASTScopeImpl {
+public:
+  Expr *const definition;
+
+  MacroDefinitionScope(Expr *definition) : definition(definition) {}
+
+  virtual ~MacroDefinitionScope() {}
+  SourceRange
+  getSourceRangeOfThisASTNode(bool omitAssertions = false) const override;
+  std::string getClassName() const override;
+
+private:
+  void expandAScopeThatDoesNotCreateANewInsertionPoint(ScopeCreator &);
+
+protected:
+  ASTScopeImpl *expandSpecifically(ScopeCreator &scopeCreator) override;
+};
+
+class MacroExpansionDeclScope final : public ASTScopeImpl {
+public:
+  MacroExpansionDecl *const decl;
+
+  MacroExpansionDeclScope(MacroExpansionDecl *e) : decl(e) {}
+  virtual ~MacroExpansionDeclScope() {}
+
+protected:
+  ASTScopeImpl *expandSpecifically(ScopeCreator &scopeCreator) override;
+
+private:
+  void expandAScopeThatDoesNotCreateANewInsertionPoint(ScopeCreator &);
+
+public:
+  std::string getClassName() const override;
+  SourceRange
+  getSourceRangeOfThisASTNode(bool omitAssertions = false) const override;
+
+protected:
+  void printSpecifics(llvm::raw_ostream &out) const override;
+
+public:
+  virtual NullablePtr<Decl> getDeclIfAny() const override { return decl; }
+  Decl *getDecl() const { return decl; }
 };
 
 class AbstractStmtScope : public ASTScopeImpl {

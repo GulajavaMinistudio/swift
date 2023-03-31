@@ -753,6 +753,9 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   if (Args.hasArg(OPT_enable_experimental_opaque_type_erasure))
     Opts.Features.insert(Feature::OpaqueTypeErasure);
 
+  if (Args.hasArg(OPT_enable_builtin_module))
+    Opts.Features.insert(Feature::BuiltinModule);
+
   Opts.EnableAppExtensionRestrictions |= Args.hasArg(OPT_enable_app_extension);
 
   Opts.EnableSwift3ObjCInference =
@@ -1171,8 +1174,6 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
             .Default(ConcurrencyModel::Standard);
   }
 
-  Opts.EnableBuiltinModule = Args.hasArg(OPT_enable_builtin_module);
-
   return HadError || UnsupportedOS || UnsupportedArch;
 }
 
@@ -1366,8 +1367,7 @@ static bool ParseClangImporterArgs(ClangImporterOptions &Opts,
   // type seems to be NoneAction.
   if (FrontendOpts.RequestedAction != FrontendOptions::ActionType::REPL &&
       FrontendOpts.RequestedAction != FrontendOptions::ActionType::NoneAction &&
-      (Args.hasArg(OPT_enable_import_objc_forward_declarations) ||
-       LangOpts.isSwiftVersionAtLeast(6))) {
+      LangOpts.hasFeature(Feature::ImportObjcForwardDeclarations)) {
     Opts.ImportForwardDeclarations = true;
   }
 

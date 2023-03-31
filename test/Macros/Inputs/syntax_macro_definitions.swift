@@ -126,8 +126,6 @@ public enum AddBlocker: ExpressionMacro {
                       newNode: Syntax(
                         TokenSyntax(
                           .binaryOperator("-"),
-                          leadingTrivia: binOp.operatorToken.leadingTrivia,
-                          trailingTrivia: binOp.operatorToken.trailingTrivia,
                           presence: .present
                         )
                       )
@@ -207,6 +205,15 @@ enum CustomError: Error, CustomStringConvertible {
     case .message(let text):
       return text
     }
+  }
+}
+
+public struct EmptyDeclarationMacro: DeclarationMacro {
+  public static func expansion(
+    of node: some FreestandingMacroExpansionSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> [DeclSyntax] {
+    return []
   }
 }
 
@@ -308,6 +315,51 @@ public struct WarningMacro: ExpressionMacro {
            message: messageString.content.description,
            diagnosticID: MessageID(domain: "test", id: "error"),
            severity: .warning
+         )
+       )
+     )
+
+     return "()"
+  }
+}
+
+public struct ErrorMacro: ExpressionMacro {
+  public static func expansion(
+    of macro: some FreestandingMacroExpansionSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> ExprSyntax {
+    guard let firstElement = macro.argumentList.first,
+          let stringLiteral = firstElement.expression.as(StringLiteralExprSyntax.self),
+          stringLiteral.segments.count == 1,
+          case let .stringSegment(messageString)? = stringLiteral.segments.first
+      else {
+        let errorNode: Syntax
+          if let firstElement = macro.argumentList.first {
+          errorNode = Syntax(firstElement)
+        } else {
+          errorNode = Syntax(macro)
+        }
+
+        let messageID = MessageID(domain: "silly", id: "error")
+        let diag = Diagnostic(
+          node: errorNode,
+          message: SimpleDiagnosticMessage(
+            message: "#myError macro requires a string literal",
+            diagnosticID: messageID,
+            severity: .error
+          )
+        )
+
+       throw DiagnosticsError(diagnostics: [diag])
+     }
+
+     context.diagnose(
+       Diagnostic(
+         node: Syntax(macro),
+         message: SimpleDiagnosticMessage(
+           message: messageString.content.description,
+           diagnosticID: MessageID(domain: "test", id: "error"),
+           severity: .error
          )
        )
      )

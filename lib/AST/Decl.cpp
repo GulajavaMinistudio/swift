@@ -3933,10 +3933,15 @@ getAccessScopeForFormalAccess(const ValueDecl *VD,
   case AccessLevel::Package: {
     auto pkg = resultDC->getPackageContext(/*lookupIfNotCurrent*/ true);
     if (!pkg) {
+      // No package context was found; show diagnostics
       auto &d = VD->getASTContext().Diags;
       d.diagnose(VD->getLoc(), diag::access_control_requires_package_name);
+      // Instead of reporting and failing early, return the scope of
+      // resultDC to allow continuation (should still non-zero exit later)
+      return AccessScope(resultDC);
+    } else {
+      return AccessScope(pkg);
     }
-    return AccessScope(pkg);
   }
   case AccessLevel::Public:
   case AccessLevel::Open:
@@ -4111,6 +4116,11 @@ static bool checkAccess(const DeclContext *useDC, const ValueDecl *VD,
     }
     return true;
   case AccessLevel::Internal: {
+    // Invalid if the use site is > Internal.
+    // E.g. extension containing a member of a protocol it conforms to has
+    // `package` access level but the member is `internal`
+    if (useDC->getContextKind() == DeclContextKind::Package)
+      return false;
     const ModuleDecl *sourceModule = sourceDC->getParentModule();
     const DeclContext *useFile = useDC->getModuleScopeContext();
     if (useFile->getParentModule() == sourceModule)
@@ -10316,30 +10326,46 @@ Optional<BuiltinMacroKind> MacroDecl::getBuiltinKind() const {
   return def.getBuiltinKind();
 }
 
+MacroDefinition MacroDefinition::forExpanded(
+    ASTContext &ctx,
+    StringRef expansionText,
+    ArrayRef<ExpandedMacroReplacement> replacements
+) {
+  return ExpandedMacroDefinition{ctx.AllocateCopy(expansionText),
+                                 ctx.AllocateCopy(replacements)};
+}
+
+MacroExpansionDecl::MacroExpansionDecl(
+    DeclContext *dc, MacroExpansionInfo *info
+) : Decl(DeclKind::MacroExpansion, dc), info(info) {
+  Bits.MacroExpansionDecl.Discriminator = InvalidDiscriminator;
+}
+
 MacroExpansionDecl::MacroExpansionDecl(
     DeclContext *dc, SourceLoc poundLoc, DeclNameRef macro,
     DeclNameLoc macroLoc, SourceLoc leftAngleLoc,
     ArrayRef<TypeRepr *> genericArgs, SourceLoc rightAngleLoc,
-    ArgumentList *args)
-    : Decl(DeclKind::MacroExpansion, dc), PoundLoc(poundLoc),
-      MacroName(macro), MacroNameLoc(macroLoc),
-      LeftAngleLoc(leftAngleLoc), RightAngleLoc(rightAngleLoc),
-      GenericArgs(genericArgs),
-      ArgList(args ? args
-                   : ArgumentList::createImplicit(dc->getASTContext(), {})) {
+    ArgumentList *args
+) : Decl(DeclKind::MacroExpansion, dc) {
+  ASTContext &ctx = dc->getASTContext();
+  info = new (ctx) MacroExpansionInfo{
+      poundLoc, macro, macroLoc,
+      leftAngleLoc, rightAngleLoc, genericArgs,
+      args ? args : ArgumentList::createImplicit(ctx, {})
+  };
   Bits.MacroExpansionDecl.Discriminator = InvalidDiscriminator;
 }
 
 SourceRange MacroExpansionDecl::getSourceRange() const {
   SourceLoc endLoc;
-  if (auto argsEndList = ArgList->getEndLoc())
+  if (auto argsEndList = info->ArgList->getEndLoc())
     endLoc = argsEndList;
-  else if (RightAngleLoc.isValid())
-    endLoc = RightAngleLoc;
+  else if (info->RightAngleLoc.isValid())
+    endLoc = info->RightAngleLoc;
   else
-    endLoc = MacroNameLoc.getEndLoc();
+    endLoc = info->MacroNameLoc.getEndLoc();
 
-  return SourceRange(PoundLoc, endLoc);
+  return SourceRange(info->SigilLoc, endLoc);
 }
 
 unsigned MacroExpansionDecl::getDiscriminator() const {

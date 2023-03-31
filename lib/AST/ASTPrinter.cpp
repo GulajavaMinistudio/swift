@@ -3159,6 +3159,24 @@ static bool usesFeatureExistentialAny(Decl *decl) {
   return false;
 }
 
+static bool usesFeatureImportObjcForwardDeclarations(Decl *decl) {
+  ClangNode clangNode = decl->getClangNode();
+  if (!clangNode)
+    return false;
+
+  const clang::Decl *clangDecl = clangNode.getAsDecl();
+  if (!clangDecl)
+    return false;
+
+  if (auto objCInterfaceDecl = dyn_cast<clang::ObjCInterfaceDecl>(clangDecl))
+    return !objCInterfaceDecl->hasDefinition();
+
+  if (auto objCProtocolDecl = dyn_cast<clang::ObjCProtocolDecl>(clangDecl))
+    return !objCProtocolDecl->hasDefinition();
+
+  return false;
+}
+
 static bool usesFeatureImplicitSome(Decl *decl) {
   return false;
 }
@@ -3246,6 +3264,13 @@ static bool usesFeatureOldOwnershipOperatorSpellings(Decl *decl) {
   return false;
 }
 
+static bool usesFeatureMoveOnlyEnumDeinits(Decl *decl) {
+  if (auto *ei = dyn_cast<EnumDecl>(decl)) {
+    return usesFeatureMoveOnly(ei) && ei->getValueTypeDestructor();
+  }
+  return false;
+}
+
 static bool usesFeatureOneWayClosureParameters(Decl *decl) {
   return false;
 }
@@ -3311,6 +3336,10 @@ suppressingFeatureNoAsyncAvailability(PrintOptions &options,
 static bool usesFeatureReferenceBindings(Decl *decl) {
   auto *vd = dyn_cast<VarDecl>(decl);
   return vd && vd->getIntroducer() == VarDecl::Introducer::InOut;
+}
+
+static bool usesFeatureBuiltinModule(Decl *decl) {
+  return false;
 }
 
 /// Suppress the printing of a particular feature.
@@ -4717,34 +4746,40 @@ void PrintAST::visitMacroDecl(MacroDecl *decl) {
     Printer.printStructurePost(PrintStructureKind::FunctionReturnType);
   }
 
-  if (decl->definition) {
-    ASTContext &ctx = decl->getASTContext();
-    SmallString<64> scratch;
-    Printer << " = "
-            << extractInlinableText(ctx.SourceMgr, decl->definition, scratch);
-  } else {
-    auto def = decl->getDefinition();
-    switch (def.kind) {
-    case MacroDefinition::Kind::Invalid:
-    case MacroDefinition::Kind::Undefined:
-      // Nothing to do.
-      break;
+  if (Options.PrintMacroDefinitions) {
+    if (decl->definition) {
+      ASTContext &ctx = decl->getASTContext();
+      SmallString<64> scratch;
+      Printer << " = "
+              << extractInlinableText(ctx.SourceMgr, decl->definition, scratch);
+    } else {
+      auto def = decl->getDefinition();
+      switch (def.kind) {
+      case MacroDefinition::Kind::Invalid:
+      case MacroDefinition::Kind::Undefined:
+        // Nothing to do.
+        break;
 
-    case MacroDefinition::Kind::External: {
-      auto external = def.getExternalMacro();
-      Printer << " = #externalMacro(module: \"" << external.moduleName << "\", "
-              << "type: \"" << external.macroTypeName << "\")";
-      break;
-    }
-
-    case MacroDefinition::Kind::Builtin:
-      Printer << " = Builtin.";
-      switch (def.getBuiltinKind()) {
-      case BuiltinMacroKind::ExternalMacro:
-        Printer << "ExternalMacro";
+      case MacroDefinition::Kind::External: {
+        auto external = def.getExternalMacro();
+        Printer << " = #externalMacro(module: \"" << external.moduleName
+                << "\", " << "type: \"" << external.macroTypeName << "\")";
         break;
       }
-      break;
+
+      case MacroDefinition::Kind::Builtin:
+        Printer << " = Builtin.";
+        switch (def.getBuiltinKind()) {
+        case BuiltinMacroKind::ExternalMacro:
+          Printer << "ExternalMacro";
+          break;
+        }
+        break;
+
+      case MacroDefinition::Kind::Expanded:
+        Printer << " = " << def.getExpanded().getExpansionText();
+        break;
+      }
     }
   }
 

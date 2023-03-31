@@ -2009,6 +2009,7 @@ public:
 
     case MacroDefinition::Kind::Invalid:
     case MacroDefinition::Kind::Builtin:
+    case MacroDefinition::Kind::Expanded:
       // Nothing else to check here.
       break;
 
@@ -3607,6 +3608,14 @@ public:
                              DD->getDeclContext()->getImplementedObjCContext());
       if (!nom || (!isa<ClassDecl>(nom) && !nom->isMoveOnly())) {
         DD->diagnose(diag::destructor_decl_outside_class_or_noncopyable);
+      }
+
+      // Temporarily ban deinit on noncopyable enums, unless the experimental
+      // feature flag is set.
+      if (!DD->getASTContext().LangOpts.hasFeature(
+              Feature::MoveOnlyEnumDeinits) &&
+          nom->isMoveOnly() && isa<EnumDecl>(nom)) {
+        DD->diagnose(diag::destructor_decl_on_noncopyable_enum);
       }
 
       // If we have a noncopyable type, check if we have an @objc enum with a
