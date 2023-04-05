@@ -1,4 +1,4 @@
-// REQUIRES: swift_swift_parser
+// REQUIRES: swift_swift_parser, executable_test
 
 // RUN: %empty-directory(%t)
 // RUN: %host-build-swift -swift-version 5 -emit-library -o %t/%target-library-name(MacroDefinition) -parse-as-library -module-name=MacroDefinition %S/Inputs/syntax_macro_definitions.swift -g -no-toolchain-stdlib-rpath
@@ -24,6 +24,8 @@ import macro_library
 #else
 @attached(peer, names: overloaded)
 macro addCompletionHandler() = #externalMacro(module: "MacroDefinition", type: "AddCompletionHandler")
+@attached(peer, names: suffixed(Builder))
+macro AddClassReferencingSelf() = #externalMacro(module: "MacroDefinition", type: "AddClassReferencingSelfMacro")
 #endif
 
 struct S {
@@ -66,6 +68,14 @@ func useCompletionHandlerG(s: S, _ body: @escaping (String) -> Void) {
     body($0)
   }
 }
+
+class C {
+  @addCompletionHandler
+  func f(a: Int, for b: String, _ value: Double) async -> String {
+    return b
+  }
+}
+
 
 @addCompletionHandler
 func f(a: Int, for b: String, _ value: Double) async -> String {
@@ -112,3 +122,6 @@ struct Main {
     // CHECK-EXEC: hahaha global
   }
 }
+
+@AddClassReferencingSelf
+protocol MyProto { }

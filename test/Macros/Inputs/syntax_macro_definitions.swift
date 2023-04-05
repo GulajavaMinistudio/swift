@@ -502,7 +502,7 @@ public struct AddMembers: MemberMacro {
     providingMembersOf decl: some DeclGroupSyntax,
     in context: some MacroExpansionContext
   ) throws -> [DeclSyntax] {
-    let uniqueClassName = context.createUniqueName("uniqueClass")
+    let uniqueClassName = context.makeUniqueName("uniqueClass")
 
     let storageStruct: DeclSyntax =
       """
@@ -1270,7 +1270,7 @@ public struct DefineAnonymousTypesMacro: DeclarationMacro {
     return [
       """
 
-      class \(context.createUniqueName("name")) {
+      class \(context.makeUniqueName("name")) {
         func hello() -> String {
           \(body.statements)
         }
@@ -1278,7 +1278,7 @@ public struct DefineAnonymousTypesMacro: DeclarationMacro {
       """,
       """
 
-      enum \(context.createUniqueName("name")) {
+      enum \(context.makeUniqueName("name")) {
         case apple
         case banana
 
@@ -1287,6 +1287,59 @@ public struct DefineAnonymousTypesMacro: DeclarationMacro {
         }
       }
       """
+    ]
+  }
+}
+
+public struct AddClassReferencingSelfMacro: PeerMacro {
+  public static func expansion(
+    of node: AttributeSyntax,
+    providingPeersOf declaration: some DeclSyntaxProtocol,
+    in context: some MacroExpansionContext
+  ) throws -> [DeclSyntax] {
+    guard let protocolDecl = declaration.as(ProtocolDeclSyntax.self) else {
+      throw CustomError.message("Macro can only be applied to a protocol declarations.")
+    }
+
+    let className = "\(protocolDecl.identifier.text)Builder"
+    return [
+      """
+      struct \(raw: className) {
+       init(_ build: (_ builder: Self) -> Self) {
+         _ = build(self)
+       }
+      }
+      """
+    ]
+  }
+}
+
+public struct SimpleCodeItemMacro: CodeItemMacro {
+  public static func expansion(
+    of node: some FreestandingMacroExpansionSyntax,
+    in context: some MacroExpansionContext
+  ) throws -> [CodeBlockItemSyntax] {
+    [
+      .init(item: .decl("""
+
+      struct \(context.makeUniqueName("foo")) {
+        var x: Int
+      }
+      """)),
+      .init(item: .stmt("""
+
+      if true {
+        print("from stmt")
+        usedInExpandedStmt()
+      }
+      if false {
+        print("impossible")
+      }
+      """)),
+      .init(item: .expr("""
+
+      print("from expr")
+      """)),
     ]
   }
 }
