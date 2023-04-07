@@ -30,6 +30,7 @@
 #include "swift/Basic/LangOptions.h"
 #include "swift/Basic/Located.h"
 #include "swift/Basic/Malloc.h"
+#include "swift/Basic/BlockList.h"
 #include "swift/SymbolGraphGen/SymbolGraphOptions.h"
 #include "clang/AST/DeclTemplate.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -44,6 +45,7 @@
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/DataTypes.h"
+#include "llvm/Support/VirtualOutputBackend.h"
 #include <functional>
 #include <memory>
 #include <utility>
@@ -231,6 +233,7 @@ class ASTContext final {
       ClangImporterOptions &ClangImporterOpts,
       symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
       SourceManager &SourceMgr, DiagnosticEngine &Diags,
+      llvm::IntrusiveRefCntPtr<llvm::vfs::OutputBackend> OutBackend = nullptr,
       std::function<bool(llvm::StringRef, bool)> PreModuleImportCallback = {});
 
 public:
@@ -248,6 +251,7 @@ public:
       ClangImporterOptions &ClangImporterOpts,
       symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
       SourceManager &SourceMgr, DiagnosticEngine &Diags,
+      llvm::IntrusiveRefCntPtr<llvm::vfs::OutputBackend> OutBackend = nullptr,
       std::function<bool(llvm::StringRef, bool)> PreModuleImportCallback = {});
   ~ASTContext();
 
@@ -280,6 +284,9 @@ public:
 
   /// Diags - The diagnostics engine.
   DiagnosticEngine &Diags;
+
+  /// OutputBackend for writing outputs.
+  llvm::IntrusiveRefCntPtr<llvm::vfs::OutputBackend> OutputBackend;
 
   /// If the shared pointer is not a \c nullptr and the pointee is \c true,
   /// all operations working on this ASTContext should be aborted at the next
@@ -359,6 +366,8 @@ public:
   /// The Swift module currently being compiled.
   ModuleDecl *MainModule = nullptr;
 
+  /// The block list where we can find special actions based on module name;
+  BlockListStore blockListConfig;
 private:
   /// The current generation number, which reflects the number of
   /// times that external modules have been loaded.
@@ -1517,6 +1526,18 @@ public:
   void setPluginRegistry(PluginRegistry *newValue);
 
   const llvm::StringSet<> &getLoadedPluginLibraryPaths() const;
+
+  /// Get the output backend. The output backend needs to be initialized via
+  /// constructor or `setOutputBackend`.
+  llvm::vfs::OutputBackend &getOutputBackend() const {
+    assert(OutputBackend && "OutputBackend is not setup");
+    return *OutputBackend;
+  }
+  /// Set output backend for virtualized outputs.
+  void setOutputBackend(
+      llvm::IntrusiveRefCntPtr<llvm::vfs::OutputBackend> OutBackend) {
+    OutputBackend = std::move(OutBackend);
+  }
 
 private:
   friend Decl;

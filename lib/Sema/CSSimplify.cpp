@@ -1912,11 +1912,14 @@ static ConstraintSystem::TypeMatchResult matchCallArguments(
       }
 
       auto argLabel = argument.getLabel();
-      if (paramInfo.hasExternalPropertyWrapper(argIdx) || argLabel.hasDollarPrefix()) {
-        auto *param = getParameterAt(callee, argIdx);
+      if (paramInfo.hasExternalPropertyWrapper(paramIdx) ||
+          argLabel.hasDollarPrefix()) {
+        auto *param = getParameterAt(callee, paramIdx);
         assert(param);
-        if (cs.applyPropertyWrapperToParameter(paramTy, argTy, const_cast<ParamDecl *>(param),
-                                               argLabel, subKind, loc).isFailure()) {
+        if (cs.applyPropertyWrapperToParameter(paramTy, argTy,
+                                               const_cast<ParamDecl *>(param),
+                                               argLabel, subKind, loc)
+                .isFailure()) {
           return cs.getTypeMatchFailure(loc);
         }
         continue;
@@ -5156,6 +5159,14 @@ bool ConstraintSystem::repairFailures(
 
       if (auto *inoutExpr = dyn_cast<InOutExpr>(AE->getSrc())) {
         auto *loc = getConstraintLocator(inoutExpr);
+
+        // Remove all of the restrictions because none of them
+        // are going to succeed.
+        conversionsOrFixes.erase(
+            llvm::remove_if(
+                conversionsOrFixes,
+                [](const auto &entry) { return bool(entry.getRestriction()); }),
+            conversionsOrFixes.end());
 
         if (hasFixFor(loc, FixKind::RemoveAddressOf))
           return true;

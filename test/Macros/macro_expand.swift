@@ -19,6 +19,7 @@
 
 // Execution testing
 // RUN: %target-build-swift -swift-version 5 -g -enable-experimental-feature FreestandingMacros -load-plugin-library %t/%target-library-name(MacroDefinition) %s -o %t/main -module-name MacroUser
+// RUN: %target-codesign %t/main
 // RUN: %target-run %t/main | %FileCheck %s
 
 // Plugin search path and loaded module trace testing
@@ -97,15 +98,23 @@ struct Bad {}
 func testFileID(a: Int, b: Int) {
   // CHECK: MacroUser/macro_expand.swift
   print("Result is \(#customFileID)")
-  // CHECK-SIL: sil_scope [[MACRO_SCOPE:[0-9]+]] { loc "{{.*}}":1:1 parent @$s9MacroUser10testFileID1a1bySi_SitF06customdE0fMf_ {{.*}} }
-  // CHECK-SIL: sil_scope [[SRC_SCOPE:[0-9]+]] { loc "{{.*}}macro_expand.swift":[[@LINE-2]]
-  // CHECK-SIL: sil_scope {{[0-9]+}} { loc "{{.*}}":1:1 parent [[MACRO_SCOPE]] inlined_at [[SRC_SCOPE]] }
-  // CHECK-IR: !DISubprogram(name: "customFileID", linkageName: "$s9MacroUser10testFileID1a1bySi_SitF06customdE0fMf_"
-
+  // CHECK-SIL: sil_scope [[SRC_SCOPE:[0-9]+]] { loc "{{.*}}macro_expand.swift":[[@LINE-3]]
+  // CHECK-SIL: sil_scope [[EXPANSION_SCOPE:[0-9]+]] { loc "{{.*}}macro_expand.swift":[[@LINE-2]]:22 parent [[SRC_SCOPE]]
+  // CHECK-SIL: sil_scope [[MACRO_SCOPE:[0-9]+]] { loc "{{.*}}":[[@LINE-3]]:22 parent @$s9MacroUser10testFileID1a1bySi_SitF06customdE0fMf_ {{.*}} inlined_at [[EXPANSION_SCOPE]] }
+  // CHECK-SIL: string_literal utf8 "MacroUser/macro_expand.swift", loc "@__swiftmacro_9MacroUser10testFileID1a1bySi_SitF06customdE0fMf_.swift":1:1, scope [[MACRO_SCOPE]]
+  // CHECK-IR-DAG: !DISubprogram(name: "customFileID", linkageName: "$s9MacroUser10testFileID1a1bySi_SitF06customdE0fMf_"
 
   // CHECK: Builtin result is MacroUser/macro_expand.swift
   // CHECK-AST: macro_expansion_expr type='String'{{.*}}name=line
   print("Builtin result is \(#fileID)")
+  print(
+    /// CHECK-IR-DAG: ![[L1:[0-9]+]] = !DILocation(line: [[@LINE+1]], column: 5
+    #addBlocker(
+      /// CHECK-IR-DAG: ![[L2:[0-9]+]] = !DILocation({{.*}}inlinedAt: ![[L1]])
+      /// CHECK-IR-DAG: ![[L3:[0-9]+]] = !DILocation({{.*}}inlinedAt: ![[L2]])
+      #stringify(a - b)
+      )
+    )
 }
 
 testFileID(a: 1, b: 2)
@@ -273,6 +282,10 @@ _ = StructWithUnqualifiedLookup().foo()
 func testFreestandingMacroExpansion() {
   // Explicit structs to force macros to be parsed as decl.
   struct Foo {
+    static let singleton = Foo()
+
+    static let s2 = Foo.singleton
+
     #bitwidthNumberedStructs("MyIntOne")
   }
 
@@ -332,9 +345,10 @@ func testFreestandingMacroExpansion() {
 testFreestandingMacroExpansion()
 
 // Explicit structs to force macros to be parsed as decl.
+var globalBool = true
 struct ContainerOfNumberedStructs {
   #bitwidthNumberedStructs("MyIntOne")
-  #bitwidthNumberedStructs("MyIntTwo")
+  #bitwidthNumberedStructs("MyIntTwo", blah: globalBool)
 }
 
 // Avoid re-type-checking declaration macro arguments.
