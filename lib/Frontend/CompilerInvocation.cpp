@@ -1177,9 +1177,8 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   Opts.DumpTypeWitnessSystems = Args.hasArg(OPT_dump_type_witness_systems);
 
-  for (auto A : Args.getAllArgValues(options::OPT_block_list_file)) {
-    Opts.BlocklistConfigFilePath.push_back(A);
-  }
+  for (auto &block: FrontendOpts.BlocklistConfigFilePaths)
+    Opts.BlocklistConfigFilePaths.push_back(block);
   if (const Arg *A = Args.getLastArg(options::OPT_concurrency_model)) {
     Opts.ActiveConcurrencyModel =
         llvm::StringSwitch<ConcurrencyModel>(A->getValue())
