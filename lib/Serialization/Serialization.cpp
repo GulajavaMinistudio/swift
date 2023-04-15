@@ -3146,7 +3146,7 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
     // A decl is safe if formally accessible publicly.
     auto accessScope = value->getFormalAccessScope(/*useDC=*/nullptr,
                        /*treatUsableFromInlineAsPublic=*/true);
-    if (accessScope.isPublic())
+    if (accessScope.isPublic() || accessScope.isPackage())
       return true;
 
     if (auto accessor = dyn_cast<AccessorDecl>(value))
@@ -4090,7 +4090,7 @@ public:
                                const_cast<ProtocolDecl *>(proto)
                                  ->requiresClass(),
                                proto->isObjC(),
-                               proto->existentialRequiresAny(),
+                               proto->hasSelfOrAssociatedTypeRequirements(),
                                rawAccessLevel, numInherited,
                                inheritedAndDependencyTypes);
 

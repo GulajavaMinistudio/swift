@@ -1374,7 +1374,7 @@ static Type diagnoseUnknownType(TypeResolution resolution,
       repr->overwriteNameRef(DeclNameRef(ctx.getIdentifier(RemappedTy)));
 
       // HACK: 'NSUInteger' suggests both 'UInt' and 'Int'.
-      if (TypeName == ctx.getSwiftName(KnownFoundationEntity::NSUInteger)) {
+      if (TypeName == swift::getSwiftName(KnownFoundationEntity::NSUInteger)) {
         diags.diagnose(L, diag::note_remapped_type, "UInt")
           .fixItReplace(R, "UInt");
       }
@@ -4637,7 +4637,7 @@ NeverNullType TypeResolver::resolvePackElement(PackElementTypeRepr *repr,
   if (!options.contains(TypeResolutionFlags::AllowPackReferences)) {
     ctx.Diags.diagnose(repr->getLoc(),
                        diag::pack_reference_outside_expansion,
-                       packReference, /*inExpression*/false);
+                       packReference);
     return ErrorType::get(ctx);
   }
 
@@ -5202,8 +5202,7 @@ public:
       OS << ")";
 
     if (auto *proto = dyn_cast_or_null<ProtocolDecl>(T->getBoundDecl())) {
-      if (Ctx.LangOpts.hasFeature(Feature::ExistentialAny) ||
-          proto->existentialRequiresAny()) {
+      if (proto->existentialRequiresAny()) {
         Ctx.Diags.diagnose(T->getNameLoc(),
                            diag::existential_requires_any,
                            proto->getDeclaredInterfaceType(),
@@ -5221,8 +5220,7 @@ public:
       if (type->isConstraintType()) {
         auto layout = type->getExistentialLayout();
         for (auto *protoDecl : layout.getProtocols()) {
-          if (!Ctx.LangOpts.hasFeature(Feature::ExistentialAny) &&
-              !protoDecl->existentialRequiresAny())
+          if (!protoDecl->existentialRequiresAny())
             continue;
 
           Ctx.Diags.diagnose(T->getNameLoc(),
