@@ -1143,6 +1143,9 @@ ERROR(single_value_stmt_must_be_unlabeled,none,
 ERROR(if_expr_must_be_syntactically_exhaustive,none,
       "'if' must have an unconditional 'else' to be used as expression",
       ())
+ERROR(single_value_stmt_branch_empty,none,
+      "expected expression in branch of '%0' expression",
+      (StmtKind))
 ERROR(single_value_stmt_branch_must_end_in_throw,none,
       "non-expression branch of '%0' expression may only end with a 'throw'",
       (StmtKind))
@@ -1685,6 +1688,12 @@ ERROR(expose_generic_requirement_to_cxx,none,
       "generic requirements for %0 %1 can not yet be represented in C++", (DescriptiveDeclKind, ValueDecl *))
 ERROR(expose_throwing_to_cxx,none,
       "%0 %1 can not yet be represented in C++ as it may throw an error", (DescriptiveDeclKind, ValueDecl *))
+ERROR(expose_indirect_enum_cxx,none,
+      "indirect enum %0 can not yet be represented in C++", (ValueDecl *))
+ERROR(expose_enum_case_type_to_cxx,none,
+      "enum %0 can not be represented in C++ as one of its cases has an associated value with type that can't be represented in C++", (ValueDecl *))
+ERROR(expose_enum_case_tuple_to_cxx,none,
+      "enum %0 can not yet be represented in C++ as one of its cases has multiple associated values", (ValueDecl *))
 
 ERROR(attr_methods_only,none,
       "only methods can be declared %0", (DeclAttribute))
@@ -3520,6 +3529,8 @@ ERROR(lifetime_invalid_global_scope,none, "%0 is only valid on methods",
 ERROR(eagermove_and_lexical_combined,none,
       "@_eagerMove and @_noEagerMove attributes are alternate styles of lifetimes "
       "and can't be combined", ())
+ERROR(eagermove_and_noncopyable_combined,none,
+      "@_eagerMove cannot be applied to NonCopyable types", ())
 
 ERROR(autoclosure_function_type,none,
       "@autoclosure attribute only applies to function types",
@@ -7055,6 +7066,28 @@ ERROR(invalid_macro_role_for_macro_syntax,none,
       (unsigned))
 ERROR(macro_cannot_introduce_names,none,
       "'%0' macros are not allowed to introduce names", (StringRef))
+
+ERROR(macro_resolve_circular_reference, none,
+      "circular reference resolving %select{freestanding|attached}0 macro %1",
+      (bool, DeclName))
+NOTE(macro_resolve_circular_reference_through, none,
+     "while resolving %select{freestanding|attached}0 macro %1",
+     (bool, DeclName))
+
+ERROR(macro_expand_circular_reference, none,
+      "circular reference expanding %0 macro %1", (StringRef, DeclName))
+NOTE(macro_expand_circular_reference_through, none,
+     "circular reference expanding %0 macro %1", (StringRef, DeclName))
+
+ERROR(macro_expand_circular_reference_entity, none,
+      "circular reference expanding %0 macros on %1", (StringRef, DeclName))
+NOTE(macro_expand_circular_reference_entity_through, none,
+     "circular reference expanding %0 macros on %1", (StringRef, DeclName))
+
+ERROR(macro_expand_circular_reference_unnamed, none,
+      "circular reference expanding %0 macros", (StringRef))
+NOTE(macro_expand_circular_reference_unnamed_through, none,
+     "circular reference expanding %0 macros", (StringRef))
 
 //------------------------------------------------------------------------------
 // MARK: Move Only Errors

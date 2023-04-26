@@ -462,7 +462,7 @@ ArrayRef<unsigned> ExpandMemberAttributeMacros::evaluate(Evaluator &evaluator,
     return { };
 
   auto *parentDecl = decl->getDeclContext()->getAsDecl();
-  if (!parentDecl)
+  if (!parentDecl || !isa<IterableDeclContext>(parentDecl))
     return { };
 
   if (isa<PatternBindingDecl>(decl))
@@ -580,23 +580,20 @@ static void validateMacroExpansion(SourceFile *expansionBuffer,
 
     // Diagnose value decls with names not covered by the macro
     if (auto *value = dyn_cast<ValueDecl>(decl)) {
-      auto baseName = value->getBaseName();
-      if (baseName.isSpecial()) {
-        baseName = ctx.getIdentifier(baseName.userFacingName());
-      }
+      auto name = value->getName();
 
-      // $-prefixed names are unique names. These are always allowed.
-      if (baseName.getIdentifier().hasDollarPrefix()) {
+      // Unique names are always permitted.
+      if (MacroDecl::isUniqueMacroName(name.getBaseName().userFacingName()))
         continue;
-      }
 
-      if (coversName.count(baseName) ||
+      if (coversName.count(name) ||
+          coversName.count(name.getBaseName()) ||
           coversName.count(MacroDecl::getArbitraryName())) {
         continue;
       }
 
       value->diagnose(diag::invalid_macro_introduced_name,
-                      baseName, macro->getBaseName());
+                      name, macro->getBaseName());
     }
   }
 }
@@ -1470,7 +1467,9 @@ swift::expandConformances(CustomAttr *attr, MacroDecl *macro,
 ConcreteDeclRef
 ResolveMacroRequest::evaluate(Evaluator &evaluator,
                               UnresolvedMacroReference macroRef,
-                              DeclContext *dc) const {
+                              const Decl *decl) const {
+  auto dc = decl->getDeclContext();
+
   // Macro expressions and declarations have their own stored macro
   // reference. Use it if it's there.
   if (auto *expr = macroRef.getExpr()) {

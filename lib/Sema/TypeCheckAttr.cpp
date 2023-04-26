@@ -2067,6 +2067,15 @@ void AttributeChecker::visitExposeAttr(ExposeAttr *attr) {
       diagnose(attr->getLocation(), diag::expose_throwing_to_cxx,
                VD->getDescriptiveKind(), VD);
       break;
+    case UnrepresentableIndirectEnum:
+      diagnose(attr->getLocation(), diag::expose_indirect_enum_cxx, VD);
+      break;
+    case UnrepresentableEnumCaseType:
+      diagnose(attr->getLocation(), diag::expose_enum_case_type_to_cxx, VD);
+      break;
+    case UnrepresentableEnumCaseTuple:
+      diagnose(attr->getLocation(), diag::expose_enum_case_tuple_to_cxx, VD);
+      break;
     }
   }
 
@@ -6888,6 +6897,25 @@ bool AttributeChecker::visitLifetimeAttr(DeclAttribute *attr) {
 void AttributeChecker::visitEagerMoveAttr(EagerMoveAttr *attr) {
   if (visitLifetimeAttr(attr))
     return;
+  if (auto *nominal = dyn_cast<NominalTypeDecl>(D)) {
+    if (nominal->getDeclaredInterfaceType()->isPureMoveOnly()) {
+      diagnoseAndRemoveAttr(attr, diag::eagermove_and_noncopyable_combined);
+      return;
+    }
+  }
+  if (auto *func = dyn_cast<FuncDecl>(D)) {
+    auto *self = func->getImplicitSelfDecl();
+    if (self && self->getType()->isPureMoveOnly()) {
+      diagnoseAndRemoveAttr(attr, diag::eagermove_and_noncopyable_combined);
+      return;
+    }
+  }
+  if (auto *pd = dyn_cast<ParamDecl>(D)) {
+    if (pd->getType()->isPureMoveOnly()) {
+      diagnoseAndRemoveAttr(attr, diag::eagermove_and_noncopyable_combined);
+      return;
+    }
+  }
 }
 
 void AttributeChecker::visitNoEagerMoveAttr(NoEagerMoveAttr *attr) {
