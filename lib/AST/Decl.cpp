@@ -3972,11 +3972,17 @@ getAccessScopeForFormalAccess(const ValueDecl *VD,
   case AccessLevel::Package: {
     auto pkg = resultDC->getPackageContext(/*lookupIfNotCurrent*/ true);
     if (!pkg) {
-      // No package context was found; show diagnostics
-      auto &d = VD->getASTContext().Diags;
-      d.diagnose(VD->getLoc(), diag::access_control_requires_package_name);
-      // Instead of reporting and failing early, return the scope of
-      // resultDC to allow continuation (should still non-zero exit later)
+      auto srcFile = resultDC->getParentSourceFile();
+      // Check if the file containing package decls is an interface file; if a public
+      // interface contains package decls, they must be inlinable and do not need a
+      // package-name, so don't show diagnostics in that case.
+      if (srcFile && srcFile->Kind != SourceFileKind::Interface) {
+        // No package context was found; show diagnostics
+        auto &d = VD->getASTContext().Diags;
+        d.diagnose(VD->getLoc(), diag::access_control_requires_package_name);
+      }
+      // Instead of reporting and failing early, return the scope of resultDC to
+      // allow continuation (should still non-zero exit later if in script mode)
       return AccessScope(resultDC);
     } else {
       return AccessScope(pkg);
@@ -4168,9 +4174,16 @@ static bool checkAccess(const DeclContext *useDC, const ValueDecl *VD,
     return useSF && useSF->hasTestableOrPrivateImport(access, sourceModule);
   }
   case AccessLevel::Package: {
-    auto srcPkg = sourceDC->getPackageContext(/*lookupIfNotCurrent*/ true);
-    auto usePkg = useDC->getPackageContext(/*lookupIfNotCurrent*/ true);
-    return usePkg->isSamePackageAs(srcPkg);
+    auto srcFile = sourceDC->getParentSourceFile();
+    if (srcFile && srcFile->Kind != SourceFileKind::Interface) {
+      auto srcPkg = sourceDC->getPackageContext(/*lookupIfNotCurrent*/ true);
+      auto usePkg = useDC->getPackageContext(/*lookupIfNotCurrent*/ true);
+      return usePkg->isSamePackageAs(srcPkg);
+    } else {
+      // If source file is interface, package decls must be inlinable,
+      // essentially treated public so return true (see AccessLevel::Public)
+      return true;
+    }
   }
   case AccessLevel::Public:
   case AccessLevel::Open:
@@ -10307,6 +10320,15 @@ void MacroDecl::getIntroducedNames(MacroRole role, ValueDecl *attachedTo,
     switch (expandedName.getKind()) {
     case MacroIntroducedDeclNameKind::Named: {
       names.push_back(DeclName(expandedName.getName()));
+
+      // Temporary hack: we previously allowed named(`init`) to mean the same
+      // thing as named(init), before the latter was supported. Smooth over the
+      // difference by treating the former as the latter, for a short time.
+      if (expandedName.getName().isSimpleName() &&
+          !expandedName.getName().getBaseName().isSpecial() &&
+          expandedName.getName().getBaseIdentifier().is("init"))
+        names.push_back(DeclName(DeclBaseName::createConstructor()));
+
       break;
     }
 
@@ -10481,9 +10503,50 @@ ArrayRef<CustomAttr *> Decl::getRuntimeDiscoverableAttrs() const {
                            nullptr);
 }
 
+/// Adjust the declaration context to find a point in the context hierarchy
+/// that the macro can be anchored on.
+DeclContext *
+MacroDiscriminatorContext::getInnermostMacroContext(DeclContext *dc) {
+  switch (dc->getContextKind()) {
+  case DeclContextKind::SubscriptDecl:
+  case DeclContextKind::EnumElementDecl:
+  case DeclContextKind::AbstractFunctionDecl:
+  case DeclContextKind::SerializedLocal:
+  case DeclContextKind::Package:
+  case DeclContextKind::Module:
+  case DeclContextKind::FileUnit:
+  case DeclContextKind::GenericTypeDecl:
+  case DeclContextKind::ExtensionDecl:
+  case DeclContextKind::MacroDecl:
+    // These contexts are always fine
+    return dc;
+
+  case DeclContextKind::TopLevelCodeDecl:
+    // For top-level code, use the enclosing source file as the context.
+    return getInnermostMacroContext(dc->getParent());
+
+  case DeclContextKind::AbstractClosureExpr: {
+    // For closures, we can mangle the closure if we're in a context we can
+    // mangle. Check that context.
+    auto adjustedParentDC = getInnermostMacroContext(dc->getParent());
+    if (adjustedParentDC == dc->getParent())
+      return dc;
+
+    return adjustedParentDC;
+  }
+
+  case DeclContextKind::Initializer:
+    // Initializers can be part of inferring types for variables, so we need
+    // their context.
+    return getInnermostMacroContext(dc->getParent());
+  }
+}
+
 /// Retrieve the parent discriminator context for the given macro.
 MacroDiscriminatorContext MacroDiscriminatorContext::getParentOf(
     SourceLoc loc, DeclContext *origDC) {
+  origDC = getInnermostMacroContext(origDC);
+
   if (loc.isInvalid())
     return origDC;
 

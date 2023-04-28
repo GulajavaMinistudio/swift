@@ -1440,7 +1440,7 @@ SourceFile::getExternalRawLocsForDecl(const Decl *D) const {
   Result.SourceFilePath = SM.getIdentifierForBuffer(BufferID);
   setLoc(Result.Loc, MainLoc);
   if (!InGeneratedBuffer) {
-    for (const auto &SRC : D->getRawComment(/*SerializedOK=*/false).Comments) {
+    for (const auto &SRC : D->getRawComment().Comments) {
       Result.DocRanges.emplace_back(ExternalSourceLocs::RawLoc(),
                                     SRC.Range.getByteLength());
       setLoc(Result.DocRanges.back().first, SRC.Range.getStart());
@@ -3852,12 +3852,8 @@ ASTScope &SourceFile::getScope() {
   return *Scope.get();
 }
 
-Identifier
-SourceFile::getDiscriminatorForPrivateDecl(const Decl *D) const {
-  assert(D->getDeclContext()->getModuleScopeContext() == this ||
-         D->getDeclContext()->getModuleScopeContext() == getSynthesizedFile());
-
-  if (!PrivateDiscriminator.empty())
+Identifier SourceFile::getPrivateDiscriminator(bool createIfMissing) const {
+  if (!PrivateDiscriminator.empty() || !createIfMissing)
     return PrivateDiscriminator;
 
   StringRef name = getFilename();
@@ -3892,6 +3888,13 @@ SourceFile::getDiscriminatorForPrivateDecl(const Decl *D) const {
   buffer += hashString;
   PrivateDiscriminator = getASTContext().getIdentifier(buffer.str().upper());
   return PrivateDiscriminator;
+}
+
+Identifier
+SourceFile::getDiscriminatorForPrivateDecl(const Decl *D) const {
+  assert(D->getDeclContext()->getModuleScopeContext() == this ||
+         D->getDeclContext()->getModuleScopeContext() == getSynthesizedFile());
+  return getPrivateDiscriminator(/*createIfMissing=*/true);
 }
 
 SynthesizedFileUnit *FileUnit::getSynthesizedFile() const {
