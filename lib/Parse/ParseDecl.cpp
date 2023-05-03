@@ -508,7 +508,8 @@ ParserResult<AvailableAttr> Parser::parseExtendedAvailabilitySpecList(
           .highlight(SourceRange(ArgumentLoc));
       if (Tok.is(tok::code_complete) && CodeCompletionCallbacks) {
         CodeCompletionCallbacks->completeDeclAttrParam(
-            CustomSyntaxAttributeKind::Available, ParamIndex);
+            CustomSyntaxAttributeKind::Available, ParamIndex,
+            /*HasLabel=*/false);
         consumeToken(tok::code_complete);
       } else {
         consumeIf(tok::identifier);
@@ -941,7 +942,7 @@ bool Parser::parseAvailability(
       !(Tok.isAnyOperator() && Tok.getText() == "*")) {
     if (Tok.is(tok::code_complete) && CodeCompletionCallbacks) {
       CodeCompletionCallbacks->completeDeclAttrParam(
-          CustomSyntaxAttributeKind::Available, 0);
+          CustomSyntaxAttributeKind::Available, 0, /*HasLabel=*/false);
       consumeToken(tok::code_complete);
     }
     diagnose(Tok.getLoc(), diag::attr_availability_platform, AttrName)
@@ -2185,6 +2186,14 @@ Optional<MacroRole> getMacroRole(StringRef roleName) {
       .Default(None);
 }
 
+static CustomSyntaxAttributeKind getCustomSyntaxAttributeKind(bool isAttached) {
+  if (isAttached) {
+    return CustomSyntaxAttributeKind::AttachedMacro;
+  } else {
+    return CustomSyntaxAttributeKind::FreestandingMacro;
+  }
+}
+
 ParserResult<MacroRoleAttr>
 Parser::parseMacroRoleAttribute(
     MacroSyntax syntax, SourceLoc AtLoc, SourceLoc Loc)
@@ -2221,20 +2230,18 @@ Parser::parseMacroRoleAttribute(
                                    [&] {
     ParserStatus status;
 
-    if (Tok.is(tok::code_complete)) {
-      consumeIf(tok::code_complete);
+    if (consumeIf(tok::code_complete)) {
       status.setHasCodeCompletionAndIsError();
-      CustomSyntaxAttributeKind attributeKind =
-          isAttached ? CustomSyntaxAttributeKind::AttachedMacro
-                     : CustomSyntaxAttributeKind::FreestandingMacro;
       if (!sawRole) {
         sawRole = true;
         if (this->CodeCompletionCallbacks) {
-          this->CodeCompletionCallbacks->completeDeclAttrParam(attributeKind, 0);
+          this->CodeCompletionCallbacks->completeDeclAttrParam(
+              getCustomSyntaxAttributeKind(isAttached), 0, /*HasLabel=*/false);
         }
       } else if (!sawNames) {
         if (this->CodeCompletionCallbacks) {
-          this->CodeCompletionCallbacks->completeDeclAttrParam(attributeKind, 1);
+          this->CodeCompletionCallbacks->completeDeclAttrParam(
+              getCustomSyntaxAttributeKind(isAttached), 1, /*HasLabel=*/false);
         }
       }
     }
@@ -2309,10 +2316,15 @@ Parser::parseMacroRoleAttribute(
     // Parse the introduced name kind.
     Identifier introducedNameKind;
     SourceLoc introducedNameKindLoc;
-    if (parseIdentifier(
-            introducedNameKind, introducedNameKindLoc,
-            diag::macro_attribute_unknown_argument_form,
-            /*diagnoseDollarPrefix=*/true)) {
+    if (consumeIf(tok::code_complete)) {
+      status.setHasCodeCompletionAndIsError();
+      if (this->CodeCompletionCallbacks) {
+        this->CodeCompletionCallbacks->completeDeclAttrParam(
+            getCustomSyntaxAttributeKind(isAttached), 1, /*HasLabel=*/true);
+      }
+    } else if (parseIdentifier(introducedNameKind, introducedNameKindLoc,
+                               diag::macro_attribute_unknown_argument_form,
+                               /*diagnoseDollarPrefix=*/true)) {
       status.setIsParseError();
       return status;
     }
@@ -5666,6 +5678,29 @@ ParserResult<ImportDecl> Parser::parseDeclImport(ParseDeclOptions Flags,
   return DCC.fixupParserResult(ID);
 }
 
+static void addMoveOnlyAttrIf(SourceLoc const &parsedTildeCopyable,
+                              ASTContext &Context,
+                              Decl *decl) {
+  if (parsedTildeCopyable.isInvalid())
+    return;
+
+  auto &attrs = decl->getAttrs();
+
+  // Don't add if it's already explicitly written on the decl, but error about
+  // the duplication and point to the `~Copyable`.
+  if (auto attr = attrs.getAttribute<MoveOnlyAttr>()) {
+    const bool sayModifier = false;
+    Context.Diags.diagnose(attr->getLocation(), diag::duplicate_attribute,
+                           sayModifier)
+        .fixItRemove(attr->getRange());
+    Context.Diags.diagnose(parsedTildeCopyable, diag::previous_attribute,
+                           sayModifier);
+    return;
+  }
+
+  attrs.add(new(Context) MoveOnlyAttr(/*IsImplicit=*/true));
+}
+
 /// Parse an inheritance clause.
 ///
 /// \verbatim
@@ -5675,15 +5710,19 @@ ParserResult<ImportDecl> Parser::parseDeclImport(ParseDeclOptions Flags,
 ///   inherited:
 ///     'class'
 ///     type-identifier
+///     '~' 'Copyable'
 /// \endverbatim
 ParserStatus Parser::parseInheritance(
     SmallVectorImpl<InheritedEntry> &Inherited,
-    bool allowClassRequirement, bool allowAnyObject) {
+    bool allowClassRequirement,
+    bool allowAnyObject,
+    SourceLoc *parseTildeCopyable) {
   consumeToken(tok::colon);
 
   SourceLoc classRequirementLoc;
 
   ParserStatus Status;
+  SourceLoc TildeCopyableLoc;
   SourceLoc prevComma;
   bool HasNextType;
   do {
@@ -5737,6 +5776,38 @@ ParserStatus Parser::parseInheritance(
       continue;
     }
 
+    // Is suppression permitted?
+    if (parseTildeCopyable) {
+      // Try to find '~' 'Copyable'
+      //
+      // We do this knowing that Copyable is not a real type as of now, so we
+      // can't rely on parseType.
+      if (Tok.isTilde()) {
+        const auto &nextTok = peekToken(); // lookahead
+        if (isIdentifier(nextTok, Context.Id_Copyable.str())) {
+          auto tildeLoc = consumeToken();
+          consumeToken(); // the 'Copyable' token
+
+          if (TildeCopyableLoc)
+            diagnose(tildeLoc, diag::already_suppressed, Context.Id_Copyable);
+          else
+            TildeCopyableLoc = tildeLoc;
+
+          continue;
+        }
+
+        // can't suppress whatever is between '~' and ',' or '{'.
+        diagnose(Tok, diag::only_suppress_copyable);
+        consumeToken();
+      }
+
+    } else if (Tok.isTilde()) {
+      // a suppression isn't allowed here, so emit an error eat the token to
+      // prevent further parsing errors.
+      diagnose(Tok, diag::cannot_suppress_here);
+      consumeToken();
+    }
+
     auto ParsedTypeResult = parseType();
     Status |= ParsedTypeResult;
 
@@ -5744,6 +5815,9 @@ ParserStatus Parser::parseInheritance(
     if (ParsedTypeResult.isNonNull())
       Inherited.push_back(InheritedEntry(ParsedTypeResult.get()));
   } while (HasNextType);
+
+  if (parseTildeCopyable)
+    *parseTildeCopyable = TildeCopyableLoc;
 
   return Status;
 }
@@ -8207,10 +8281,14 @@ ParserResult<EnumDecl> Parser::parseDeclEnum(ParseDeclOptions Flags,
   // Parse optional inheritance clause within the context of the enum.
   if (Tok.is(tok::colon)) {
     SmallVector<InheritedEntry, 2> Inherited;
+    SourceLoc parsedTildeCopyable;
     Status |= parseInheritance(Inherited,
                                /*allowClassRequirement=*/false,
-                               /*allowAnyObject=*/false);
+                               /*allowAnyObject=*/false,
+                               &parsedTildeCopyable);
     ED->setInherited(Context.AllocateCopy(Inherited));
+
+    addMoveOnlyAttrIf(parsedTildeCopyable, Context, ED);
   }
 
   diagnoseWhereClauseInGenericParamList(GenericParams);
@@ -8470,10 +8548,14 @@ ParserResult<StructDecl> Parser::parseDeclStruct(ParseDeclOptions Flags,
   // Parse optional inheritance clause within the context of the struct.
   if (Tok.is(tok::colon)) {
     SmallVector<InheritedEntry, 2> Inherited;
+    SourceLoc parsedTildeCopyable;
     Status |= parseInheritance(Inherited,
                                /*allowClassRequirement=*/false,
-                               /*allowAnyObject=*/false);
+                               /*allowAnyObject=*/false,
+                               &parsedTildeCopyable);
     SD->setInherited(Context.AllocateCopy(Inherited));
+
+    addMoveOnlyAttrIf(parsedTildeCopyable, Context, SD);
   }
 
   diagnoseWhereClauseInGenericParamList(GenericParams);
