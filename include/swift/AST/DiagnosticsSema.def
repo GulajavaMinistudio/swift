@@ -1694,6 +1694,14 @@ ERROR(expose_enum_case_type_to_cxx,none,
       "enum %0 can not be represented in C++ as one of its cases has an associated value with type that can't be represented in C++", (ValueDecl *))
 ERROR(expose_enum_case_tuple_to_cxx,none,
       "enum %0 can not yet be represented in C++ as one of its cases has multiple associated values", (ValueDecl *))
+ERROR(expose_protocol_to_cxx_unsupported,none,
+      "protocol %0 can not yet be represented in C++", (ValueDecl *))
+ERROR(expose_move_only_to_cxx,none,
+      "move-only %0 %1 can not yet be represented in C++", (DescriptiveDeclKind, ValueDecl *))
+ERROR(unexposed_other_decl_in_cxx,none,
+      "%0 %1 is not yet exposed to C++", (DescriptiveDeclKind, ValueDecl *))
+ERROR(unsupported_other_decl_in_cxx,none,
+      "Swift %0 %1 cannot be represented in C++", (DescriptiveDeclKind, ValueDecl *))
 
 ERROR(attr_methods_only,none,
       "only methods can be declared %0", (DeclAttribute))
@@ -4599,9 +4607,16 @@ ERROR(opaque_type_var_no_underlying_type,none,
       "property declares an opaque return type, but cannot infer the "
       "underlying type from its initializer expression", ())
 
+
+//------------------------------------------------------------------------------
+// MARK: Forget Statement
+//------------------------------------------------------------------------------
 ERROR(forget_wrong_context_decl,none,
       "'forget' statement cannot appear in %0",
       (DescriptiveDeclKind))
+ERROR(forget_no_deinit,none,
+      "'forget' has no effect for type %0 unless it has a deinitializer",
+      (Type))
 ERROR(forget_wrong_context_closure,none,
       "'forget' statement cannot appear in closure",
       ())
@@ -5396,6 +5411,12 @@ ERROR(vararg_not_allowed,none,
 ERROR(experimental_type_with_parameter_pack,none,
       "generic types with parameter packs are experimental",
       ())
+ERROR(more_than_one_pack_in_type,none,
+      "generic type cannot declare more than one type pack", ())
+ERROR(enum_with_pack,none,
+      "enums cannot declare a type pack", ())
+ERROR(superclass_with_pack,none,
+      "cannot inherit from a generic class that declares a type pack", ())
 ERROR(expansion_not_allowed,none,
       "pack expansion %0 can only appear in a function parameter list, "
       "tuple element, or generic argument list", (Type))
@@ -5417,7 +5438,7 @@ ERROR(pack_reference_must_be_in_expansion,none,
       "pack reference %0 requires expansion using keyword 'repeat'",
       (TypeRepr*))
 ERROR(pack_type_requires_keyword_each,none,
-      "pack type %0 must be referenced with 'each'",
+      "type pack %0 must be referenced with 'each'",
       (TypeRepr*))
 ERROR(tuple_duplicate_label,none,
       "cannot create a tuple with a duplicate element label", ())
@@ -7128,6 +7149,8 @@ ERROR(ownership_specifier_copyable,none,
 ERROR(self_ownership_specifier_copyable,none,
       "%0 is not yet valid on %1s in a Copyable type",
       (SelfAccessKind, DescriptiveDeclKind))
+ERROR(ownership_specifier_nonescaping_closure,none,
+      "'%0' cannot be applied to nonescaping closure", (StringRef))
 
 //------------------------------------------------------------------------------
 // MARK: Runtime discoverable attributes (@runtimeMetadata)
