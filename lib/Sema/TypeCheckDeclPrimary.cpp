@@ -480,10 +480,6 @@ static void checkGenericParams(GenericContext *ownerCtx) {
     // is not enabled.
     auto &ctx = decl->getASTContext();
     if (gp->isParameterPack() && isGenericType) {
-      if (!ctx.LangOpts.hasFeature(Feature::VariadicGenerics)) {
-        decl->diagnose(diag::experimental_type_with_parameter_pack);
-      }
-
       TypeChecker::checkAvailability(
           gp->getSourceRange(),
           ownerCtx->getASTContext().getVariadicGenericTypeAvailability(),
@@ -2064,10 +2060,6 @@ public:
   }
 
   void visitMacroExpansionDecl(MacroExpansionDecl *MED) {
-    // TODO: Type check attributes.
-    // Type checking arguments should reflect the attributes.
-    // e.g. '@available(macOS 999) #Future { newAPIFrom999() }'.
-
     // Assign a discriminator.
     (void)MED->getDiscriminator();
     // Decls in expansion already visited as auxiliary decls.
