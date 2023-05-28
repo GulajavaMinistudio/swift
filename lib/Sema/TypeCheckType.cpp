@@ -1006,7 +1006,7 @@ static bool didDiagnoseMoveOnlyGenericArgs(ASTContext &ctx,
     if (!t->isPureMoveOnly())
       continue;
 
-    ctx.Diags.diagnose(loc, diag::moveonly_generics, t);
+    ctx.Diags.diagnose(loc, diag::noncopyable_generics, t);
     didEmitDiag = true;
   }
 
@@ -2278,7 +2278,7 @@ bool TypeResolver::diagnoseInvalidPlaceHolder(OpaqueReturnTypeRepr *repr) {
 /// returns true if an error diagnostic was emitted
 bool TypeResolver::diagnoseMoveOnly(TypeRepr *repr, Type genericArgTy) {
   if (genericArgTy->isPureMoveOnly()) {
-    diagnoseInvalid(repr, repr->getLoc(), diag::moveonly_generics,
+    diagnoseInvalid(repr, repr->getLoc(), diag::noncopyable_generics,
                     genericArgTy);
     return true;
   }
@@ -2319,21 +2319,21 @@ bool TypeResolver::diagnoseMoveOnlyMissingOwnership(
   // decls, give a tailored error message saying you simply can't use a
   // noncopyable type here.
   if (options.hasBase(TypeResolverContext::SubscriptDecl)) {
-    diagnose(repr->getLoc(), diag::moveonly_parameter_subscript_unsupported);
+    diagnose(repr->getLoc(), diag::noncopyable_parameter_subscript_unsupported);
   } else {
     // general error diagnostic
     diagnose(repr->getLoc(),
-             diag::moveonly_parameter_missing_ownership);
+             diag::noncopyable_parameter_requires_ownership);
 
-    diagnose(repr->getLoc(), diag::moveonly_parameter_ownership_suggestion,
+    diagnose(repr->getLoc(), diag::noncopyable_parameter_ownership_suggestion,
              "borrowing", "for an immutable reference")
         .fixItInsert(repr->getStartLoc(), "borrowing ");
 
-    diagnose(repr->getLoc(), diag::moveonly_parameter_ownership_suggestion,
+    diagnose(repr->getLoc(), diag::noncopyable_parameter_ownership_suggestion,
              "inout", "for a mutable reference")
         .fixItInsert(repr->getStartLoc(), "inout ");
 
-    diagnose(repr->getLoc(), diag::moveonly_parameter_ownership_suggestion,
+    diagnose(repr->getLoc(), diag::noncopyable_parameter_ownership_suggestion,
              "consuming", "to take the value from the caller")
         .fixItInsert(repr->getStartLoc(), "consuming ");
   }
@@ -5343,9 +5343,15 @@ void TypeChecker::checkExistentialTypes(Decl *decl) {
   } else if (auto *macroDecl = dyn_cast<MacroDecl>(decl)) {
     checkExistentialTypes(ctx, macroDecl->getGenericParams());
     checkExistentialTypes(ctx, macroDecl->getTrailingWhereClause());
+  } else if (auto *macroExpansionDecl = dyn_cast<MacroExpansionDecl>(decl)) {
+    ExistentialTypeVisitor visitor(ctx, /*checkStatements=*/false);
+    macroExpansionDecl->getArgs()->walk(visitor);
+    for (auto *genArg : macroExpansionDecl->getGenericArgs())
+      genArg->walk(visitor);
   }
 
-  if (isa<TypeDecl>(decl) || isa<ExtensionDecl>(decl))
+  if (isa<TypeDecl>(decl) || isa<ExtensionDecl>(decl) ||
+      isa<MacroExpansionDecl>(decl))
     return;
 
   ExistentialTypeVisitor visitor(ctx, /*checkStatements=*/false);
