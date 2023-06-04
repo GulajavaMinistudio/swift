@@ -403,6 +403,13 @@ void SourceLookupCache::populateAuxiliaryDeclCache() {
     for (auto macroNames : introducedNames) {
       auto macroRef = macroNames.getFirst();
       for (auto name : macroNames.getSecond()) {
+
+        // If this macro isn't in a module-scope context, and the introduced
+        // name isn't an operator, we shouldn't be able to see it.
+        if (!decl->getDeclContext()->isModuleScopeContext() &&
+            !name.getBaseName().isOperator())
+          continue;
+
         auto *placeholder = MissingDecl::forUnexpandedMacro(macroRef, decl);
         name.addToLookupTable(TopLevelAuxiliaryDecls, placeholder);
       }
@@ -485,6 +492,12 @@ void SourceLookupCache::lookupValue(DeclName Name, NLKind LookupKind,
   for (auto *unexpandedDecl : unexpandedDecls) {
     unexpandedDecl->forEachMacroExpandedDecl(
         [&](ValueDecl *decl) {
+          // If the declaration is not a module-scope declaration, and
+          // isn't an operator, ignore it.
+          if (!decl->getDeclContext()->isModuleScopeContext() &&
+              !decl->getName().getBaseName().isOperator())
+            return;
+
           if (decl->getName().matchesRef(Name)) {
             if (macroExpandedDecls.insert(decl).second)
               Result.push_back(decl);
@@ -3304,6 +3317,14 @@ void SourceFile::lookupImportedSPIGroups(
   }
 }
 
+bool shouldImplicitImportAsSPI(ArrayRef<Identifier> spiGroups) {
+  for (auto group : spiGroups) {
+    if (group.empty())
+      return true;
+  }
+  return false;
+}
+
 bool SourceFile::isImportedAsSPI(const ValueDecl *targetDecl) const {
   auto targetModule = targetDecl->getModuleContext();
   llvm::SmallSetVector<Identifier, 4> importedSPIGroups;
@@ -3311,6 +3332,8 @@ bool SourceFile::isImportedAsSPI(const ValueDecl *targetDecl) const {
   // Objective-C SPIs are always imported implicitly.
   if (targetDecl->hasClangNode())
     return !targetDecl->getSPIGroups().empty();
+  if (shouldImplicitImportAsSPI(targetDecl->getSPIGroups()))
+    return true;
 
   lookupImportedSPIGroups(targetModule, importedSPIGroups);
   if (importedSPIGroups.empty())
@@ -3345,12 +3368,14 @@ bool SourceFile::importsModuleAsWeakLinked(const ModuleDecl *module) const {
 
 bool ModuleDecl::isImportedAsSPI(const SpecializeAttr *attr,
                                  const ValueDecl *targetDecl) const {
+  auto declSPIGroups = attr->getSPIGroups();
+  if (shouldImplicitImportAsSPI(declSPIGroups))
+    return true;
+
   auto targetModule = targetDecl->getModuleContext();
   llvm::SmallSetVector<Identifier, 4> importedSPIGroups;
   lookupImportedSPIGroups(targetModule, importedSPIGroups);
   if (importedSPIGroups.empty()) return false;
-
-  auto declSPIGroups = attr->getSPIGroups();
 
   for (auto declSPI : declSPIGroups)
     if (importedSPIGroups.count(declSPI))
@@ -3361,6 +3386,9 @@ bool ModuleDecl::isImportedAsSPI(const SpecializeAttr *attr,
 
 bool ModuleDecl::isImportedAsSPI(Identifier spiGroup,
                                  const ModuleDecl *fromModule) const {
+  if (shouldImplicitImportAsSPI({spiGroup}))
+    return true;
+
   llvm::SmallSetVector<Identifier, 4> importedSPIGroups;
   lookupImportedSPIGroups(fromModule, importedSPIGroups);
   if (importedSPIGroups.empty())
