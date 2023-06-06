@@ -436,6 +436,15 @@ public:
     return insert(AllocPackInst::create(getSILDebugLocation(loc), packType,
                                         getFunction()));
   }
+  AllocPackMetadataInst *
+  createAllocPackMetadata(SILLocation loc,
+                          Optional<SILType> elementType = llvm::None) {
+    return insert(new (getModule()) AllocPackMetadataInst(
+        getSILDebugLocation(loc),
+        elementType.value_or(
+            SILType::getEmptyTupleType(getModule().getASTContext())
+                .getAddressType())));
+  }
 
   AllocRefInst *createAllocRef(SILLocation Loc, SILType ObjectType,
                                bool objc, bool canAllocOnStack,
@@ -489,6 +498,9 @@ public:
 #endif
     llvm::SmallString<4> Name;
     Loc.markAsPrologue();
+#if defined(NDEBUG)
+    (void) skipVarDeclAssert;
+#endif
     assert((skipVarDeclAssert ||
             !dyn_cast_or_null<VarDecl>(Loc.getAsASTNode<Decl>()) || Var) &&
            "location is a VarDecl, but SILDebugVariable is empty");
@@ -2222,6 +2234,11 @@ public:
   DeallocPackInst *createDeallocPack(SILLocation loc, SILValue operand) {
     return insert(new (getModule())
                       DeallocPackInst(getSILDebugLocation(loc), operand));
+  }
+  DeallocPackMetadataInst *createDeallocPackMetadata(SILLocation loc,
+                                                     SILValue alloc) {
+    return insert(new (getModule())
+                      DeallocPackMetadataInst(getSILDebugLocation(loc), alloc));
   }
   DeallocStackRefInst *createDeallocStackRef(SILLocation Loc,
                                                      SILValue operand) {
