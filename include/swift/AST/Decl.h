@@ -47,6 +47,7 @@
 #include "swift/Basic/Range.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/TrailingObjects.h"
+#include <map>
 #include <type_traits>
 
 namespace swift {
@@ -184,6 +185,7 @@ enum class DescriptiveDeclKind : uint8_t {
   DistributedMethod,
   Getter,
   Setter,
+  InitAccessor,
   Addressor,
   MutableAddressor,
   ReadAccessor,
@@ -224,6 +226,26 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, StaticSpellingKind SSK);
 
 /// Diagnostic printing of \c ReferenceOwnership.
 llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, ReferenceOwnership RO);
+
+enum class SelfAccessKind : uint8_t {
+  NonMutating,
+  Mutating,
+  LegacyConsuming,
+  Consuming,
+  Borrowing,
+  LastSelfAccessKind = Borrowing,
+};
+enum : unsigned {
+  NumSelfAccessKindBits =
+      countBitsUsed(static_cast<unsigned>(SelfAccessKind::LastSelfAccessKind))
+};
+static_assert(uint8_t(SelfAccessKind::LastSelfAccessKind) <
+                  (NumSelfAccessKindBits << 1),
+              "Self Access Kind is too small to fit in SelfAccess kind bits. "
+              "Please expand ");
+
+/// Diagnostic printing of \c SelfAccessKind.
+llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, SelfAccessKind SAK);
 
 /// Encapsulation of the overload signature of a given declaration,
 /// which is used to determine uniqueness of a declaration within a
@@ -316,6 +338,10 @@ enum class ArtificialMainKind : uint8_t {
 /// Decl - Base class for all declarations in Swift.
 class alignas(1 << DeclAlignInBits) Decl : public ASTAllocated<Decl> {
 protected:
+  // clang-format off
+  //
+  // We format these different than clang-format wishes us to... so turn if off
+  // for the inline bitfields.
   union { uint64_t OpaqueBits;
 
   SWIFT_INLINE_BITFIELD_BASE(Decl, bitmax(NumDeclKindBits,8)+1+1+1+1+1,
@@ -457,7 +483,8 @@ protected:
     DistributedThunk: 1
   );
 
-  SWIFT_INLINE_BITFIELD(FuncDecl, AbstractFunctionDecl, 1+1+2+1+1+2+1,
+  SWIFT_INLINE_BITFIELD(FuncDecl, AbstractFunctionDecl,
+                        1+1+2+1+1+NumSelfAccessKindBits+1,
     /// Whether we've computed the 'static' flag yet.
     IsStaticComputed : 1,
 
@@ -474,7 +501,7 @@ protected:
     SelfAccessComputed : 1,
 
     /// Backing bits for 'self' access kind.
-    SelfAccess : 2,
+    SelfAccess : NumSelfAccessKindBits,
 
     /// Whether this is a top-level function which should be treated
     /// as if it were in local context for the purposes of capture
@@ -736,6 +763,8 @@ protected:
   );
 
   } Bits;
+  // Turn back on clang-format now that we have defined our inline bitfields.
+  // clang-format on
 
   // Storage for the declaration attributes.
   DeclAttributes Attrs;
@@ -884,7 +913,13 @@ public:
   ///
   /// Auxiliary declarations can be property wrapper backing variables,
   /// backing variables for 'lazy' vars, or peer macro expansions.
-  void visitAuxiliaryDecls(AuxiliaryDeclCallback callback) const;
+  ///
+  /// When \p visitFreestandingExpanded is true (the default), this will also
+  /// visit the declarations produced by a freestanding macro expansion.
+  void visitAuxiliaryDecls(
+      AuxiliaryDeclCallback callback,
+      bool visitFreestandingExpanded = true
+  ) const;
 
   using MacroCallback = llvm::function_ref<void(CustomAttr *, MacroDecl *)>;
 
@@ -3952,6 +3987,16 @@ public:
 
   /// Return a collection of the stored member variables of this type.
   ArrayRef<VarDecl *> getStoredProperties() const;
+
+  /// Return a collection of all properties with init accessors in
+  /// this type.
+  ArrayRef<VarDecl *> getInitAccessorProperties() const;
+
+  /// Establish a mapping between properties that could be iniitalized
+  /// via other properties by means of init accessors. This mapping is
+  /// one-to-many because we allow intersecting `initializes(...)`.
+  void collectPropertiesInitializableByInitAccessors(
+      std::multimap<VarDecl *, VarDecl *> &result) const;
 
   /// Return a collection of the stored member variables of this type, along
   /// with placeholders for unimportable stored properties.
@@ -7233,17 +7278,6 @@ public:
 
 class OperatorDecl;
 
-enum class SelfAccessKind : uint8_t {
-  NonMutating,
-  Mutating,
-  LegacyConsuming,
-  Consuming,
-  Borrowing,
-};
-
-/// Diagnostic printing of \c SelfAccessKind.
-llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, SelfAccessKind SAK);
-  
 /// FuncDecl - 'func' declaration.
 class FuncDecl : public AbstractFunctionDecl {
   friend class AbstractFunctionDecl;
@@ -7545,6 +7579,10 @@ public:
 #include "swift/AST/AccessorKinds.def"
     }
     llvm_unreachable("bad accessor kind");
+  }
+
+  bool isInitAccessor() const {
+    return (getAccessorKind() == AccessorKind::Init);
   }
 
   /// \returns true if this is non-mutating due to applying a 'mutating'
@@ -8563,6 +8601,9 @@ public:
   /// Retrieve the definition of this macro.
   MacroDefinition getDefinition() const;
 
+  /// Set the definition of this macro
+  void setDefinition(MacroDefinition definition);
+
   /// Retrieve the parameter list of this macro.
   ParameterList *getParameterList() const { return parameterList; }
 
@@ -8605,8 +8646,9 @@ public:
     return getExpansionInfo()->getSourceRange();
   }
   SourceLoc getLocFromSource() const { return getExpansionInfo()->SigilLoc; }
-  using ExprOrStmtExpansionCallback = llvm::function_ref<void(ASTNode)>;
-  void forEachExpandedExprOrStmt(ExprOrStmtExpansionCallback) const;
+
+  /// Enumerate the nodes produced by expanding this macro expansion.
+  void forEachExpandedNode(llvm::function_ref<void(ASTNode)> callback) const;
 
   /// Returns a discriminator which determines this macro expansion's index
   /// in the sequence of macro expansions within the current function.

@@ -189,6 +189,9 @@ ERROR(ivar_not_initialized_at_superinit,none,
 ERROR(ivar_not_initialized_at_implicit_superinit,none,
       "property '%0' not initialized at implicitly generated super.init call",
       (StringRef, bool))
+ERROR(ivar_not_initialized_by_init_accessor,none,
+      "property %0 not initialized by init accessor",
+      (DeclName))
 
 ERROR(self_use_before_fully_init,none,
       "'self' used in %select{method call|property access}1 %0 before "
@@ -778,6 +781,8 @@ ERROR(sil_movechecking_cannot_destructure_has_deinit, none,
       (StringRef))
 ERROR(sil_movechecking_discard_missing_consume_self, none,
       "must consume 'self' before exiting method that discards self", ())
+ERROR(sil_movechecking_reinit_after_discard, none,
+      "cannot reinitialize 'self' after 'discard self'", ())
 
 NOTE(sil_movechecking_discard_self_here, none,
      "discarded self here", ())

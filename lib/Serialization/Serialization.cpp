@@ -1150,7 +1150,7 @@ void Serializer::writeHeader(const SerializationOptions &options) {
 
         options_block::CompilerPluginExecutablePathLayout
           CompilerPluginExecutablePath(Out);
-        for (auto Arg : options.CompilerPluginLibraryPaths) {
+        for (auto Arg : options.CompilerPluginExecutablePaths) {
           CompilerPluginExecutablePath.emit(ScratchRecord, Arg);
         }
       }
@@ -2903,6 +2903,34 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
       for (auto availAttr : attr->getAvailableAttrs()) {
         writeDeclAttribute(D, availAttr);
       }
+      return;
+    }
+
+    case DAK_Initializes: {
+      auto abbrCode = S.DeclTypeAbbrCodes[InitializesDeclAttrLayout::Code];
+      auto attr = cast<InitializesAttr>(DA);
+
+      SmallVector<IdentifierID, 4> properties;
+      for (auto identifier : attr->getProperties()) {
+        properties.push_back(S.addDeclBaseNameRef(identifier));
+      }
+
+      InitializesDeclAttrLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode, properties);
+      return;
+    }
+
+    case DAK_Accesses: {
+      auto abbrCode = S.DeclTypeAbbrCodes[AccessesDeclAttrLayout::Code];
+      auto attr = cast<InitializesAttr>(DA);
+
+      SmallVector<IdentifierID, 4> properties;
+      for (auto identifier : attr->getProperties()) {
+        properties.push_back(S.addDeclBaseNameRef(identifier));
+      }
+
+      AccessesDeclAttrLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode, properties);
       return;
     }
 
@@ -5645,6 +5673,7 @@ void Serializer::writeAllDeclsAndTypes() {
   registerDeclTypeAbbr<BoundGenericTypeLayout>();
   registerDeclTypeAbbr<GenericFunctionTypeLayout>();
   registerDeclTypeAbbr<SILBlockStorageTypeLayout>();
+  registerDeclTypeAbbr<SILMoveOnlyWrappedTypeLayout>();
   registerDeclTypeAbbr<SILBoxTypeLayout>();
   registerDeclTypeAbbr<SILFunctionTypeLayout>();
   registerDeclTypeAbbr<ArraySliceTypeLayout>();

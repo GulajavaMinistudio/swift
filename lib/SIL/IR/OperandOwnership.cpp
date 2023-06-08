@@ -148,6 +148,8 @@ OPERAND_OWNERSHIP(TrivialUse, AddressToPointer)
 OPERAND_OWNERSHIP(TrivialUse, AllocRef)        // with tail operand
 OPERAND_OWNERSHIP(TrivialUse, AllocRefDynamic) // with tail operand
 OPERAND_OWNERSHIP(TrivialUse, BeginAccess)
+OPERAND_OWNERSHIP(TrivialUse, MoveOnlyWrapperToCopyableAddr)
+OPERAND_OWNERSHIP(TrivialUse, CopyableToMoveOnlyWrapperAddr)
 OPERAND_OWNERSHIP(TrivialUse, BeginUnpairedAccess)
 OPERAND_OWNERSHIP(TrivialUse, BindMemory)
 OPERAND_OWNERSHIP(TrivialUse, RebindMemory)
@@ -372,6 +374,7 @@ FORWARDING_OWNERSHIP(MarkMustCheck)
 FORWARDING_OWNERSHIP(MarkUnresolvedReferenceBinding)
 FORWARDING_OWNERSHIP(MoveOnlyWrapperToCopyableValue)
 FORWARDING_OWNERSHIP(CopyableToMoveOnlyWrapperValue)
+FORWARDING_OWNERSHIP(MoveOnlyWrapperToCopyableBox)
 #undef FORWARDING_OWNERSHIP
 
 // Arbitrary value casts are forwarding instructions that are also allowed to
@@ -620,6 +623,16 @@ OperandOwnershipClassifier::visitAssignByWrapperInst(AssignByWrapperInst *i) {
     return OperandOwnership::TrivialUse;
   }
   return OperandOwnership::InstantaneousUse; // initializer/setter closure
+}
+
+OperandOwnership
+OperandOwnershipClassifier::visitAssignOrInitInst(AssignOrInitInst *i) {
+  if (getValue() == i->getSrc()) {
+    return OperandOwnership::DestroyingConsume;
+  }
+
+  // initializer/setter closure
+  return OperandOwnership::InstantaneousUse;
 }
 
 OperandOwnership OperandOwnershipClassifier::visitStoreInst(StoreInst *i) {

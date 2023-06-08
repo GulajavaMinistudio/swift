@@ -191,6 +191,20 @@ void DiagnosticEmitter::emitCheckedMissedCopyError(SILInstruction *copyInst) {
            diag::sil_movechecking_bug_missed_copy);
 }
 
+void DiagnosticEmitter::emitReinitAfterDiscardError(SILInstruction *badReinit,
+                                                    SILInstruction *discard) {
+  assert(isa<DropDeinitInst>(discard));
+  assert(badReinit->getLoc() && "missing loc!");
+  assert(discard->getLoc() && "missing loc!");
+
+  diagnose(badReinit->getFunction()->getASTContext(),
+           badReinit,
+           diag::sil_movechecking_reinit_after_discard);
+
+  diagnose(discard->getFunction()->getASTContext(), discard,
+           diag::sil_movechecking_discard_self_here);
+}
+
 void DiagnosticEmitter::emitMissingConsumeInDiscardingContext(
     SILInstruction *leftoverDestroy,
     SILInstruction *discard) {
@@ -485,14 +499,15 @@ void DiagnosticEmitter::emitObjectDiagnosticsForGuaranteedUses(
   auto &astContext = fn->getASTContext();
 
   for (auto *consumingUser : getCanonicalizer().consumingUsesNeedingCopy) {
-    if (ignorePartialApplyUses && isa<PartialApplyInst>(consumingUser))
+    if (ignorePartialApplyUses &&
+        OSSACanonicalizer::isPartialApplyUser(consumingUser))
       continue;
     diagnose(astContext, consumingUser,
              diag::sil_movechecking_consuming_use_here);
   }
 
   for (auto *user : getCanonicalizer().consumingBoundaryUsers) {
-    if (ignorePartialApplyUses && isa<PartialApplyInst>(user))
+    if (ignorePartialApplyUses && OSSACanonicalizer::isPartialApplyUser(user))
       continue;
 
     diagnose(astContext, user, diag::sil_movechecking_consuming_use_here);
@@ -504,7 +519,7 @@ void DiagnosticEmitter::emitObjectDiagnosticsForPartialApplyUses(
   auto &astContext = fn->getASTContext();
 
   for (auto *user : getCanonicalizer().consumingUsesNeedingCopy) {
-    if (!isa<PartialApplyInst>(user))
+    if (!OSSACanonicalizer::isPartialApplyUser(user))
       continue;
     diagnose(astContext,
              user,
@@ -513,7 +528,7 @@ void DiagnosticEmitter::emitObjectDiagnosticsForPartialApplyUses(
   }
 
   for (auto *user : getCanonicalizer().consumingBoundaryUsers) {
-    if (!isa<PartialApplyInst>(user))
+    if (!OSSACanonicalizer::isPartialApplyUser(user))
       continue;
 
     diagnose(astContext,

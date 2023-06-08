@@ -1397,6 +1397,7 @@ FirstArgOwnershipForwardingSingleValueInst::classof(SILInstructionKind kind) {
   case SILInstructionKind::InitExistentialRefInst:
   case SILInstructionKind::MarkDependenceInst:
   case SILInstructionKind::MoveOnlyWrapperToCopyableValueInst:
+  case SILInstructionKind::MoveOnlyWrapperToCopyableBoxInst:
   case SILInstructionKind::CopyableToMoveOnlyWrapperValueInst:
     return true;
   default:
@@ -4934,6 +4935,78 @@ public:
   }
 };
 
+/// AssignOrInitInst - Represents an abstract assignment via a init accessor
+/// or a setter, which may either be an initialization or a store sequence.
+/// This is only valid in Raw SIL.
+///
+/// Note that this instruction does not inherit from AssignInstBase because
+/// there is no physical destination of the assignment. Both the init
+/// and the setter are factored into functions.
+class AssignOrInitInst
+    : public InstructionBase<SILInstructionKind::AssignOrInitInst,
+                             NonValueInstruction>,
+      public CopyLikeInstruction {
+  friend SILBuilder;
+  USE_SHARED_UINT8;
+
+  FixedOperandList<3> Operands;
+
+  /// Marks all of the properties in `initializes(...)` list that
+  /// have been initialized before this intruction to help Raw SIL
+  /// lowering to emit destroys.
+  llvm::BitVector Assignments;
+
+public:
+  enum Mode {
+    /// The mode is not decided yet (by DefiniteInitialization).
+    Unknown,
+
+    /// The initializer is called with Src as argument.
+    Init,
+
+    /// The setter is called with Src as argument.
+    Set
+  };
+
+private:
+  AssignOrInitInst(SILDebugLocation DebugLoc,
+                   SILValue Src, SILValue Initializer,
+                   SILValue Setter, Mode mode);
+
+public:
+  SILValue getSrc() const { return Operands[0].get(); }
+  SILValue getInitializer() const { return Operands[1].get(); }
+  SILValue getSetter() { return  Operands[2].get(); }
+
+  Mode getMode() const {
+    return Mode(sharedUInt8().AssignOrInitInst.mode);
+  }
+
+  void setMode(Mode mode) {
+    sharedUInt8().AssignOrInitInst.mode = uint8_t(mode);
+  }
+
+  /// Mark a property from `initializes(...)` list as initialized
+  /// before this instruction.
+  void markAsInitialized(VarDecl *property);
+  void markAsInitialized(unsigned propertyIdx);
+
+  /// Check whether a property from `initializes(...)` list with
+  /// the given index has already been initialized and requires
+  /// destroy before it could be re-initialized.
+  bool isPropertyAlreadyInitialized(unsigned propertyIdx);
+
+  unsigned getNumInitializedProperties() const;
+
+  ArrayRef<VarDecl *> getInitializedProperties() const;
+  ArrayRef<VarDecl *> getAccessedProperties() const;
+
+  ArrayRef<Operand> getAllOperands() const { return Operands.asArray(); }
+  MutableArrayRef<Operand> getAllOperands() { return Operands.asArray(); }
+
+  AccessorDecl *getReferencedInitAccessor() const;
+};
+
 /// Indicates that a memory location is uninitialized at this point and needs to
 /// be initialized by the end of the function and before any escape point for
 /// this instruction. This is only valid in Raw SIL.
@@ -4973,6 +5046,10 @@ public:
     /// DelegatingSelfAllocated designates "self" in a delegating class
     /// initializer where memory has already been allocated.
     DelegatingSelfAllocated,
+
+    /// Out designates an indirectly returned result.
+    /// This is the result that has to be checked for initialization.
+    Out,
   };
 private:
   Kind ThisKind;
@@ -4987,6 +5064,7 @@ public:
   Kind getMarkUninitializedKind() const { return ThisKind; }
 
   bool isVar() const { return ThisKind == Var; }
+  bool isOut() const { return ThisKind == Out; }
   bool isRootSelf() const {
     return ThisKind == RootSelf;
   }
@@ -8516,10 +8594,21 @@ private:
             DebugLoc, operand, operand->getType().addingMoveOnlyWrapper(),
             kind == InitialKind::Guaranteed ? OwnershipKind::Guaranteed
                                             : OwnershipKind::Owned),
-        initialKind(kind) {}
+        initialKind(kind) {
+    assert(!operand->getType().isMoveOnly() &&
+           "Cannot be moveonly or moveonly wrapped");
+  }
 
 public:
   InitialKind getInitialKind() const { return initialKind; }
+
+  bool hasGuaranteedInitialKind() const {
+    return getInitialKind() == InitialKind::Guaranteed;
+  }
+
+  bool hasOwnedInitialKind() const {
+    return getInitialKind() == InitialKind::Owned;
+  }
 };
 
 /// Convert from an @moveOnly wrapper type to the underlying copyable type. Can
@@ -8568,10 +8657,71 @@ private:
             DebugLoc, operand, operand->getType().removingMoveOnlyWrapper(),
             kind == InitialKind::Guaranteed ? OwnershipKind::Guaranteed
                                             : OwnershipKind::Owned),
-        initialKind(kind) {}
+        initialKind(kind) {
+    assert(operand->getType().isMoveOnlyWrapped() &&
+           "Expected moveonlywrapped argument!");
+  }
 
 public:
   InitialKind getInitialKind() const { return initialKind; }
+
+  bool hasGuaranteedInitialKind() const {
+    return getInitialKind() == InitialKind::Guaranteed;
+  }
+
+  bool hasOwnedInitialKind() const {
+    return getInitialKind() == InitialKind::Owned;
+  }
+};
+
+/// Convert a ${ @moveOnly T } to $T. This is a forwarding instruction that acts
+/// similarly to an object cast like upcast, unlike
+/// MoveOnlyWrapperToCopyableValue which provides artificial semantics injected
+/// by SILGen.
+class MoveOnlyWrapperToCopyableBoxInst
+    : public UnaryInstructionBase<
+          SILInstructionKind::MoveOnlyWrapperToCopyableBoxInst,
+          FirstArgOwnershipForwardingSingleValueInst> {
+  friend class SILBuilder;
+
+  MoveOnlyWrapperToCopyableBoxInst(SILDebugLocation DebugLoc, SILValue operand,
+                                   ValueOwnershipKind forwardingOwnershipKind)
+      : UnaryInstructionBase(
+            DebugLoc, operand,
+            operand->getType().removingMoveOnlyWrapperToBoxedType(
+                operand->getFunction()),
+            forwardingOwnershipKind) {
+    assert(
+        operand->getType().isBoxedMoveOnlyWrappedType(operand->getFunction()) &&
+        "Expected moveonlywrapped argument!");
+  }
+};
+
+class CopyableToMoveOnlyWrapperAddrInst
+    : public UnaryInstructionBase<
+          SILInstructionKind::CopyableToMoveOnlyWrapperAddrInst,
+          SingleValueInstruction> {
+  friend class SILBuilder;
+
+  CopyableToMoveOnlyWrapperAddrInst(SILDebugLocation DebugLoc, SILValue operand)
+      : UnaryInstructionBase(DebugLoc, operand,
+                             operand->getType().addingMoveOnlyWrapper()) {
+    assert(!operand->getType().isMoveOnly() && "Expected copyable argument");
+  }
+};
+
+class MoveOnlyWrapperToCopyableAddrInst
+    : public UnaryInstructionBase<
+          SILInstructionKind::MoveOnlyWrapperToCopyableAddrInst,
+          SingleValueInstruction> {
+  friend class SILBuilder;
+
+  MoveOnlyWrapperToCopyableAddrInst(SILDebugLocation DebugLoc, SILValue operand)
+      : UnaryInstructionBase(DebugLoc, operand,
+                             operand->getType().removingMoveOnlyWrapper()) {
+    assert(operand->getType().isMoveOnlyWrapped() &&
+           "Expected moveonlywrapped argument");
+  }
 };
 
 /// Given an object reference, return true iff it is non-nil and refers

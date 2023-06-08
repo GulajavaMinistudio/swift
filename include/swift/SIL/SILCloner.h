@@ -1352,6 +1352,17 @@ void SILCloner<ImplClass>::visitAssignByWrapperInst(AssignByWrapperInst *Inst) {
                 getOpValue(Inst->getSetter()), Inst->getMode()));
 }
 
+template <typename ImplClass>
+void SILCloner<ImplClass>::visitAssignOrInitInst(AssignOrInitInst *Inst) {
+  getBuilder().setCurrentDebugScope(getOpScope(Inst->getDebugScope()));
+  recordClonedInstruction(
+      Inst, getBuilder().createAssignOrInit(
+                getOpLocation(Inst->getLoc()),
+                getOpValue(Inst->getSrc()),
+                getOpValue(Inst->getInitializer()),
+                getOpValue(Inst->getSetter()), Inst->getMode()));
+}
+
 template<typename ImplClass>
 void
 SILCloner<ImplClass>::visitMarkUninitializedInst(MarkUninitializedInst *Inst) {
@@ -1939,6 +1950,33 @@ void SILCloner<ImplClass>::visitMoveOnlyWrapperToCopyableValueInst(
         getOpLocation(inst->getLoc()), getOpValue(inst->getOperand()));
   }
   recordClonedInstruction(inst, cvt);
+}
+
+template <typename ImplClass>
+void SILCloner<ImplClass>::visitMoveOnlyWrapperToCopyableBoxInst(
+    MoveOnlyWrapperToCopyableBoxInst *inst) {
+  getBuilder().setCurrentDebugScope(getOpScope(inst->getDebugScope()));
+  recordClonedInstruction(
+      inst, getBuilder().createMoveOnlyWrapperToCopyableBox(
+                getOpLocation(inst->getLoc()), getOpValue(inst->getOperand())));
+}
+
+template <typename ImplClass>
+void SILCloner<ImplClass>::visitMoveOnlyWrapperToCopyableAddrInst(
+    MoveOnlyWrapperToCopyableAddrInst *inst) {
+  getBuilder().setCurrentDebugScope(getOpScope(inst->getDebugScope()));
+  recordClonedInstruction(
+      inst, getBuilder().createMoveOnlyWrapperToCopyableAddr(
+                getOpLocation(inst->getLoc()), getOpValue(inst->getOperand())));
+}
+
+template <typename ImplClass>
+void SILCloner<ImplClass>::visitCopyableToMoveOnlyWrapperAddrInst(
+    CopyableToMoveOnlyWrapperAddrInst *inst) {
+  getBuilder().setCurrentDebugScope(getOpScope(inst->getDebugScope()));
+  recordClonedInstruction(
+      inst, getBuilder().createCopyableToMoveOnlyWrapperAddr(
+                getOpLocation(inst->getLoc()), getOpValue(inst->getOperand())));
 }
 
 template <typename ImplClass>
