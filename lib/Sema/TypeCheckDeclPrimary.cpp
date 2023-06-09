@@ -472,7 +472,6 @@ static void checkGenericParams(GenericContext *ownerCtx) {
     return;
 
   auto *decl = ownerCtx->getAsDecl();
-  bool isGenericType = isa<NominalTypeDecl>(decl);
   bool hasPack = false;
 
   for (auto gp : *genericParams) {
@@ -2060,6 +2059,23 @@ public:
 
       break;
     }
+    }
+
+    // If the macro has a (non-Void) result type, it must have the freestanding
+    // expression role. Other roles cannot have result types.
+    if (auto resultTypeRepr = MD->getResultTypeRepr()) {
+      if (!MD->getMacroRoles().contains(MacroRole::Expression) &&
+          !MD->getResultInterfaceType()->isEqual(Ctx.getVoidType())) {
+        auto resultType = MD->getResultInterfaceType();
+        Ctx.Diags.diagnose(
+            MD->arrowLoc, diag::macro_result_type_cannot_be_used, resultType)
+          .highlight(resultTypeRepr->getSourceRange());
+        Ctx.Diags.diagnose(MD->arrowLoc, diag::macro_make_freestanding_expression)
+          .fixItInsert(MD->getAttributeInsertionLoc(false),
+                       "@freestanding(expression)\n");
+        Ctx.Diags.diagnose(MD->arrowLoc, diag::macro_remove_result_type)
+          .fixItRemove(SourceRange(MD->arrowLoc, resultTypeRepr->getEndLoc()));
+      }
     }
   }
 
