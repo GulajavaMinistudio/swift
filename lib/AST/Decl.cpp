@@ -2525,7 +2525,7 @@ AbstractStorageDecl::getAccessStrategy(AccessSemantics semantics,
                                        ResilienceExpansion expansion) const {
   switch (semantics) {
   case AccessSemantics::DirectToStorage:
-    assert(hasStorage());
+    assert(hasStorage() || getASTContext().Diags.hadAnyError());
     return AccessStrategy::getStorage();
 
   case AccessSemantics::DistributedThunk:
@@ -3747,6 +3747,15 @@ bool ValueDecl::isUsableFromInline() const {
         storage->getAttrs().hasAttribute<AlwaysEmitIntoClientAttr>() ||
         storage->getAttrs().hasAttribute<InlinableAttr>())
       return true;
+  }
+
+  if (auto *opaqueType = dyn_cast<OpaqueTypeDecl>(this)) {
+    if (auto *namingDecl = opaqueType->getNamingDecl()) {
+      if (namingDecl->getAttrs().hasAttribute<UsableFromInlineAttr>() ||
+          namingDecl->getAttrs().hasAttribute<AlwaysEmitIntoClientAttr>() ||
+          namingDecl->getAttrs().hasAttribute<InlinableAttr>())
+        return true;
+    }
   }
 
   if (auto *EED = dyn_cast<EnumElementDecl>(this))
@@ -5395,7 +5404,7 @@ NominalTypeDecl::getExecutorOwnedEnqueueFunction() const {
   llvm::SmallVector<ValueDecl *, 2> results;
   lookupQualified(getSelfNominalTypeDecl(),
                   DeclNameRef(C.Id_enqueue),
-                  NL_ProtocolMembers,
+                  getLoc(), NL_ProtocolMembers,
                   results);
 
   for (auto candidate: results) {
@@ -5434,7 +5443,7 @@ NominalTypeDecl::getExecutorLegacyOwnedEnqueueFunction() const {
   llvm::SmallVector<ValueDecl *, 2> results;
   lookupQualified(getSelfNominalTypeDecl(),
                   DeclNameRef(C.Id_enqueue),
-                  NL_ProtocolMembers,
+                  getLoc(), NL_ProtocolMembers,
                   results);
 
   for (auto candidate: results) {
@@ -5473,7 +5482,7 @@ NominalTypeDecl::getExecutorLegacyUnownedEnqueueFunction() const {
   llvm::SmallVector<ValueDecl *, 2> results;
   lookupQualified(getSelfNominalTypeDecl(),
                   DeclNameRef(C.Id_enqueue),
-                  NL_ProtocolMembers,
+                  getLoc(), NL_ProtocolMembers,
                   results);
 
   for (auto candidate: results) {
@@ -6393,11 +6402,38 @@ bool ProtocolDecl::hasCircularInheritedProtocols() const {
       ctx.evaluator, HasCircularInheritedProtocolsRequest{mutableThis}, true);
 }
 
+bool AbstractStorageDecl::hasStorage() const {
+  ASTContext &ctx = getASTContext();
+  return evaluateOrDefault(ctx.evaluator,
+    HasStorageRequest{const_cast<AbstractStorageDecl *>(this)},
+    false);
+}
+
 StorageImplInfo AbstractStorageDecl::getImplInfo() const {
   ASTContext &ctx = getASTContext();
   return evaluateOrDefault(ctx.evaluator,
     StorageImplInfoRequest{const_cast<AbstractStorageDecl *>(this)},
     StorageImplInfo::getSimpleStored(StorageIsMutable));
+}
+
+void AbstractStorageDecl::cacheImplInfo(StorageImplInfo implInfo) {
+  LazySemanticInfo.ImplInfoComputed = 1;
+  ImplInfo = implInfo;
+}
+
+void AbstractStorageDecl::setImplInfo(StorageImplInfo implInfo) {
+  cacheImplInfo(implInfo);
+
+  if (isImplicit()) {
+    auto &evaluator = getASTContext().evaluator;
+    HasStorageRequest request{this};
+    if (!evaluator.hasCachedResult(request))
+      evaluator.cacheOutput(request, implInfo.hasStorage());
+    else {
+      assert(
+        evaluateOrDefault(evaluator, request, false) == implInfo.hasStorage());
+    }
+  }
 }
 
 bool AbstractStorageDecl::hasPrivateAccessor() const {
@@ -9900,7 +9936,7 @@ const VarDecl *ClassDecl::getUnownedExecutorProperty() const {
   llvm::SmallVector<ValueDecl *, 2> results;
   this->lookupQualified(getSelfNominalTypeDecl(),
                         DeclNameRef(C.Id_unownedExecutor),
-                        NL_ProtocolMembers,
+                        getLoc(), NL_ProtocolMembers,
                         results);
 
   for (auto candidate: results) {
