@@ -2128,6 +2128,9 @@ ERROR(unable_to_convert_generic_swift_types,none,
       "the following Swift type(s) provided to '%0' could not be "
       "converted: %1",
       (StringRef, StringRef))
+ERROR(unable_to_substitute_cxx_function_template,none,
+      "could not substitute parameters for C++ function template '%0': %1",
+      (StringRef, StringRef))
 
 // Type aliases
 ERROR(type_alias_underlying_type_access,none,
@@ -3246,6 +3249,9 @@ ERROR(enum_raw_type_nonconforming_and_nonsynthable,none,
       "and conformance could not be synthesized", (Type, Type))
 NOTE(enum_declares_rawrep_with_raw_type,none,
       "%0 declares raw type %1, which implies RawRepresentable", (Type, Type))
+ERROR(enum_raw_type_nonconforming_and_noncopyable,none,
+      "%0 declares raw type %1, but cannot yet conform to RawRepresentable "
+      "because it is noncopyable", (Type, Type))
 ERROR(enum_raw_type_access,none,
       "enum %select{must be declared %select{"
       "%select{private|fileprivate|internal|package|%error|%error}1|private or fileprivate}3"
@@ -7298,6 +7304,11 @@ ERROR(noimplicitcopy_attr_invalid_in_generic_context,
       none, "'@_noImplicitCopy' attribute cannot be applied to entities in generic contexts", ())
 ERROR(noimplicitcopy_attr_not_allowed_on_moveonlytype,none,
       "'@_noImplicitCopy' has no effect when applied to a noncopyable type", ())
+ERROR(noncopyable_types_cannot_be_resilient, none,
+      "noncopyable %0 %1 must be @frozen in library evolution mode; "
+      "non-@frozen public and @usableFromInline noncopyable types are not "
+      "supported",
+      (DescriptiveDeclKind, Identifier))
 
 //------------------------------------------------------------------------------
 // MARK: Runtime discoverable attributes (@runtimeMetadata)
