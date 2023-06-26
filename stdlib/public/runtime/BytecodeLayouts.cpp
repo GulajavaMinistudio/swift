@@ -18,6 +18,7 @@
 
 #include "BytecodeLayouts.h"
 #include "../SwiftShims/swift/shims/HeapObject.h"
+#include "EnumImpl.h"
 #include "WeakReference.h"
 #include "swift/ABI/MetadataValues.h"
 #include "swift/ABI/System.h"
@@ -160,7 +161,7 @@ inline static void handleRefCounts(const Metadata *metadata, Params... params) {
                               std::forward<Params>(params)...);
 }
 
-static uint64_t readTagBytes(uint8_t *addr, uint8_t byteCount) {
+static uint64_t readTagBytes(const uint8_t *addr, uint8_t byteCount) {
   switch (byteCount) {
   case 1:
     return addr[0];
@@ -651,6 +652,91 @@ swift_generic_assignWithTake(swift::OpaqueValue *dest, swift::OpaqueValue *src,
   return swift_generic_initWithTake(dest, src, metadata);
 }
 
+extern "C"
+unsigned swift_enumFn_getEnumTag(swift::OpaqueValue *address,
+                                 const Metadata *metadata) {
+  auto addr = reinterpret_cast<const uint8_t *>(address);
+  LayoutStringReader reader{metadata->getLayoutString(),
+                            layoutStringHeaderSize + sizeof(uint64_t)};
+  auto getEnumTag = readRelativeFunctionPointer<GetEnumTagFn>(reader);
+
+  return getEnumTag(addr);
+}
+
+extern "C" unsigned
+swift_multiPayloadEnumGeneric_getEnumTag(swift::OpaqueValue *address,
+                                         const Metadata *metadata) {
+  auto addr = reinterpret_cast<const uint8_t *>(address);
+  LayoutStringReader reader{metadata->getLayoutString(),
+                            layoutStringHeaderSize + sizeof(uint64_t)};
+
+  auto tagBytes = reader.readBytes<size_t>();
+  auto numPayloads = reader.readBytes<size_t>();
+  reader.skip(sizeof(size_t));
+  auto enumSize = reader.readBytes<size_t>();
+  auto payloadSize = enumSize - tagBytes;
+
+  auto enumTag = (unsigned)readTagBytes(addr + payloadSize, tagBytes);
+  if (enumTag < numPayloads) {
+    return enumTag;
+  }
+
+  auto payloadValue = loadEnumElement(addr, payloadSize);
+
+  if (payloadSize >= 4) {
+    return numPayloads + payloadValue;
+  } else {
+    unsigned numPayloadBits = payloadSize * CHAR_BIT;
+    return (payloadValue | (enumTag - numPayloads) << numPayloadBits) +
+           numPayloads;
+  }
+}
+
+extern "C" unsigned
+swift_singlePayloadEnumGeneric_getEnumTag(swift::OpaqueValue *address,
+                                          const Metadata *metadata) {
+  auto addr = reinterpret_cast<const uint8_t *>(address);
+  LayoutStringReader reader{metadata->getLayoutString(),
+                            layoutStringHeaderSize + sizeof(uint64_t)};
+
+  auto tagBytesAndOffset = reader.readBytes<uint64_t>();
+  auto extraTagBytesPattern = (uint8_t)(tagBytesAndOffset >> 62);
+  auto xiTagBytesOffset =
+      tagBytesAndOffset & std::numeric_limits<uint32_t>::max();
+  const Metadata *xiType = nullptr;
+
+  if (extraTagBytesPattern) {
+    auto extraTagBytes = 1 << (extraTagBytesPattern - 1);
+    auto payloadSize = reader.readBytes<size_t>();
+    auto tagBytes = readTagBytes(addr + payloadSize, extraTagBytes);
+    if (tagBytes) {
+      xiType = reader.readBytes<const Metadata *>();
+      unsigned payloadNumExtraInhabitants =
+          xiType ? xiType->vw_getNumExtraInhabitants() : 0;
+      unsigned caseIndexFromExtraTagBits =
+          payloadSize >= 4 ? 0 : (tagBytes - 1U) << (payloadSize * 8U);
+      unsigned caseIndexFromValue = loadEnumElement(addr, payloadSize);
+      unsigned noPayloadIndex =
+          (caseIndexFromExtraTagBits | caseIndexFromValue) +
+          payloadNumExtraInhabitants;
+      return noPayloadIndex + 1;
+    }
+  } else {
+    reader.skip(sizeof(size_t));
+  }
+
+  xiType = reader.readBytes<const Metadata *>();
+
+  if (xiType) {
+    auto numEmptyCases = reader.readBytes<unsigned>();
+
+    return xiType->vw_getEnumTagSinglePayload(
+        (const OpaqueValue *)(addr + xiTagBytesOffset), numEmptyCases);
+  }
+
+  return 0;
+}
+
 void swift::swift_resolve_resilientAccessors(uint8_t *layoutStr,
                                              size_t layoutStrOffset,
                                              const uint8_t *fieldLayoutStr,
@@ -698,6 +784,18 @@ void swift::swift_resolve_resilientAccessors(uint8_t *layoutStr,
       reader.skip(3 * sizeof(size_t));
       break;
 
+    case RefCountingKind::SinglePayloadEnumGeneric: {
+      reader.skip(sizeof(uint64_t) +  // tag + offset
+                  sizeof(uint64_t) +  // extra tag bytes + XI offset
+                  sizeof(size_t) +    // payload size
+                  sizeof(uintptr_t) + // XI metadata
+                  sizeof(unsigned));  // num empty cases
+      auto refCountBytes = reader.readBytes<size_t>();
+      reader.skip(sizeof(size_t) + // bytes to skip if no payload case
+                  refCountBytes);
+      break;
+    }
+
     case RefCountingKind::MultiPayloadEnumFN: {
       auto getEnumTag = readRelativeFunctionPointer<GetEnumTagFn>(reader);
       writer.offset = layoutStrOffset + currentOffset - layoutStringHeaderSize;
@@ -733,6 +831,14 @@ void swift::swift_resolve_resilientAccessors(uint8_t *layoutStr,
       size_t refCountBytes = reader.readBytes<size_t>();
       // skip enum size, offsets and ref counts
       reader.skip(sizeof(size_t) + (numCases * sizeof(size_t)) + refCountBytes);
+      break;
+    }
+
+    case RefCountingKind::MultiPayloadEnumGeneric: {
+      reader.skip(sizeof(size_t));
+      auto numPayloads = reader.readBytes<size_t>();
+      auto refCountBytes = reader.readBytes<size_t>();
+      reader.skip(sizeof(size_t) * (numPayloads + 1) + refCountBytes);
       break;
     }
 
