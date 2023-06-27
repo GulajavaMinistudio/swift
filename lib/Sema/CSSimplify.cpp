@@ -3832,8 +3832,11 @@ ConstraintSystem::matchExistentialTypes(Type type1, Type type2,
   if (type1->getMetatypeInstanceType()->isPureMoveOnly()) {
     // tailor error message
     if (shouldAttemptFixes()) {
-      auto *fix = MustBeCopyable::create(*this, type1,
-                                        getConstraintLocator(locator));
+      auto *fix = MustBeCopyable::create(*this,
+                                         type1,
+                                         NoncopyableMatchFailure::forExistentialCast(
+                                             type2),
+                                         getConstraintLocator(locator));
       if (!recordFix(fix))
         return getTypeMatchSuccess();
     }
@@ -8492,7 +8495,10 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
     // If this is a failure to conform to Copyable, tailor the error message.
     if (protocol->isSpecificProtocol(KnownProtocolKind::Copyable)) {
       auto *fix =
-          MustBeCopyable::create(*this, type, getConstraintLocator(locator));
+          MustBeCopyable::create(*this,
+                                 type,
+                                 NoncopyableMatchFailure::forCopyableConstraint(),
+                                 getConstraintLocator(locator));
       if (!recordFix(fix))
         return SolutionKind::Solved;
     }
@@ -12202,7 +12208,7 @@ ConstraintSystem::simplifyKeyPathConstraint(
              (definitelyKeyPathType && capability == ReadOnly)) {
     auto resolvedKPTy =
       BoundGenericType::get(kpDecl, nullptr, {rootTy, valueTy});
-    return matchTypes(keyPathTy, resolvedKPTy, ConstraintKind::Bind, subflags,
+    return matchTypes(resolvedKPTy, keyPathTy, ConstraintKind::Bind, subflags,
                       loc);
   } else {
     addUnsolvedConstraint(Constraint::create(*this, ConstraintKind::KeyPath,
