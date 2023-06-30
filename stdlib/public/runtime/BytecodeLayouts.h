@@ -113,6 +113,14 @@ swift::OpaqueValue *swift_generic_initWithTake(swift::OpaqueValue *dest,
                                                swift::OpaqueValue *src,
                                                const Metadata *metadata);
 SWIFT_RUNTIME_EXPORT
+swift::OpaqueValue *
+swift_generic_initializeBufferWithCopyOfBuffer(swift::ValueBuffer *dest,
+                                               swift::ValueBuffer *src,
+                                               const Metadata *metadata);
+SWIFT_RUNTIME_EXPORT
+unsigned swift_singletonEnum_getEnumTag(swift::OpaqueValue *address,
+                                        const Metadata *metadata);
+SWIFT_RUNTIME_EXPORT
 unsigned swift_enumSimple_getEnumTag(swift::OpaqueValue *address,
                                      const Metadata *metadata);
 SWIFT_RUNTIME_EXPORT
@@ -124,6 +132,9 @@ unsigned swift_multiPayloadEnumGeneric_getEnumTag(swift::OpaqueValue *address,
 SWIFT_RUNTIME_EXPORT
 unsigned swift_singlePayloadEnumGeneric_getEnumTag(swift::OpaqueValue *address,
                                                    const Metadata *metadata);
+SWIFT_RUNTIME_EXPORT
+void swift_singlePayloadEnumGeneric_destructiveInjectEnumTag(
+    swift::OpaqueValue *address, unsigned tag, const Metadata *metadata);
 SWIFT_RUNTIME_EXPORT
 void swift_generic_instantiateLayoutString(const uint8_t *layoutStr,
                                            Metadata *type);
