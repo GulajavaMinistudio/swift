@@ -9676,21 +9676,15 @@ performMemberLookup(ConstraintKind constraintKind, DeclNameRef memberName,
             // If name doesn't appear in either `initializes` or `accesses`
             // then it's invalid instance member.
 
-            if (auto *initializesAttr =
-                    accessor->getAttrs().getAttribute<InitializesAttr>()) {
-              isValidReference |= llvm::any_of(
-                  initializesAttr->getProperties(), [&](Identifier name) {
-                    return DeclNameRef(name) == memberName;
-                  });
-            }
+            isValidReference |= llvm::any_of(
+                accessor->getInitializedProperties(), [&](VarDecl *prop) {
+                  return prop->createNameRef() == memberName;
+                });
 
-            if (auto *accessesAttr =
-                    accessor->getAttrs().getAttribute<AccessesAttr>()) {
-              isValidReference |= llvm::any_of(
-                  accessesAttr->getProperties(), [&](Identifier name) {
-                    return DeclNameRef(name) == memberName;
-                  });
-            }
+            isValidReference |= llvm::any_of(
+                accessor->getAccessedProperties(), [&](VarDecl *prop) {
+                  return prop->createNameRef() == memberName;
+                });
 
             if (!isValidReference) {
               result.addUnviable(
@@ -14627,6 +14621,12 @@ void ConstraintSystem::recordCallAsFunction(UnresolvedDotExpr *root,
 
   associateArgumentList(
       getConstraintLocator(root, ConstraintLocator::ApplyArgument), arguments);
+}
+
+void ConstraintSystem::recordKeyPath(KeyPathExpr *keypath,
+                                     TypeVariableType *root,
+                                     TypeVariableType *value, DeclContext *dc) {
+  KeyPaths.insert(std::make_pair(keypath, std::make_tuple(root, value, dc)));
 }
 
 ConstraintSystem::SolutionKind ConstraintSystem::simplifyFixConstraint(
