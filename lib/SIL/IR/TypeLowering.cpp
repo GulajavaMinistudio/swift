@@ -126,7 +126,8 @@ CaptureKind TypeConverter::getDeclCaptureKind(CapturedValue capture,
   if (!var->supportsMutation() && lowering.getLoweredType().isPureMoveOnly() &&
       !capture.isNoEscape()) {
       auto *param = dyn_cast<ParamDecl>(var);
-      if (!param || param->getValueOwnership() != ValueOwnership::Shared) {
+      if (!param || (param->getValueOwnership() != ValueOwnership::Shared &&
+                     !param->isSelfParameter())) {
         return CaptureKind::ImmutableBox;
       }
   }
@@ -2609,14 +2610,13 @@ static CanSILPackType computeLoweredPackType(TypeConverter &tc,
   SmallVector<CanType, 4> loweredElts;
   loweredElts.reserve(substType->getNumElements());
 
-  for (auto i : indices(substType->getElementTypes())) {
-    auto origEltType = origType.getPackElementType(i);
-    auto substEltType = substType.getElementType(i);
-
-    CanType loweredTy =
+  origType.forEachExpandedPackElement(substType,
+                                      [&](AbstractionPattern origEltType,
+                                          CanType substEltType) {
+    auto loweredTy =
         tc.getLoweredRValueType(context, origEltType, substEltType);
     loweredElts.push_back(loweredTy);
-  }
+  });
 
   bool elementIsAddress = true; // TODO
   SILPackType::ExtInfo extInfo(elementIsAddress);
@@ -4260,6 +4260,11 @@ TypeConverter::checkFunctionForABIDifferences(SILModule &M,
   // we might have pointer equality here.
   if (fnTy1 == fnTy2)
     return ABIDifference::CompatibleRepresentation;
+
+  // Force unimplementable functions into the thunk path so that we don't
+  // have to worry about diagnosing this in a ton of different places.
+  if (fnTy1->isUnimplementable() || fnTy2->isUnimplementable())
+    return ABIDifference::NeedsThunk;
 
   if (fnTy1->getParameters().size() != fnTy2->getParameters().size())
     return ABIDifference::NeedsThunk;

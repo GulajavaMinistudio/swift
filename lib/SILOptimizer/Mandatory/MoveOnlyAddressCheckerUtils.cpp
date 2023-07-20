@@ -1028,6 +1028,15 @@ void UseState::initializeLiveness(
     liveness.initializeDef(address, liveness.getTopLevelSpan());
   }
 
+  if (auto *ptai = dyn_cast<PointerToAddressInst>(
+          stripAccessMarkers(address->getOperand()))) {
+    assert(ptai->isStrict());
+    LLVM_DEBUG(llvm::dbgs() << "Found pointer to address use... "
+                               "adding mark_must_check as init!\n");
+    recordInitUse(address, address, liveness.getTopLevelSpan());
+    liveness.initializeDef(address, liveness.getTopLevelSpan());
+  }
+
   // Now that we have finished initialization of defs, change our multi-maps
   // from their array form to their map form.
   liveness.finishedInitializationOfDefs();
@@ -2314,6 +2323,18 @@ bool GatherUsesVisitor::visitUse(Operand *op) {
       }
     }
 
+    // If our partial apply takes this parameter as an inout parameter and it
+    // has the no move only diagnostics marker on it, do not emit an error
+    // either.
+    if (auto *f = pas->getCalleeFunction()) {
+      if (f->hasSemanticsAttr(semantics::NO_MOVEONLY_DIAGNOSTICS)) {
+        if (ApplySite(pas).getArgumentOperandConvention(*op).isInoutConvention()) {
+          diagnosticEmitter.emitEarlierPassEmittedDiagnostic(markedValue);
+          return false;
+        }
+      }
+    }
+
     if (pas->isOnStack() ||
         ApplySite(pas).getArgumentConvention(*op).isInoutConvention()) {
       LLVM_DEBUG(llvm::dbgs() << "Found on stack partial apply or inout usage!\n");
@@ -2761,7 +2782,7 @@ void MoveOnlyAddressCheckerPImpl::insertDestroysOnBoundary(
     auto interestingUser = liveness.getInterestingUser(inst);
     SmallVector<std::pair<TypeTreeLeafTypeRange, IsInterestingUser>, 4> ranges;
     if (interestingUser) {
-      interestingUser->getContiguousRanges(ranges);
+      interestingUser->getContiguousRanges(ranges, bv);
     }
 
     for (auto rangePair : ranges) {
@@ -2799,12 +2820,14 @@ void MoveOnlyAddressCheckerPImpl::insertDestroysOnBoundary(
           auto *block = inst->getParent();
           for (auto *succBlock : block->getSuccessorBlocks()) {
             auto iter = mergeBlocks.find(succBlock);
-            if (iter == mergeBlocks.end())
+            if (iter == mergeBlocks.end()) {
               iter = mergeBlocks.insert({succBlock, bits}).first;
-            else {
+            } else {
+              // NOTE: We use |= here so that different regions of the same
+              // terminator get updated appropriately.
               SmallBitVector &alreadySetBits = iter->second;
               bool hadCommon = alreadySetBits.anyCommon(bits);
-              alreadySetBits &= bits;
+              alreadySetBits |= bits;
               if (hadCommon)
                 continue;
             }
