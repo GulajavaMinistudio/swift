@@ -707,3 +707,30 @@ do {
     test3(str: "", a, a)  // expected-error {{ambiguous use of 'test3'}}
   }
 }
+
+// rdar://112095973 - single-element tuples are not unwrapped in member references
+do {
+  struct V<Value> {
+    let key: Int
+  }
+
+  struct S<each T> {
+    let data: (repeat V<each T>)
+  }
+
+  func test<U>(_ value: S<U>) {
+    _ = value.data.key // Ok
+  }
+}
+
+// rdar://110847476 - unrelated assignment and raw representable diagnostics
+do {
+  struct Test<each Base: AsyncSequence> {
+    let base: (repeat each Base)
+
+    init(base: repeat each Base) {
+      self.base = base
+      // expected-error@-1 {{pack reference 'each Base' can only appear in pack expansion}}
+    }
+  }
+}

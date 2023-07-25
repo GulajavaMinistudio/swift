@@ -5093,7 +5093,7 @@ bool ConstraintSystem::repairFailures(
     if (auto objType = valueType->getOptionalObjectType())
       valueType = objType;
 
-    if (rawReprType->isTypeVariableOrMember())
+    if (rawReprType->isTypeVariableOrMember() || rawReprType->isPlaceholder())
       return false;
 
     auto rawValue = isRawRepresentable(*this, rawReprType);
@@ -5348,6 +5348,11 @@ bool ConstraintSystem::repairFailures(
         return true;
 
       if (repairByUsingRawValueOfRawRepresentableType(lhs, rhs))
+        return true;
+
+      // If either side is a placeholder then let's consider this
+      // assignment correctly typed.
+      if (lhs->isPlaceholder() || rhs->isPlaceholder())
         return true;
 
       // Let's try to match source and destination types one more
@@ -9376,6 +9381,17 @@ performMemberLookup(ConstraintKind constraintKind, DeclNameRef memberName,
     MemberLookupResult result;
     result.OverallResult = MemberLookupResult::Unsolved;
     return result;
+  }
+
+  // Delay member lookup until single-element tuple with pack expansion
+  // is sufficiently resolved.
+  if (isSingleUnlabeledPackExpansionTuple(instanceTy)) {
+    auto elementTy = instanceTy->castTo<TupleType>()->getElementType(0);
+    if (elementTy->is<TypeVariableType>()) {
+      MemberLookupResult result;
+      result.OverallResult = MemberLookupResult::Unsolved;
+      return result;
+    }
   }
 
   // Okay, start building up the result list.
@@ -13488,6 +13504,17 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifySameShapeConstraint(
                                     : SolutionKind::Solved;
     };
 
+    auto recordShapeMismatchFix = [&]() -> SolutionKind {
+      unsigned impact = 1;
+      if (locator.endsWith<LocatorPathElt::AnyRequirement>())
+        impact = assessRequirementFailureImpact(*this, shape1, locator);
+
+      return recordShapeFix(
+          SkipSameShapeRequirement::create(*this, type1, type2,
+                                           getConstraintLocator(locator)),
+          impact);
+    };
+
     // Let's check whether we can produce a tailored fix for argument/parameter
     // mismatches.
     if (locator.endsWith<LocatorPathElt::PackShape>()) {
@@ -13507,8 +13534,15 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifySameShapeConstraint(
         auto argLoc =
             loc->castLastElementTo<LocatorPathElt::ApplyArgToParam>();
 
-        auto argPack = type1->castTo<PackType>();
-        auto paramPack = type2->castTo<PackType>();
+        if (type1->getAs<PackArchetypeType>() &&
+            type2->getAs<PackArchetypeType>())
+          return recordShapeMismatchFix();
+
+        auto argPack = type1->getAs<PackType>();
+        auto paramPack = type2->getAs<PackType>();
+
+        if (!(argPack && paramPack))
+          return SolutionKind::Error;
 
         // Tailed diagnostic to explode tuples.
         // FIXME: This is very similar to
@@ -13567,14 +13601,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifySameShapeConstraint(
       }
     }
 
-    unsigned impact = 1;
-    if (locator.endsWith<LocatorPathElt::AnyRequirement>())
-      impact = assessRequirementFailureImpact(*this, shape1, locator);
-
-    return recordShapeFix(
-        SkipSameShapeRequirement::create(*this, type1, type2,
-                                         getConstraintLocator(locator)),
-        impact);
+    return recordShapeMismatchFix();
   }
 
   return SolutionKind::Error;
