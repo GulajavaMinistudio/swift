@@ -2736,7 +2736,7 @@ public:
       SILFunctionConventions initConv(initTy, AI->getModule());
 
       require(initConv.getNumIndirectSILResults() ==
-                  AI->getInitializedProperties().size(),
+                  AI->getNumInitializedProperties(),
               "init function has invalid number of indirect results");
       checkAssigOrInitInstAccessorArgs(Src->getType(), initConv);
     }
@@ -6016,7 +6016,7 @@ public:
     auto type = ddi->getType();
     require(type == ddi->getOperand()->getType(),
             "Result and operand must have the same type.");
-    require(type.isMoveOnlyNominalType(),
+    require(type.isPureMoveOnly(),
             "drop_deinit only allowed for move-only types");
     require(type.getNominalOrBoundGenericNominal()
             ->getValueTypeDestructor(), "drop_deinit only allowed for "
