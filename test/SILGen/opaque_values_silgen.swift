@@ -647,3 +647,34 @@ func giveKeyPathString() {
 @backDeployed(before: SwiftStdlib 5.8)
 public func backDeployingReturningGeneric<T>(_ t: T) throws -> T { t }
 #endif
+
+// CHECK-LABEL: sil {{.*}}[ossa] @SetIntoContainerAtKeyPath : {{.*}} {
+// CHECK:       bb0([[CONTAINER_ADDR:%[^,]+]] : {{.*}}, [[KP:%[^,]+]] : {{.*}}, [[VALUE:%[^,]+]] :
+// CHECK:         [[KP_COPY:%[^,]+]] = copy_value [[KP]] : $WritableKeyPath<Container, Field>
+// CHECK:         [[VALUE_COPY:%[^,]+]] = copy_value [[VALUE]] : $Field
+// CHECK:         [[CONTAINER_ACCESS:%[^,]+]] = begin_access [modify] [unknown] [[CONTAINER_ADDR]] : $*Container
+// CHECK:         [[SETTER:%[^,]+]] = function_ref @swift_setAtWritableKeyPath
+// CHECK:         apply [[SETTER]]<Container, Field>([[CONTAINER_ACCESS]], [[KP_COPY]], [[VALUE_COPY]])
+// CHECK:         end_access [[CONTAINER_ACCESS]] : $*Container
+// CHECK:         destroy_value [[KP_COPY]]
+// CHECK-LABEL: } // end sil function 'SetIntoContainerAtKeyPath'
+@_silgen_name("SetIntoContainerAtKeyPath")
+func set<Container, Field>(into container: inout Container, at keyPath: WritableKeyPath<Container, Field>, _ value: Field) {
+  container[keyPath: keyPath] = value
+}
+
+// CHECK-LABEL: sil {{.*}}[ossa] @$s20opaque_values_silgen16FormClassKeyPathyyF1QL_C1qSivpADTk : {{.*}} {
+// CHECK:       bb0([[VALUE:%[^,]+]] :
+// CHECK-SAME:      [[CONTAINER:%[^,]+]] :
+// CHECK:         [[CONTAINER_COPY:%[^,]+]] = copy_value [[CONTAINER]]
+// CHECK:         [[SETTER:%[^,]+]] = class_method [[CONTAINER_COPY]]
+// CHECK:         [[REGISTER_4:%[^,]+]] = apply [[SETTER]]([[VALUE]], [[CONTAINER_COPY]])
+// CHECK:         destroy_value [[CONTAINER_COPY]]
+// CHECK-LABEL: } // end sil function '$s20opaque_values_silgen16FormClassKeyPathyyF1QL_C1qSivpADTk'
+@_silgen_name("FormClassKeyPath")
+func FormClassKeyPath() {
+  class Q {
+    var q: Int = 0
+  }
+  _ = \Q.q
+}
