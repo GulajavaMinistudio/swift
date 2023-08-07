@@ -36,6 +36,7 @@
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/TypeLoc.h"
 #include "swift/AST/TypeRepr.h"
+#include "swift/Basic/Compiler.h"
 #include "clang/AST/Type.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -261,6 +262,7 @@ bool CanType::isReferenceTypeImpl(CanType type, const GenericSignatureImpl *sig,
   case TypeKind::PackExpansion:
   case TypeKind::PackElement:
   case TypeKind::SILPack:
+  case TypeKind::BuiltinTuple:
 #define REF_STORAGE(Name, ...) \
   case TypeKind::Name##Storage:
 #include "swift/AST/ReferenceStorage.def"
@@ -270,8 +272,6 @@ bool CanType::isReferenceTypeImpl(CanType type, const GenericSignatureImpl *sig,
   case TypeKind::DependentMember:
     assert(sig && "dependent types can't answer reference semantics query");
     return sig->requiresClass(type);
-  case TypeKind::BuiltinTuple:
-    llvm_unreachable("Should not get a BuiltinTupleType here");
   }
 
   llvm_unreachable("Unhandled type kind!");
@@ -2037,8 +2037,8 @@ Identifier GenericTypeParamType::getName() const {
   llvm::SmallString<10> nameBuf;
   llvm::raw_svector_ostream os(nameBuf);
 
-  static const char *tau = u8"\u03C4_";
-  
+  static const char *tau = SWIFT_UTF8("\u03C4_");
+
   os << tau << getDepth() << '_' << getIndex();
   Identifier name = C.getIdentifier(os.str());
   names.insert({depthIndex, name});
