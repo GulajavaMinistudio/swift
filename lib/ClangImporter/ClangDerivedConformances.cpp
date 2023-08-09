@@ -360,11 +360,18 @@ static bool synthesizeCXXOperator(ClangImporter::Implementation &impl,
 
   // Lookup the `operator==` function that will be called under the hood.
   clang::UnresolvedSet<16> operators;
+  clang::sema::DelayedDiagnosticPool diagPool{
+      impl.getClangSema().DelayedDiagnostics.getCurrentPool()};
+  auto diagState = impl.getClangSema().DelayedDiagnostics.push(diagPool);
   // Note: calling `CreateOverloadedBinOp` emits an error if the looked up
   // function is unavailable for the current target.
   auto underlyingCallResult = clangSema.CreateOverloadedBinOp(
       clang::SourceLocation(), operatorKind, operators, lhsParamRefExpr,
       rhsParamRefExpr);
+  impl.getClangSema().DelayedDiagnostics.popWithoutEmitting(diagState);
+
+  if (!diagPool.empty())
+    return false;
   if (!underlyingCallResult.isUsable())
     return false;
   auto underlyingCall = underlyingCallResult.get();
@@ -926,4 +933,48 @@ void swift::conformToCxxDictionaryIfNeeded(
   impl.addSynthesizedTypealias(decl, ctx.getIdentifier("InsertionResult"),
                                insert->getResultInterfaceType());
   impl.addSynthesizedProtocolAttrs(decl, {KnownProtocolKind::CxxDictionary});
+}
+
+void swift::conformToCxxVectorIfNeeded(ClangImporter::Implementation &impl,
+                                       NominalTypeDecl *decl,
+                                       const clang::CXXRecordDecl *clangDecl) {
+  PrettyStackTraceDecl trace("conforming to CxxVector", decl);
+
+  assert(decl);
+  assert(clangDecl);
+  ASTContext &ctx = decl->getASTContext();
+
+  // Only auto-conform types from the C++ standard library. Custom user types
+  // might have a similar interface but different semantics.
+  if (!isStdDecl(clangDecl, {"vector"}))
+    return;
+
+  auto valueType = lookupDirectSingleWithoutExtensions<TypeAliasDecl>(
+      decl, ctx.getIdentifier("value_type"));
+  auto iterType = lookupDirectSingleWithoutExtensions<TypeAliasDecl>(
+      decl, ctx.getIdentifier("const_iterator"));
+  if (!valueType || !iterType)
+    return;
+
+  ProtocolDecl *cxxRandomAccessIteratorProto =
+      ctx.getProtocol(KnownProtocolKind::UnsafeCxxRandomAccessIterator);
+  if (!cxxRandomAccessIteratorProto)
+    return;
+
+  auto rawIteratorTy = iterType->getUnderlyingType();
+
+  // Check if RawIterator conforms to UnsafeCxxRandomAccessIterator.
+  ModuleDecl *module = decl->getModuleContext();
+  auto rawIteratorConformanceRef =
+      module->lookupConformance(rawIteratorTy, cxxRandomAccessIteratorProto);
+  if (!isConcreteAndValid(rawIteratorConformanceRef, module))
+    return;
+
+  impl.addSynthesizedTypealias(decl, ctx.Id_Element,
+                               valueType->getUnderlyingType());
+  impl.addSynthesizedTypealias(decl, ctx.Id_ArrayLiteralElement,
+                               valueType->getUnderlyingType());
+  impl.addSynthesizedTypealias(decl, ctx.getIdentifier("RawIterator"),
+                               rawIteratorTy);
+  impl.addSynthesizedProtocolAttrs(decl, {KnownProtocolKind::CxxVector});
 }
