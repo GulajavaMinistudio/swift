@@ -202,7 +202,8 @@ void ConformanceLookupTable::forEachInStage(ConformanceStage stage,
       for (auto conf : conformances) {
         protocols.push_back({conf->getProtocol(), SourceLoc(), SourceLoc()});
       }
-    } else if (next->getParentSourceFile()) {
+    } else if (next->getParentSourceFile() ||
+               next->getParentModule()->isBuiltinModule()) {
       bool anyObject = false;
       for (const auto &found :
                getDirectlyInheritedNominalTypeDecls(next, anyObject)) {
@@ -418,8 +419,10 @@ void ConformanceLookupTable::loadAllConformances(
        ArrayRef<ProtocolConformance*> conformances) {
   // If this declaration context came from source, there's nothing to
   // do here.
-  if (dc->getParentSourceFile())
+  if (dc->getParentSourceFile() ||
+      dc->getParentModule()->isBuiltinModule()) {
     return;
+  }
 
   // Add entries for each loaded conformance.
   for (auto conformance : conformances) {
@@ -565,20 +568,6 @@ ConformanceLookupTable::Ordering ConformanceLookupTable::compareConformances(
                                    ConformanceEntry *lhs,
                                    ConformanceEntry *rhs,
                                    bool &diagnoseSuperseded) {
-  // If only one of the conformances is unconditionally available on the
-  // current deployment target, pick that one.
-  //
-  // FIXME: Conformance lookup should really depend on source location for
-  // this to be 100% correct.
-  // FIXME: When a class and an extension with the same availability declare the
-  // same conformance, this silently takes the class and drops the extension.
-  if (lhs->getDeclContext()->isAlwaysAvailableConformanceContext() !=
-      rhs->getDeclContext()->isAlwaysAvailableConformanceContext()) {
-    return (lhs->getDeclContext()->isAlwaysAvailableConformanceContext()
-            ? Ordering::Before
-            : Ordering::After);
-  }
-
   ConformanceEntryKind lhsKind = lhs->getRankingKind();
   ConformanceEntryKind rhsKind = rhs->getRankingKind();
 
@@ -594,6 +583,20 @@ ConformanceLookupTable::Ordering ConformanceLookupTable::compareConformances(
               ? Ordering::Before
               : Ordering::After);
     }
+  }
+
+  // If only one of the conformances is unconditionally available on the
+  // current deployment target, pick that one.
+  //
+  // FIXME: Conformance lookup should really depend on source location for
+  // this to be 100% correct.
+  // FIXME: When a class and an extension with the same availability declare the
+  // same conformance, this silently takes the class and drops the extension.
+  if (lhs->getDeclContext()->isAlwaysAvailableConformanceContext() !=
+      rhs->getDeclContext()->isAlwaysAvailableConformanceContext()) {
+    return (lhs->getDeclContext()->isAlwaysAvailableConformanceContext()
+            ? Ordering::Before
+            : Ordering::After);
   }
 
   // If one entry is fixed and the other is not, we have our answer.
@@ -928,9 +931,9 @@ ConformanceLookupTable::getConformance(NominalTypeDecl *nominal,
 
     // Create or find the normal conformance.
     auto normalConf =
-        ctx.getConformance(conformingType, protocol, conformanceLoc,
-                           conformingDC, ProtocolConformanceState::Incomplete,
-                           entry->Source.getUncheckedLoc().isValid());
+        ctx.getNormalConformance(conformingType, protocol, conformanceLoc,
+                                 conformingDC, ProtocolConformanceState::Incomplete,
+                                 entry->Source.getUncheckedLoc().isValid());
     // Invalid code may cause the getConformance call below to loop, so break
     // the infinite recursion by setting this eagerly to shortcircuit with the
     // early return at the start of this function.

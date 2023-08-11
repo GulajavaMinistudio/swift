@@ -1,4 +1,4 @@
-// RUN: %target-swift-emit-silgen -enable-sil-opaque-values -Xllvm -sil-full-demangle %s | %FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-%target-runtime
+// RUN: %target-swift-emit-silgen -enable-sil-opaque-values -Xllvm -sil-full-demangle -primary-file %s | %FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-%target-runtime
 
 // Test SILGen -enable-sil-opaque-values with tests that depend on the stdlib.
 
@@ -742,4 +742,43 @@ protocol MutatingFooable {
 @_silgen_name("callMutatingFooOnInoutExistential")
 func callMutatingFooOnInoutExistential(_ i: inout any MutatingFooable) {
   i.foo()
+}
+
+// CHECK-LABEL: sil {{.*}}[ossa] @$s20opaque_values_silgen7WeakBoxV1txSgvg : {{.*}} {
+// CHECK:       bb0([[INSTANCE:%[^,]+]] :
+// CHECK:         [[WEAK_OPTIONAL:%[^,]+]] = struct_extract [[INSTANCE]]
+// CHECK:         [[STRONG_OPTIONAL:%[^,]+]] = strong_copy_weak_value [[WEAK_OPTIONAL]]
+// CHECK:         return [[STRONG_OPTIONAL]]
+// CHECK-LABEL: } // end sil function '$s20opaque_values_silgen7WeakBoxV1txSgvg'
+// CHECK-LABEL: sil {{.*}}[ossa] @$s20opaque_values_silgen7WeakBoxV1tACyxGxSg_tcfC : {{.*}} {
+// CHECK:       bb0([[STRONG_OPTIONAL:%[^,]+]] :
+// CHECK:         [[WEAK_OPTIONAL:%[^,]+]] = weak_copy_value [[STRONG_OPTIONAL]]
+// CHECK:         destroy_value [[STRONG_OPTIONAL]]
+// CHECK:         [[INSTANCE:%[^,]+]] = struct $WeakBox<T> ([[WEAK_OPTIONAL]] :
+// CHECK:         return [[INSTANCE]]
+// CHECK-LABEL: } // end sil function '$s20opaque_values_silgen7WeakBoxV1tACyxGxSg_tcfC'
+struct WeakBox<T : AnyObject> {
+  weak var t: T?
+}
+
+// CHECK-LABEL: sil {{.*}}[ossa] @intIntoAnyHashableVar : {{.*}} {
+// CHECK:         [[VAR_BOX_ADDR:%[^,]+]] = project_box
+// CHECK:         [[INT:%[^,]+]] = apply
+// CHECK:         [[CONVERT:%[^,]+]] = function_ref @$ss21_convertToAnyHashableys0cD0VxSHRzlF
+// CHECK:         [[INSTANCE:%[^,]+]] = apply [[CONVERT]]<Int>([[INT]])
+// CHECK:         store [[INSTANCE]] to [init] [[VAR_BOX_ADDR]]
+// CHECK-LABEL: } // end sil function 'intIntoAnyHashableVar'
+@_silgen_name("intIntoAnyHashableVar")
+func intIntoAnyHashableVar() {
+  var anyHashable: AnyHashable = 0
+}
+
+// CHECK-LABEL: sil {{.*}}[ossa] @intIntoAnyHashableLet : {{.*}} {
+// CHECK:         [[INT:%[^,]+]] = apply
+// CHECK:         [[CONVERT:%[^,]+]] = function_ref @$ss21_convertToAnyHashableys0cD0VxSHRzlF
+// CHECK:         [[INSTANCE:%[^,]+]] = apply [[CONVERT]]<Int>([[INT]])
+// CHECK-LABEL: } // end sil function 'intIntoAnyHashableLet'
+@_silgen_name("intIntoAnyHashableLet")
+func intIntoAnyHashableLet() {
+  let anyHashable: AnyHashable = 0
 }
