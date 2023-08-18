@@ -506,6 +506,26 @@ extension PropertyWrapperSkipsComputedMacro: AccessorMacro, Macro {
   }
 }
 
+public struct WillSetMacro: AccessorMacro {
+  public static func expansion(
+    of node: AttributeSyntax,
+    providingAccessorsOf declaration: some DeclSyntaxProtocol,
+    in context: some MacroExpansionContext
+  ) throws -> [AccessorDeclSyntax] {
+    guard let varDecl = declaration.as(VariableDeclSyntax.self),
+      let binding = varDecl.bindings.first,
+      let identifier = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier else {
+      return []
+    }
+
+    return [
+      """
+        willSet { }
+      """
+    ]
+  }
+}
+
 public struct WrapAllProperties: MemberAttributeMacro {
   public static func expansion(
     of node: AttributeSyntax,
@@ -1286,6 +1306,39 @@ public struct EquatableMacro: ExtensionMacro {
     in context: some MacroExpansionContext
   ) throws -> [ExtensionDeclSyntax] {
     let ext: DeclSyntax = "extension \(type.trimmed): Equatable {}"
+    return [ext.cast(ExtensionDeclSyntax.self)]
+  }
+}
+
+public struct EquatableViaMembersMacro: ExtensionMacro {
+  public static func expansion(
+    of node: AttributeSyntax,
+    attachedTo decl: some DeclGroupSyntax,
+    providingExtensionsOf type: some TypeSyntaxProtocol,
+    conformingTo protocols: [TypeSyntax],
+    in context: some MacroExpansionContext
+  ) throws -> [ExtensionDeclSyntax] {
+    let comparisons: [String] = decl.storedProperties().map { property in
+      guard let binding = property.bindings.first,
+            let identifier = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier else {
+        return "true"
+      }
+
+      return "lhs.\(identifier) == rhs.\(identifier)"
+    }
+
+    let condition = comparisons.joined(separator: " && ")
+    let equalOperator: DeclSyntax = """
+      static func ==(lhs: \(type.trimmed), rhs: \(type.trimmed)) -> Bool {
+        return \(raw: condition)
+      }
+      """
+
+    let ext: DeclSyntax = """
+      extension \(type.trimmed): Equatable {
+        \(equalOperator)
+      }
+      """
     return [ext.cast(ExtensionDeclSyntax.self)]
   }
 }

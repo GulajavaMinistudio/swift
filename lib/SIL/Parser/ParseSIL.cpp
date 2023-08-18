@@ -1707,9 +1707,6 @@ bool SILParser::parseSILDeclRef(SILDeclRef &Result,
       } else if (!ParseState && Id.str() == "defaultarg") {
         Kind = SILDeclRef::Kind::IVarInitializer;
         ParseState = 1;
-      } else if (!ParseState && Id.str() == "attrgenerator") {
-        Kind = SILDeclRef::Kind::RuntimeAttributeGenerator;
-        ParseState = 1;
       } else if (!ParseState && Id.str() == "propertyinit") {
         Kind = SILDeclRef::Kind::StoredPropertyInitializer;
         ParseState = 1;
@@ -3592,6 +3589,17 @@ bool SILParser::parseSpecificSILInstruction(SILBuilder &B,
         parseSILType(elementType))
       return true;
     ResultVal = B.createTuplePackElementAddr(InstLoc, index, tuple, elementType);
+    break;
+  }
+  case SILInstructionKind::TuplePackExtractInst: {
+    SILValue index, tuple;
+    SILType elementType;
+    if (parseValueRef(index, SILType::getPackIndexType(P.Context), InstLoc,
+                      B) ||
+        parseVerbatim("of") || parseTypedValueRef(tuple, B) ||
+        parseVerbatim("as") || parseSILType(elementType))
+      return true;
+    ResultVal = B.createTuplePackExtract(InstLoc, index, tuple, elementType);
     break;
   }
 

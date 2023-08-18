@@ -4906,6 +4906,14 @@ public:
       requireSameType(
           result->getType(), SEO->getType(),
           "select_enum case operand must match type of instruction");
+
+      // In canonical SIL, select instructions must not cover any enum elements
+      // that are unavailable.
+      if (F.getModule().getStage() >= SILStage::Canonical) {
+        require(elt->isAvailableDuringLowering(),
+                "select_enum dispatches on enum element that is unavailable "
+                "during lowering.");
+      }
     }
 
     // If the select is non-exhaustive, we require a default.
@@ -4994,6 +5002,15 @@ public:
                 "arguments");
         return;
       }
+
+      // In canonical SIL, switch instructions must not cover any enum elements
+      // that are unavailable.
+      if (F.getModule().getStage() >= SILStage::Canonical) {
+        require(elt->isAvailableDuringLowering(),
+                "switch_enum dispatches on enum element that is unavailable "
+                "during lowering.");
+      }
+
       // Check for a valid switch result type.
       if (dest->getArguments().size() == 1) {
         SILType eltArgTy = uTy.getEnumElementType(elt, F.getModule(),
@@ -5097,6 +5114,14 @@ public:
               "switch_enum_addr dispatches on same enum element "
               "more than once");
       unswitchedElts.erase(elt);
+
+      // In canonical SIL, switch instructions must not cover any enum elements
+      // that are unavailable.
+      if (F.getModule().getStage() >= SILStage::Canonical) {
+        require(elt->isAvailableDuringLowering(),
+                "switch_enum_addr dispatches on enum element that is "
+                "unavailable during lowering.");
+      }
 
       // The destination BB must not have BB arguments.
       require(dest->getArguments().empty(),
@@ -5930,6 +5955,32 @@ public:
 
     require(i->getElementType().isAddress(),
             "result of tuple_pack_element_addr must be an address");
+
+    verifyPackElementType(tupleElements, index,
+                          i->getElementType().getASTType(),
+                          /*types are SIL types*/ true);
+  }
+
+  void checkTuplePackExtractInst(TuplePackExtractInst *i) {
+    require(!F.getModule().useLoweredAddresses(),
+            "tuple_pack_extract is only valid in opaque values");
+    auto index = requireValueKind<AnyPackIndexInst>(
+        i->getIndex(),
+        "pack index operand must be one of the pack_index instructions");
+    if (!index)
+      return;
+
+    // Remove the extra tuple element type structure.
+    SmallVector<CanType, 8> tupleElements;
+    {
+      auto tupleType = requireObjectType(TupleType, i->getTuple()->getType(),
+                                         "tuple operand of tuple_pack_extract");
+      auto eltTypes = tupleType.getElementTypes();
+      tupleElements.append(eltTypes.begin(), eltTypes.end());
+    }
+
+    require(i->getElementType().isObject(),
+            "result of tuple_pack_extract must be an object");
 
     verifyPackElementType(tupleElements, index,
                           i->getElementType().getASTType(),

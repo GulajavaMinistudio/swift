@@ -1922,11 +1922,6 @@ bool isNonSendableExtension(const Decl *D) {
 bool ShouldPrintChecker::shouldPrint(const Decl *D,
                                      const PrintOptions &Options) {
   if (auto *ED = dyn_cast<ExtensionDecl>(D)) {
-    // Always print unavilable extensions that carry reflection
-    // metadata attributes.
-    if (!ED->getRuntimeDiscoverableAttrs().empty())
-      return true;
-
     if (Options.printExtensionContentAsMembers(ED))
       return false;
   }
@@ -3105,10 +3100,6 @@ static bool usesFeatureSpecializeAttributeWithAvailability(Decl *decl) {
         return true;
     }
   }
-  return false;
-}
-
-static bool usesFeatureRuntimeDiscoverableAttrs(Decl *decl) {
   return false;
 }
 
@@ -5851,6 +5842,11 @@ class TypePrinter : public TypeVisitor<TypePrinter> {
     // For the current module, consider both private and public imports.
     ModuleDecl::ImportFilter Filter = ModuleDecl::ImportFilterKind::Exported;
     Filter |= ModuleDecl::ImportFilterKind::Default;
+
+    // For private swiftinterfaces, also look through @_spiOnly imports.
+    if (Options.PrintSPIs)
+      Filter |= ModuleDecl::ImportFilterKind::SPIOnly;
+
     SmallVector<ImportedModule, 4> Imports;
     Options.CurrentModule->getImportedModules(Imports, Filter);
 

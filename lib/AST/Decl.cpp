@@ -2810,26 +2810,13 @@ bool AbstractStorageDecl::isResilient() const {
   return getModuleContext()->isResilient();
 }
 
-static bool isOriginallyDefinedIn(const Decl *D, const ModuleDecl* MD) {
-  if (!MD)
-    return false;
-  if (D->getAlternateModuleName().empty())
-    return false;
-  return D->getAlternateModuleName() == MD->getName().str();
-}
-
 bool AbstractStorageDecl::isResilient(ModuleDecl *M,
                                       ResilienceExpansion expansion) const {
   switch (expansion) {
   case ResilienceExpansion::Minimal:
     return isResilient();
   case ResilienceExpansion::Maximal:
-    // We consider this decl belongs to the module either it's currently
-    // defined in this module or it's originally defined in this module, which
-    // is specified by @_originallyDefinedIn
-    return (M != getModuleContext() &&
-            !isOriginallyDefinedIn(this, M) &&
-            isResilient());
+    return M != getModuleContext() && isResilient();
   }
   llvm_unreachable("bad resilience expansion");
 }
@@ -4782,18 +4769,45 @@ DestructorDecl *NominalTypeDecl::getValueTypeDestructor() {
   return cast<DestructorDecl>(found[0]);
 }
 
+static bool isOriginallyDefinedIn(const Decl *D, const ModuleDecl* MD) {
+  if (!MD)
+    return false;
+  if (D->getAlternateModuleName().empty())
+    return false;
+  return D->getAlternateModuleName() == MD->getName().str();
+}
+
 bool NominalTypeDecl::isResilient(ModuleDecl *M,
                                   ResilienceExpansion expansion) const {
   switch (expansion) {
   case ResilienceExpansion::Minimal:
     return isResilient();
   case ResilienceExpansion::Maximal:
-    // We consider this decl belongs to the module either it's currently
-    // defined in this module or it's originally defined in this module, which
-    // is specified by @_originallyDefinedIn
-    return (M != getModuleContext() &&
-            !isOriginallyDefinedIn(this, M) &&
-            isResilient());
+    // We can access declarations from the same module
+    // non-resiliently in a maximal context.
+    if (M == getModuleContext()) {
+      return false;
+    }
+    // If a protocol is originally declared in the current module, then we
+    // directly expose protocol witness tables and their contents for any
+    // conformances in the same module as symbols. If the protocol later
+    // moves, then we need to preserve those extra symbols from the home
+    // module by treating the protocol as if it was still defined in the same
+    // module.
+    //
+    // This logic does not and should not generally extend to other kinds of
+    // declaration. If a declaration moves to a new module with library
+    // evolution enabled, then even the original module has to access it
+    // according to the library evolution ABI. This is an ABI compatibility
+    // hack only for protocols. If you see other variations of `isResilient`
+    // that don't check `isOriginallyDefinedIn`, they are probably correct.
+    if (isa<ProtocolDecl>(this)
+        && isOriginallyDefinedIn(this, M)) {
+      return false;
+    }
+    // Otherwise, we have to access the declaration resiliently if it's
+    // resilient anywhere.
+    return isResilient();
   }
   llvm_unreachable("bad resilience expansion");
 }
@@ -5944,14 +5958,13 @@ EnumCaseDecl *EnumCaseDecl::create(SourceLoc CaseLoc,
 }
 
 bool EnumDecl::hasPotentiallyUnavailableCaseValue() const {
-  switch (static_cast<AssociatedValueCheck>(Bits.EnumDecl.HasAssociatedValues)) {
-    case AssociatedValueCheck::Unchecked:
-      // Compute below
-      this->hasOnlyCasesWithoutAssociatedValues();
-      LLVM_FALLTHROUGH;
-    default:
-      return static_cast<bool>(Bits.EnumDecl.HasAnyUnavailableValues);
-  }
+  (void)this->hasOnlyCasesWithoutAssociatedValues(); // Prime the cache
+  return static_cast<bool>(Bits.EnumDecl.HasAnyUnavailableValues);
+}
+
+bool EnumDecl::hasCasesUnavailableDuringLowering() const {
+  (void)this->hasOnlyCasesWithoutAssociatedValues(); // Prime the cache
+  return static_cast<bool>(Bits.EnumDecl.HasAnyUnavailableDuringLoweringValues);
 }
 
 bool EnumDecl::hasOnlyCasesWithoutAssociatedValues() const {
@@ -5970,6 +5983,7 @@ bool EnumDecl::hasOnlyCasesWithoutAssociatedValues() const {
   }
 
   bool hasAnyUnavailableValues = false;
+  bool hasAnyUnavailableDuringLoweringValues = false;
   bool hasAssociatedValues = false;
 
   for (auto elt : getAllElements()) {
@@ -5980,6 +5994,9 @@ bool EnumDecl::hasOnlyCasesWithoutAssociatedValues() const {
       }
     }
 
+    if (!elt->isAvailableDuringLowering())
+      hasAnyUnavailableDuringLoweringValues = true;
+
     if (elt->hasAssociatedValues())
       hasAssociatedValues = true;
   }
@@ -5987,6 +6004,8 @@ bool EnumDecl::hasOnlyCasesWithoutAssociatedValues() const {
   EnumDecl *enumDecl = const_cast<EnumDecl *>(this);
 
   enumDecl->Bits.EnumDecl.HasAnyUnavailableValues = hasAnyUnavailableValues;
+  enumDecl->Bits.EnumDecl.HasAnyUnavailableDuringLoweringValues =
+      hasAnyUnavailableDuringLoweringValues;
   enumDecl->Bits.EnumDecl.HasAssociatedValues = static_cast<unsigned>(
       hasAssociatedValues ? AssociatedValueCheck::HasAssociatedValues
                           : AssociatedValueCheck::NoAssociatedValues);
@@ -7448,11 +7467,6 @@ bool VarDecl::hasAttachedPropertyWrapper() const {
     return true;
 
   return false;
-}
-
-/// Whether this property has any attached runtime metadata attributes.
-bool VarDecl::hasRuntimeMetadataAttributes() const {
-  return !getRuntimeDiscoverableAttrs().empty();
 }
 
 bool VarDecl::hasImplicitPropertyWrapper() const {
@@ -10960,22 +10974,6 @@ void MacroExpansionDecl::forEachExpandedNode(
   auto *sourceFile = moduleDecl->getSourceFileContainingLocation(startLoc);
   for (auto node : sourceFile->getTopLevelItems())
     callback(node);
-}
-
-NominalTypeDecl *
-ValueDecl::getRuntimeDiscoverableAttrTypeDecl(CustomAttr *attr) const {
-  auto &ctx = getASTContext();
-  auto *nominal = evaluateOrDefault(
-      ctx.evaluator, CustomAttrNominalRequest{attr, getDeclContext()}, nullptr);
-  assert(nominal->getAttrs().hasAttribute<RuntimeMetadataAttr>());
-  return nominal;
-}
-
-ArrayRef<CustomAttr *> Decl::getRuntimeDiscoverableAttrs() const {
-  auto *mutableSelf = const_cast<Decl *>(this);
-  return evaluateOrDefault(getASTContext().evaluator,
-                           GetRuntimeDiscoverableAttributes{mutableSelf},
-                           nullptr);
 }
 
 /// Adjust the declaration context to find a point in the context hierarchy

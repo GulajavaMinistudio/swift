@@ -391,9 +391,6 @@ void SILDeclRef::print(raw_ostream &OS) const {
   case SILDeclRef::Kind::PropertyWrapperInitFromProjectedValue:
     OS << "!projectedvalueinit";
     break;
-  case SILDeclRef::Kind::RuntimeAttributeGenerator:
-    OS << "!attrgenerator";
-    break;
   }
 
   if (isForeign)
@@ -2433,6 +2430,10 @@ public:
     *this << Ctx.getID(I->getIndex()) << " of "
           << getIDAndType(I->getTuple()) << " as "
           << I->getElementType();
+  }
+  void visitTuplePackExtractInst(TuplePackExtractInst *I) {
+    *this << Ctx.getID(I->getIndex()) << " of " << getIDAndType(I->getTuple())
+          << " as " << I->getElementType();
   }
   void visitProjectBlockStorageInst(ProjectBlockStorageInst *PBSI) {
     *this << getIDAndType(PBSI->getOperand());
