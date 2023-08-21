@@ -206,9 +206,6 @@ namespace swift {
     /// Should conformance availability violations be diagnosed as errors?
     bool EnableConformanceAvailabilityErrors = false;
 
-    /// Should potential unavailability on enum cases be downgraded to a warning?
-    bool WarnOnPotentiallyUnavailableEnumCase = false;
-
     /// Should the editor placeholder error be downgraded to a warning?
     bool WarnOnEditorPlaceholder = false;
 
@@ -799,6 +796,9 @@ namespace swift {
 
     /// See \ref FrontendOptions.PrintFullConvention
     bool PrintFullConvention = false;
+
+    /// Defer typechecking of declarations to their use at runtime
+    bool DeferToRuntime = false;
   };
 
   /// Options for controlling the behavior of the Clang importer.
