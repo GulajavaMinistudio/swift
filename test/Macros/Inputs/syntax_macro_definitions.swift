@@ -1343,6 +1343,25 @@ public struct EquatableViaMembersMacro: ExtensionMacro {
   }
 }
 
+public struct FooExtensionMacro: ExtensionMacro {
+  public static func expansion(of node: AttributeSyntax, attachedTo declaration: some DeclGroupSyntax, providingExtensionsOf type: some TypeSyntaxProtocol, conformingTo protocols: [TypeSyntax], in context: some MacroExpansionContext) throws -> [ExtensionDeclSyntax] {
+    let decl: DeclSyntax =
+    """
+    extension Foo {
+      var foo: String { "foo" }
+      func printFoo() {
+        print(foo)
+      }
+    }
+    """
+    guard let extensionDecl = decl.as(ExtensionDeclSyntax.self) else {
+      return []
+    }
+
+    return [extensionDecl]
+  }
+}
+
 public struct ConformanceViaExtensionMacro: ExtensionMacro {
   public static func expansion(
     of node: AttributeSyntax,
@@ -1926,5 +1945,26 @@ public struct NestedMagicLiteralMacro: ExpressionMacro {
         print(#MagicLine)
       }()
       """
+  }
+}
+
+public struct InitWithProjectedValueWrapperMacro: PeerMacro {
+  public static func expansion(
+    of node: AttributeSyntax,
+    providingPeersOf declaration: some DeclSyntaxProtocol,
+    in context: some MacroExpansionContext
+  ) throws -> [DeclSyntax] {
+    return [
+      """
+      private var _value: Wrapper
+      var _$value: Wrapper {
+        @storageRestrictions(initializes: _value)
+        init {
+          self._value = newValue
+        }
+        get { _value }
+      }
+      """
+    ]
   }
 }
