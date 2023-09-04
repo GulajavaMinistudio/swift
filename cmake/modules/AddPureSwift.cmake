@@ -5,17 +5,16 @@ function(force_target_link_libraries TARGET)
   cmake_parse_arguments(ARGS "" "" "PUBLIC" ${ARGN})
 
   foreach(DEPENDENCY ${ARGS_PUBLIC})
-    target_link_libraries(${TARGET} PRIVATE
-      ${DEPENDENCY}
-    )
+    target_link_libraries(${TARGET} PRIVATE ${DEPENDENCY})
     add_dependencies(${TARGET} ${DEPENDENCY})
 
-    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/forced-${DEPENDENCY}-dep.swift
-      COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/forced-${DEPENDENCY}-dep.swift
+    string(REGEX REPLACE [<>:\"/\\|?*] _ sanitized ${DEPENDENCY})
+    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/forced-${sanitized}-dep.swift
+      COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/forced-${sanitized}-dep.swift
       DEPENDS ${DEPENDENCY}
       )
     target_sources(${TARGET} PRIVATE
-      ${CMAKE_CURRENT_BINARY_DIR}/forced-${DEPENDENCY}-dep.swift
+      ${CMAKE_CURRENT_BINARY_DIR}/forced-${sanitized}-dep.swift
     )
   endforeach()
 endfunction()
@@ -76,7 +75,7 @@ function(_set_pure_swift_link_flags name relpath_to_lib_dir)
       APPEND PROPERTY INSTALL_RPATH
         # At runtime, use swiftCore in the current just-built toolchain.
         # NOTE: This relies on the ABI being the same as the builder.
-        "$ORIGIN/${relpath_to_lib_dir}/swift/${SWIFT_SDK_${SWIFT_HOST_VARIANT_SDK}_LIB_SUBDIR}"
+        "$ORIGIN/${relpath_to_lib_dir}swift/${SWIFT_SDK_${SWIFT_HOST_VARIANT_SDK}_LIB_SUBDIR}"
     )
     # NOTE: At this point we don't have any pure swift executables/shared
     # libraries required for building runtime/stdlib. So we don't need to add
@@ -285,7 +284,7 @@ function(add_pure_swift_host_tool name)
   # Create the library.
   add_executable(${name} ${APSHT_SOURCES})
   _add_host_swift_compile_options(${name})
-  _set_pure_swift_link_flags(${name} "../lib")
+  _set_pure_swift_link_flags(${name} "../lib/")
 
   if(SWIFT_HOST_VARIANT_SDK IN_LIST SWIFT_DARWIN_PLATFORMS)
     set_property(TARGET ${name}

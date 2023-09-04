@@ -1,5 +1,10 @@
-// RUN: %target-typecheck-verify-swift
+// RUN: %target-swift-frontend -verify -emit-sil -o /dev/null %s
+// RUN: %target-swift-frontend -verify -emit-sil -o /dev/null %s -strict-concurrency=targeted
+// RUN: %target-swift-frontend -verify -emit-sil -o /dev/null %s -strict-concurrency=complete
+// RUN: %target-swift-frontend -verify -emit-sil -o /dev/null %s -strict-concurrency=complete -enable-experimental-feature SendNonSendable
+
 // REQUIRES: concurrency
+// REQUIRES: asserts
 
 @available(SwiftStdlib 5.1, *)
 class NotSendable { // expected-note 2{{class 'NotSendable' does not conform to the 'Sendable' protocol}}

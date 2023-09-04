@@ -1,5 +1,10 @@
 // RUN: %target-swift-frontend -emit-sil %s  -disable-availability-checking | %FileCheck %s
+// RUN: %target-swift-frontend -emit-sil %s  -disable-availability-checking -strict-concurrency=targeted | %FileCheck %s
+// RUN: %target-swift-frontend -emit-sil %s  -disable-availability-checking -strict-concurrency=complete | %FileCheck %s
+// RUN: %target-swift-frontend -emit-sil %s  -disable-availability-checking -strict-concurrency=complete -enable-experimental-feature SendNonSendable | %FileCheck %s
+
 // REQUIRES: concurrency
+// REQUIRES: asserts
 
 actor A {
   var x: String = "Hello"

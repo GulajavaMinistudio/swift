@@ -679,9 +679,8 @@ namespace {
 
       OS << " requirement signature=";
       if (PD->isRequirementSignatureComputed()) {
-        auto requirements = PD->getRequirementSignature().getRequirements();
-        OS << GenericSignature::get({PD->getProtocolSelfType()}, requirements)
-                ->getAsString();
+        auto requirements = PD->getRequirementSignatureAsGenericSignature();
+        OS << requirements->getAsString();
       } else {
         OS << "<null>";
       }
@@ -1622,6 +1621,13 @@ public:
       OS << '\n';
       printRec(yield);
     }
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+  }
+
+  void visitThenStmt(ThenStmt *S) {
+    printCommon(S, "then_stmt");
+    OS << '\n';
+    printRec(S->getResult());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
 

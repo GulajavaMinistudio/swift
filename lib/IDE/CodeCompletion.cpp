@@ -293,6 +293,7 @@ public:
   }
 
   void completeReturnStmt(CodeCompletionExpr *E) override;
+  void completeThenStmt(CodeCompletionExpr *E) override;
   void completeYieldStmt(CodeCompletionExpr *E,
                          llvm::Optional<unsigned> yieldIndex) override;
   void completeAfterPoundExpr(CodeCompletionExpr *E,
@@ -589,6 +590,12 @@ void CodeCompletionCallbacksImpl::completeReturnStmt(CodeCompletionExpr *E) {
   CurDeclContext = P.CurDeclContext;
   CodeCompleteTokenExpr = E;
   Kind = CompletionKind::ReturnStmtExpr;
+}
+
+void CodeCompletionCallbacksImpl::completeThenStmt(CodeCompletionExpr *E) {
+  CurDeclContext = P.CurDeclContext;
+  CodeCompleteTokenExpr = E;
+  Kind = CompletionKind::ThenStmtExpr;
 }
 
 void CodeCompletionCallbacksImpl::completeYieldStmt(
@@ -896,14 +903,19 @@ static void addKeywordsAfterReturn(CodeCompletionResultSink &Sink, DeclContext *
   // using the solver-based implementation. Add the result manually.
   if (auto ctor = dyn_cast_or_null<ConstructorDecl>(DC->getAsDecl())) {
     if (ctor->isFailable()) {
+      Type resultType = ctor->getResultInterfaceType();
+
+      // Note that `TypeContext` must stay alive for the duration of
+      // `~CodeCodeCompletionResultBuilder()`.
+      ExpectedTypeContext TypeContext;
+      TypeContext.setPossibleTypes({resultType});
+
       CodeCompletionResultBuilder Builder(Sink, CodeCompletionResultKind::Literal,
                                           SemanticContextKind::None);
       Builder.setLiteralKind(CodeCompletionLiteralKind::NilLiteral);
       Builder.addKeyword("nil");
-      Builder.addTypeAnnotation(ctor->getResultInterfaceType(), {});
-      Builder.setResultTypes(ctor->getResultInterfaceType());
-      ExpectedTypeContext TypeContext;
-      TypeContext.setPossibleTypes({ctor->getResultInterfaceType()});
+      Builder.addTypeAnnotation(resultType, {});
+      Builder.setResultTypes(resultType);
       Builder.setTypeContext(TypeContext, DC);
     }
   }
@@ -1047,6 +1059,7 @@ void CodeCompletionCallbacksImpl::addKeywords(CodeCompletionResultSink &Sink,
   case CompletionKind::ReturnStmtExpr:
     addKeywordsAfterReturn(Sink, CurDeclContext);
     LLVM_FALLTHROUGH;
+  case CompletionKind::ThenStmtExpr:
   case CompletionKind::YieldStmtExpr:
   case CompletionKind::ForEachSequence:
     addSuperKeyword(Sink, CurDeclContext);
@@ -1556,11 +1569,19 @@ bool CodeCompletionCallbacksImpl::trySolverCompletion(bool MaybeFuncBody) {
   case CompletionKind::PostfixExprBeginning:
   case CompletionKind::StmtOrExpr: 
   case CompletionKind::ReturnStmtExpr:
-  case CompletionKind::YieldStmtExpr: {
+  case CompletionKind::YieldStmtExpr:
+  case CompletionKind::ThenStmtExpr: {
     assert(CurDeclContext);
 
-    bool AddUnresolvedMemberCompletions =
-        (Kind == CompletionKind::CaseStmtBeginning);
+    bool AddUnresolvedMemberCompletions = false;
+    switch (Kind) {
+    case CompletionKind::CaseStmtBeginning:
+    case CompletionKind::ThenStmtExpr:
+      AddUnresolvedMemberCompletions = true;
+      break;
+    default:
+      break;
+    }
     ExprTypeCheckCompletionCallback Lookup(
         CodeCompleteTokenExpr, CurDeclContext, AddUnresolvedMemberCompletions);
     if (CodeCompleteTokenExpr) {
@@ -1730,6 +1751,7 @@ void CodeCompletionCallbacksImpl::doneParsing(SourceFile *SrcFile) {
   case CompletionKind::PostfixExpr:
   case CompletionKind::ReturnStmtExpr:
   case CompletionKind::YieldStmtExpr:
+  case CompletionKind::ThenStmtExpr:
     llvm_unreachable("should be already handled");
     return;
 

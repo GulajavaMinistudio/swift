@@ -2492,57 +2492,84 @@ SingleValueStmtExpr *SingleValueStmtExpr::createWithWrappedBranches(
     if (!BS)
       continue;
 
-    auto *S = BS->getSingleActiveStatement();
-    if (!S)
-      continue;
-
-    if (mustBeExpr) {
-      // If this must be an expression, we can eagerly wrap any exhaustive if
-      // and switch branch.
-      if (auto *IS = dyn_cast<IfStmt>(S)) {
-        if (!IS->isSyntacticallyExhaustive())
+    if (auto *S = BS->getSingleActiveStatement()) {
+      if (mustBeExpr) {
+        // If this must be an expression, we can eagerly wrap any exhaustive if
+        // and switch branch.
+        if (auto *IS = dyn_cast<IfStmt>(S)) {
+          if (!IS->isSyntacticallyExhaustive())
+            continue;
+        } else if (!isa<SwitchStmt>(S)) {
           continue;
-      } else if (!isa<SwitchStmt>(S)) {
-        continue;
+        }
+      } else {
+        // Otherwise do the semantic checking to verify that we can wrap the
+        // branch.
+        if (!S->mayProduceSingleValue(ctx))
+          continue;
       }
-    } else {
-      // Otherwise do the semantic checking to verify that we can wrap the
-      // branch.
-      if (!S->mayProduceSingleValue(ctx))
-        continue;
+      BS->setLastElement(SingleValueStmtExpr::createWithWrappedBranches(
+          ctx, S, DC, mustBeExpr));
     }
-    BS->setLastElement(
-        SingleValueStmtExpr::createWithWrappedBranches(ctx, S, DC, mustBeExpr));
+
+    // Wrap single expression branches in an implicit 'then <expr>'.
+    if (auto *E = BS->getSingleActiveExpression())
+      BS->setLastElement(ThenStmt::createImplicit(ctx, E));
   }
   return SVE;
 }
 
 SingleValueStmtExpr *
 SingleValueStmtExpr::tryDigOutSingleValueStmtExpr(Expr *E) {
-  while (true) {
-    // Look through implicit conversions.
-    if (auto *ICE = dyn_cast<ImplicitConversionExpr>(E)) {
-      E = ICE->getSubExpr();
-      continue;
+  class SVEFinder final : public ASTWalker {
+  public:
+    SingleValueStmtExpr *FoundSVE = nullptr;
+
+    PreWalkResult<Expr *> walkToExprPre(Expr *E) override {
+      if (auto *SVE = dyn_cast<SingleValueStmtExpr>(E)) {
+        FoundSVE = SVE;
+        return Action::Stop();
+      }
+
+      // Look through implicit exprs.
+      if (E->isImplicit())
+        return Action::Continue(E);
+
+      // Look through coercions.
+      if (isa<CoerceExpr>(E))
+        return Action::Continue(E);
+
+      // Look through try/await (this is invalid, but we'll error on it in
+      // effect checking).
+      if (isa<AnyTryExpr>(E) || isa<AwaitExpr>(E))
+        return Action::Continue(E);
+
+      return Action::Stop();
     }
-    // Look through coercions.
-    if (auto *CE = dyn_cast<CoerceExpr>(E)) {
-      E = CE->getSubExpr();
-      continue;
+    PreWalkResult<Stmt *> walkToStmtPre(Stmt *S) override {
+      return Action::Stop();
     }
-    // Look through try/await (this is invalid, but we'll error on it in
-    // effect checking).
-    if (auto *TE = dyn_cast<AnyTryExpr>(E)) {
-      E = TE->getSubExpr();
-      continue;
+    PreWalkAction walkToDeclPre(Decl *D) override {
+      return Action::Stop();
     }
-    if (auto *AE = dyn_cast<AwaitExpr>(E)) {
-      E = AE->getSubExpr();
-      continue;
+    PreWalkResult<Pattern *> walkToPatternPre(Pattern *P) override {
+      return Action::Stop();
     }
-    break;
-  }
-  return dyn_cast<SingleValueStmtExpr>(E);
+    PreWalkAction walkToTypeReprPre(TypeRepr *T) override {
+      return Action::Stop();
+    }
+  };
+  SVEFinder finder;
+  E->walk(finder);
+  return finder.FoundSVE;
+}
+
+ThenStmt *SingleValueStmtExpr::getThenStmtFrom(BraceStmt *BS) {
+  if (BS->empty())
+   return nullptr;
+
+  // Must be the last statement in the brace.
+  return dyn_cast_or_null<ThenStmt>(BS->getLastElement().dyn_cast<Stmt *>());
 }
 
 SourceRange SingleValueStmtExpr::getSourceRange() const {
@@ -2571,17 +2598,27 @@ SingleValueStmtExpr::getBranches(SmallVectorImpl<Stmt *> &scratch) const {
   llvm_unreachable("Unhandled case in switch!");
 }
 
-ArrayRef<Expr *> SingleValueStmtExpr::getSingleExprBranches(
-    SmallVectorImpl<Expr *> &scratch) const {
+ArrayRef<ThenStmt *> SingleValueStmtExpr::getThenStmts(
+    SmallVectorImpl<ThenStmt *> &scratch) const {
   assert(scratch.empty());
   SmallVector<Stmt *, 4> stmtScratch;
   for (auto *branch : getBranches(stmtScratch)) {
     auto *BS = dyn_cast<BraceStmt>(branch);
     if (!BS)
       continue;
-    if (auto *E = BS->getSingleActiveExpression())
-      scratch.push_back(E);
+    if (auto *TS = getThenStmtFrom(BS))
+      scratch.push_back(TS);
   }
+  return scratch;
+}
+
+ArrayRef<Expr *> SingleValueStmtExpr::getResultExprs(
+    SmallVectorImpl<Expr *> &scratch) const {
+  assert(scratch.empty());
+  SmallVector<ThenStmt *, 4> stmtScratch;
+  for (auto *TS : getThenStmts(stmtScratch))
+    scratch.push_back(TS->getResult());
+
   return scratch;
 }
 

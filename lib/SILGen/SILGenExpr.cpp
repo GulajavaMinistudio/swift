@@ -2235,7 +2235,7 @@ RValue RValueEmitter::visitSingleValueStmtExpr(SingleValueStmtExpr *E,
   // Collect the target exprs that will be used for initialization.
   SmallVector<Expr *, 4> scratch;
   SILGenFunction::SingleValueStmtInitialization initInfo(resultAddr);
-  for (auto *E : E->getSingleExprBranches(scratch))
+  for (auto *E : E->getResultExprs(scratch))
     initInfo.Exprs.insert(E);
 
   // Push the initialization for branches of the statement to initialize into.
@@ -6208,8 +6208,10 @@ RValue RValueEmitter::visitConsumeExpr(ConsumeExpr *E, SGFContext C) {
     cast<MoveValueInst>(mv.getValue())->setAllowsDiagnostics(true);
     if (subType.isMoveOnly()) {
       // We need to move-only-check the moved value.
-      mv = SGF.B.createMarkMustCheckInst(E, mv,
-                         MarkMustCheckInst::CheckKind::ConsumableAndAssignable);
+      mv = SGF.B.createMarkUnresolvedNonCopyableValueInst(
+          E, mv,
+          MarkUnresolvedNonCopyableValueInst::CheckKind::
+              ConsumableAndAssignable);
     }
     return RValue(SGF, {mv}, subType.getASTType());
   }

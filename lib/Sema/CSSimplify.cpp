@@ -5808,9 +5808,6 @@ bool ConstraintSystem::repairFailures(
   }
 
   case ConstraintLocator::FunctionArgument: {
-    auto *argLoc = getConstraintLocator(
-        locator.withPathElement(LocatorPathElt::SynthesizedArgument(0)));
-
     // Let's drop the last element which points to a single argument
     // and see if this is a contextual mismatch.
     path.pop_back();
@@ -5819,38 +5816,41 @@ bool ConstraintSystem::repairFailures(
           path.back().getKind() == ConstraintLocator::ContextualType))
       return false;
 
-    auto arg = llvm::find_if(getTypeVariables(),
-                             [&argLoc](const TypeVariableType *typeVar) {
-                               return typeVar->getImpl().getLocator() == argLoc;
-                             });
+    if (auto argToParamElt =
+            path.back().getAs<LocatorPathElt::ApplyArgToParam>()) {
+      auto loc = getConstraintLocator(anchor, path);
 
-    // What we have here is a form or tuple splat with no arguments
-    // demonstrated by following example:
-    //
-    // func foo<T: P>(_: T, _: (T.Element) -> Int) {}
-    // foo { 42 }
-    //
-    // In cases like this `T.Element` might be resolved to `Void`
-    // which means that we have to try a single empty tuple argument
-    // as a narrow exception to SE-0110, see `matchFunctionTypes`.
-    //
-    // But if `T.Element` didn't get resolved to `Void` we'd like
-    // to diagnose this as a missing argument which can't be ignored or
-    // a tuple is trying to be inferred as a tuple for destructuring but
-    // contextual argument does not match(in this case we remove the extra
-    // closure arguments).
-    if (arg != getTypeVariables().end()) {
-      if (auto argToParamElt =
-              path.back().getAs<LocatorPathElt::ApplyArgToParam>()) {
-        auto loc = getConstraintLocator(anchor, path);
-        auto closureAnchor =
-            getAsExpr<ClosureExpr>(simplifyLocatorToAnchor(loc));
-        if (rhs->is<TupleType>() && closureAnchor &&
-            closureAnchor->getParameters()->size() > 1) {
+      if (auto closure = getAsExpr<ClosureExpr>(simplifyLocatorToAnchor(loc))) {
+        auto closureTy = getClosureType(closure);
+        // What we have here is a form or tuple splat with no arguments
+        // demonstrated by following example:
+        //
+        // func foo<T: P>(_: T, _: (T.Element) -> Int) {}
+        // foo { 42 }
+        //
+        // In cases like this `T.Element` might be resolved to `Void`
+        // which means that we have to try a single empty tuple argument
+        // as a narrow exception to SE-0110, see `matchFunctionTypes`.
+        //
+        // But if `T.Element` didn't get resolved to `Void` we'd like
+        // to diagnose this as a missing argument which can't be ignored or
+        // a tuple is trying to be inferred as a tuple for destructuring but
+        // contextual argument does not match(in this case we remove the extra
+        // closure arguments).
+        if (closureTy->getNumParams() == 0) {
+          conversionsOrFixes.push_back(AddMissingArguments::create(
+              *this, {SynthesizedArg{0, AnyFunctionType::Param(lhs)}}, loc));
+          break;
+        }
+
+        // Since this is a problem with `FunctionArgument` we know that the
+        // contextual type only has one parameter, if closure has more than
+        // that the fix is to remove extraneous ones.
+        if (closureTy->getNumParams() > 1) {
           auto callee = getCalleeLocator(loc);
           if (auto overload = findSelectedOverloadFor(callee)) {
-            auto fnType =
-                simplifyType(overload->adjustedOpenedType)->castTo<FunctionType>();
+            auto fnType = simplifyType(overload->adjustedOpenedType)
+                              ->castTo<FunctionType>();
             auto paramIdx = argToParamElt->getParamIdx();
             auto paramType = fnType->getParams()[paramIdx].getParameterType();
             if (auto paramFnType = paramType->getAs<FunctionType>()) {
@@ -5861,11 +5861,6 @@ bool ConstraintSystem::repairFailures(
           }
         }
       }
-
-      conversionsOrFixes.push_back(AddMissingArguments::create(
-          *this, {SynthesizedArg{0, AnyFunctionType::Param(*arg)}},
-          getConstraintLocator(anchor, path)));
-      break;
     }
 
     auto *parentLoc = getConstraintLocator(anchor, path);
@@ -6375,7 +6370,7 @@ bool ConstraintSystem::repairFailures(
   }
 
   case ConstraintLocator::TernaryBranch:
-  case ConstraintLocator::SingleValueStmtBranch: {
+  case ConstraintLocator::SingleValueStmtResult: {
     recordAnyTypeVarAsPotentialHole(lhs);
     recordAnyTypeVarAsPotentialHole(rhs);
 
@@ -7818,16 +7813,20 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
       // value statements.
       //
       // As with the previous checks, we only allow the Void conversion in
-      // an implicit single-expression closure. In the more general case, we
-      // only allow the Never conversion.
+      // an implicit single-expression closure. In the more general case for
+      // implicit branches, we only allow the Never conversion. For explicit
+      // branches, no conversions are allowed.
       auto *loc = getConstraintLocator(locator);
       if (auto branchKind = loc->isForSingleValueStmtBranch()) {
         bool allowConversion = false;
         switch (*branchKind) {
-        case SingleValueStmtBranchKind::Regular:
+        case SingleValueStmtBranchKind::Explicit:
+          allowConversion = false;
+          break;
+        case SingleValueStmtBranchKind::Implicit:
           allowConversion = type1->isUninhabited();
           break;
-        case SingleValueStmtBranchKind::InSingleExprClosure:
+        case SingleValueStmtBranchKind::ImplicitInSingleExprClosure:
           allowConversion = true;
           break;
         }
@@ -8577,7 +8576,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
 
           if (auto *protocolDecl =
                   memberRef->getDeclContext()->getSelfProtocolDecl()) {
-            auto selfTy = protocolDecl->getProtocolSelfType();
+            auto selfTy = protocolDecl->getSelfInterfaceType();
             if (selfTy->isEqual(requirement.getFirstType())) {
               auto *fix = AllowInvalidStaticMemberRefOnProtocolMetatype::create(
                 *this, memberLoc);
@@ -15205,12 +15204,12 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyFixConstraint(
         impact = 5;
       }
     }
-    using SingleValueStmtBranch = LocatorPathElt::SingleValueStmtBranch;
-    if (auto branchElt = locator->getLastElementAs<SingleValueStmtBranch>()) {
+    using SingleValueStmtResult = LocatorPathElt::SingleValueStmtResult;
+    if (auto branchElt = locator->getLastElementAs<SingleValueStmtResult>()) {
       // Similar to a ternary, except we have N branches. Let's prefer the fix
       // on the first branch, and discount subsequent branches by index.
-      if (branchElt->getExprBranchIndex() > 0)
-        impact = 9 + branchElt->getExprBranchIndex();
+      if (branchElt->getIndex() > 0)
+        impact = 9 + branchElt->getIndex();
     }
     // Increase impact of invalid conversions to `Any` and `AnyHashable`
     // associated with collection elements (i.e. for-in sequence element)
@@ -15292,6 +15291,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyFixConstraint(
   case FixKind::DestructureTupleToMatchPackExpansionParameter:
   case FixKind::AllowValueExpansionWithoutPackReferences:
   case FixKind::IgnoreInvalidPatternInExpr:
+  case FixKind::IgnoreOutOfPlaceThenStmt:
   case FixKind::IgnoreMissingEachKeyword:
     llvm_unreachable("handled elsewhere");
   }
