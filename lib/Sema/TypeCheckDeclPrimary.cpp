@@ -92,14 +92,12 @@ static Type containsParameterizedProtocolType(Type inheritedTy) {
 /// file.
 static void checkInheritanceClause(
     llvm::PointerUnion<const TypeDecl *, const ExtensionDecl *> declUnion) {
-  ArrayRef<InheritedEntry> inheritedClause;
+  auto inheritedClause = InheritedTypes(declUnion).getEntries();
   const ExtensionDecl *ext = nullptr;
   const TypeDecl *typeDecl = nullptr;
   const Decl *decl;
   if ((ext = declUnion.dyn_cast<const ExtensionDecl *>())) {
     decl = ext;
-
-    inheritedClause = ext->getInherited();
 
     // Protocol extensions cannot have inheritance clauses.
     if (auto proto = ext->getExtendedProtocolDecl()) {
@@ -114,7 +112,6 @@ static void checkInheritanceClause(
   } else {
     typeDecl = declUnion.get<const TypeDecl *>();
     decl = typeDecl;
-    inheritedClause = typeDecl->getInherited();
   }
 
   // Can this declaration's inheritance clause contain a class or
@@ -1968,6 +1965,14 @@ public:
                      target->getModuleFilename());
     }
 
+    // Report use of package import when no package name is set.
+    if (ID->getAccessLevel() == AccessLevel::Package &&
+        getASTContext().LangOpts.PackageName.empty()) {
+      auto &diags = ID->getASTContext().Diags;
+      diags.diagnose(ID->getLoc(),
+                     diag::access_control_requires_package_name_import);
+    }
+
     // Report the public import of a private module.
     if (ID->getASTContext().LangOpts.LibraryLevel == LibraryLevel::API) {
       auto importer = ID->getModuleContext();
@@ -2731,14 +2736,14 @@ public:
       // The raw type must be one of the blessed literal convertible types.
       if (!computeAutomaticEnumValueKind(ED)) {
         if (!rawTy->is<ErrorType>()) {
-          DE.diagnose(ED->getInherited().front().getSourceRange().Start,
+          DE.diagnose(ED->getInherited().getStartLoc(),
                       diag::raw_type_not_literal_convertible, rawTy);
         }
       }
       
       // We need at least one case to have a raw value.
       if (ED->getAllElements().empty()) {
-        DE.diagnose(ED->getInherited().front().getSourceRange().Start,
+        DE.diagnose(ED->getInherited().getStartLoc(),
                     diag::empty_enum_raw_type);
       }
     }
@@ -2968,7 +2973,7 @@ public:
           return;
 
         // go over the all types directly conformed-to by the extension
-        for (auto entry : extension->getInherited()) {
+        for (auto entry : extension->getInherited().getEntries()) {
           diagnoseIncompatibleWithMoveOnlyType(extension->getLoc(), nomDecl,
                                                entry.getType());
         }
@@ -3470,7 +3475,7 @@ public:
     if (EED->hasAssociatedValues()) {
       if (auto rawTy = ED->getRawType()) {
         EED->diagnose(diag::enum_with_raw_type_case_with_argument);
-        DE.diagnose(ED->getInherited().front().getSourceRange().Start,
+        DE.diagnose(ED->getInherited().getStartLoc(),
                     diag::enum_raw_type_here, rawTy);
         EED->setInvalid();
       }

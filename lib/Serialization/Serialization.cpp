@@ -1038,6 +1038,11 @@ void Serializer::writeHeader() {
         HasHermeticSealAtLink.emit(ScratchRecord);
       }
 
+      if (Options.EmbeddedSwiftModule) {
+        options_block::IsEmbeddedSwiftModuleLayout IsEmbeddedSwiftModule(Out);
+        IsEmbeddedSwiftModule.emit(ScratchRecord);
+      }
+
       if (M->isTestingEnabled()) {
         options_block::IsTestableLayout IsTestable(Out);
         IsTestable.emit(ScratchRecord);
@@ -3801,9 +3806,9 @@ public:
   /// Add all of the inherited entries to the result vector.
   ///
   /// \returns the number of entries added.
-  size_t addInherited(ArrayRef<InheritedEntry> inheritedEntries,
+  size_t addInherited(InheritedTypes inheritedEntries,
                       SmallVectorImpl<TypeID> &result) {
-    for (const auto &inherited : inheritedEntries) {
+    for (const auto &inherited : inheritedEntries.getEntries()) {
       assert(!inherited.getType() || !inherited.getType()->hasArchetype());
       TypeID typeRef = S.addTypeRef(inherited.getType());
 
@@ -4218,7 +4223,7 @@ public:
         proto->getInherited(), inheritedAndDependencyTypes);
 
     // Separately collect inherited protocol types as dependencies.
-    for (auto element : proto->getInherited()) {
+    for (auto element : proto->getInherited().getEntries()) {
       auto elementType = element.getType();
       assert(!elementType || !elementType->hasArchetype());
       if (elementType &&
