@@ -1110,9 +1110,14 @@ namespace {
 
     void visitAssociatedTypeDecl(AssociatedTypeDecl *decl, StringRef label) {
       printCommon(decl, "associated_type_decl", label);
-      if (auto defaultDef = decl->getDefaultDefinitionType()) {
-        printFieldQuoted(defaultDef, "default");
+
+      StringRef fieldName("default");
+      if (auto defaultDef = decl->getCachedDefaultDefinitionType()) {
+        printFieldQuoted(*defaultDef, fieldName);
+      } else {
+        printField("<not computed>", fieldName);
       }
+
       printWhereRequirements(decl);
       if (decl->overriddenDeclsComputed()) {
         printFieldQuotedRaw([&](raw_ostream &OS) {
@@ -2683,15 +2688,17 @@ public:
     printField(E->getRawDiscriminator(), "discriminator", DiscriminatorColor);
 
     switch (auto isolation = E->getActorIsolation()) {
-    case ClosureActorIsolation::Nonisolated:
+    case ActorIsolation::Unspecified:
+    case ActorIsolation::Nonisolated:
       break;
 
-    case ClosureActorIsolation::ActorInstance:
+    case ActorIsolation::ActorInstance:
       printFieldQuoted(isolation.getActorInstance()->printRef(),
                        "actor_isolated", CapturesColor);
       break;
 
-    case ClosureActorIsolation::GlobalActor:
+    case ActorIsolation::GlobalActor:
+    case ActorIsolation::GlobalActorUnsafe:
       printFieldQuoted(isolation.getGlobalActor().getString(),
                        "global_actor_isolated", CapturesColor);
       break;

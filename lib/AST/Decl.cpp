@@ -5263,24 +5263,67 @@ AssociatedTypeDecl::AssociatedTypeDecl(DeclContext *dc, SourceLoc keywordLoc,
                                        TrailingWhereClause *trailingWhere)
     : TypeDecl(DeclKind::AssociatedType, dc, name, nameLoc, { }),
       KeywordLoc(keywordLoc), DefaultDefinition(defaultDefinition),
-      TrailingWhere(trailingWhere) {}
+      TrailingWhere(trailingWhere) {
+  Bits.AssociatedTypeDecl.IsDefaultDefinitionTypeComputed = false;
+}
 
-AssociatedTypeDecl::AssociatedTypeDecl(DeclContext *dc, SourceLoc keywordLoc,
-                                       Identifier name, SourceLoc nameLoc,
-                                       TrailingWhereClause *trailingWhere,
-                                       LazyMemberLoader *definitionResolver,
-                                       uint64_t resolverData)
-    : TypeDecl(DeclKind::AssociatedType, dc, name, nameLoc, { }),
-      KeywordLoc(keywordLoc), DefaultDefinition(nullptr),
-      TrailingWhere(trailingWhere), Resolver(definitionResolver),
-      ResolverContextData(resolverData) {
-  assert(Resolver && "missing resolver");
+AssociatedTypeDecl *
+AssociatedTypeDecl::createParsed(ASTContext &ctx, DeclContext *dc,
+                                 SourceLoc keywordLoc, Identifier name,
+                                 SourceLoc nameLoc, TypeRepr *defaultDefinition,
+                                 TrailingWhereClause *trailingWhere) {
+  auto *decl = new (ctx) AssociatedTypeDecl(dc, keywordLoc, name, nameLoc,
+                                            defaultDefinition, trailingWhere);
+
+  // Sort out this trivial case now to enable the AST dumper to differentiate
+  // between a nonexistent and null default type without having to trigger a
+  // request.
+  if (!defaultDefinition)
+    decl->setDefaultDefinitionType(nullptr);
+
+  return decl;
+}
+
+AssociatedTypeDecl *AssociatedTypeDecl::createDeserialized(
+    ASTContext &ctx, DeclContext *dc, SourceLoc keywordLoc, Identifier name,
+    SourceLoc nameLoc, TrailingWhereClause *trailingWhere,
+    LazyMemberLoader *lazyLoader, uint64_t defaultDefinitionTypeData) {
+  assert(lazyLoader && "missing lazy member loader");
+  auto *decl = new (ctx)
+      AssociatedTypeDecl(dc, keywordLoc, name, nameLoc,
+                         /*defaultDefinition*/ nullptr, trailingWhere);
+
+  // Sort out this trivial case now to enable the AST dumper to differentiate
+  // between a nonexistent and null default type without having to trigger a
+  // request. '0' is the sentinel ID for no data.
+  if (defaultDefinitionTypeData == 0) {
+    decl->setDefaultDefinitionType(nullptr);
+  } else {
+    auto *data = static_cast<LazyAssociatedTypeData *>(
+        ctx.getOrCreateLazyContextData(decl, lazyLoader));
+    data->defaultDefinitionTypeData = defaultDefinitionTypeData;
+  }
+
+  return decl;
 }
 
 Type AssociatedTypeDecl::getDefaultDefinitionType() const {
   return evaluateOrDefault(getASTContext().evaluator,
            DefaultDefinitionTypeRequest{const_cast<AssociatedTypeDecl *>(this)},
            Type());
+}
+
+llvm::Optional<Type>
+AssociatedTypeDecl::getCachedDefaultDefinitionType() const {
+  if (Bits.AssociatedTypeDecl.IsDefaultDefinitionTypeComputed)
+    return DefaultDefinition.getType();
+
+  return llvm::None;
+}
+
+void AssociatedTypeDecl::setDefaultDefinitionType(Type ty) {
+  DefaultDefinition.setType(ty);
+  Bits.AssociatedTypeDecl.IsDefaultDefinitionTypeComputed = true;
 }
 
 SourceRange AssociatedTypeDecl::getSourceRange() const {
@@ -7926,6 +7969,30 @@ ParamDecl *ParamDecl::createImplicit(ASTContext &Context,
                                    interfaceType, Parent, specifier);
 }
 
+DefaultArgumentKind swift::getDefaultArgKind(Expr *init) {
+  if (!init)
+    return DefaultArgumentKind::None;
+
+  // Parse an as-written 'nil' expression as the special NilLiteral kind,
+  // which is emitted by the caller and can participate in rethrows
+  // checking.
+  if (isa<NilLiteralExpr>(init))
+    return DefaultArgumentKind::NilLiteral;
+
+  auto magic = dyn_cast<MagicIdentifierLiteralExpr>(init);
+  if (!magic)
+    return DefaultArgumentKind::Normal;
+
+  switch (magic->getKind()) {
+#define MAGIC_IDENTIFIER(NAME, STRING, SYNTAX_KIND)                            \
+  case MagicIdentifierLiteralExpr::NAME:                                       \
+    return DefaultArgumentKind::NAME;
+#include "swift/AST/MagicIdentifierKinds.def"
+  }
+
+  llvm_unreachable("Unhandled MagicIdentifierLiteralExpr in switch.");
+}
+
 /// Retrieve the type of 'self' for the given context.
 Type DeclContext::getSelfTypeInContext() const {
   return mapTypeIntoContext(getSelfInterfaceType());
@@ -10239,11 +10306,13 @@ bool VarDecl::isSelfParamCaptureIsolated() const {
 
     if (auto closure = dyn_cast<AbstractClosureExpr>(dc)) {
       switch (auto isolation = closure->getActorIsolation()) {
-      case ClosureActorIsolation::Nonisolated:
-      case ClosureActorIsolation::GlobalActor:
+      case ActorIsolation::Unspecified:
+      case ActorIsolation::Nonisolated:
+      case ActorIsolation::GlobalActor:
+      case ActorIsolation::GlobalActorUnsafe:
         return false;
 
-      case ClosureActorIsolation::ActorInstance:
+      case ActorIsolation::ActorInstance:
         auto isolatedVar = isolation.getActorInstance();
         return isolatedVar->isSelfParameter() ||
             isolatedVar-isSelfParamCapture();
@@ -10266,7 +10335,7 @@ ActorIsolation swift::getActorIsolation(ValueDecl *value) {
 
 ActorIsolation swift::getActorIsolationOfContext(
     DeclContext *dc,
-    llvm::function_ref<ClosureActorIsolation(AbstractClosureExpr *)>
+    llvm::function_ref<ActorIsolation(AbstractClosureExpr *)>
         getClosureActorIsolation) {
   auto dcToUse = dc;
   // Defer bodies share actor isolation of their enclosing context.
@@ -10282,7 +10351,7 @@ ActorIsolation swift::getActorIsolationOfContext(
     return getActorIsolation(var);
 
   if (auto *closure = dyn_cast<AbstractClosureExpr>(dcToUse)) {
-    return getClosureActorIsolation(closure).getActorIsolation();
+    return getClosureActorIsolation(closure);
   }
 
   if (auto *tld = dyn_cast<TopLevelCodeDecl>(dcToUse)) {
@@ -10528,6 +10597,33 @@ void swift::simple_display(llvm::raw_ostream &out, AnyFunctionRef fn) {
     simple_display(out, func);
   else
     out << "closure";
+}
+
+ActorIsolation::ActorIsolation(Kind kind, NominalTypeDecl *actor,
+                               unsigned parameterIndex)
+    : actorInstance(actor), kind(kind), 
+      isolatedByPreconcurrency(false),
+      parameterIndex(parameterIndex) { }
+
+ActorIsolation::ActorIsolation(Kind kind, VarDecl *capturedActor)
+    : actorInstance(capturedActor), kind(kind),
+      isolatedByPreconcurrency(false), 
+      parameterIndex(0) { }
+
+NominalTypeDecl *ActorIsolation::getActor() const {
+  assert(getKind() == ActorInstance);
+
+  if (auto *instance = actorInstance.dyn_cast<VarDecl *>()) {
+    return instance->getTypeInContext()
+        ->getReferenceStorageReferent()->getAnyActor();
+  }
+
+  return actorInstance.get<NominalTypeDecl *>();
+}
+
+VarDecl *ActorIsolation::getActorInstance() const {
+  assert(getKind() == ActorInstance);
+  return actorInstance.dyn_cast<VarDecl *>();
 }
 
 bool ActorIsolation::isMainActor() const {
