@@ -57,11 +57,11 @@ public:
              .getTypeExpansionContext()
              .shouldLookThroughOpaqueTypeArchetypes())
       return ty;
-    // Remap types containing opaque result types in the current context.
-    return getBuilder()
-        .getTypeLowering(SILType::getPrimitiveObjectType(ty))
-        .getLoweredType()
-        .getASTType();
+
+    return substOpaqueTypesWithUnderlyingTypes(
+        ty,
+        TypeExpansionContext(getBuilder().getFunction()),
+        /*allowLoweredTypes=*/false);
   }
 
   ProtocolConformanceRef remapConformance(Type ty,
@@ -303,7 +303,8 @@ static bool hasOpaqueArchetype(TypeExpansionContext context,
   case SILInstructionKind::RetainValueAddrInst:
   case SILInstructionKind::ReleaseValueInst:
   case SILInstructionKind::ReleaseValueAddrInst:
-  case SILInstructionKind::SetDeallocatingInst:
+  case SILInstructionKind::BeginDeallocRefInst:
+  case SILInstructionKind::EndInitLetRefInst:
   case SILInstructionKind::AutoreleaseValueInst:
   case SILInstructionKind::BindMemoryInst:
   case SILInstructionKind::RebindMemoryInst:

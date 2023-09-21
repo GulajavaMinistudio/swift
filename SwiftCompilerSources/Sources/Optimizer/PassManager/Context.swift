@@ -27,6 +27,17 @@ extension Context {
     let bridgeCA = _bridged.getCalleeAnalysis()
     return CalleeAnalysis(bridged: bridgeCA)
   }
+
+  var hadError: Bool { _bridged.hadError() }
+
+  var silStage: SILStage {
+    switch _bridged.getSILStage() {
+      case .Raw:       return .raw
+      case .Canonical: return .canonical
+      case .Lowered:   return .lowered
+      default:         fatalError("unhandled SILStage case")
+    }
+  }
 }
 
 /// A context which allows mutation of a function's SIL.
@@ -256,6 +267,22 @@ struct FunctionPassContext : MutatingContext {
     return false
   }
 
+  func specializeVTable(for type: Type, in function: Function) -> VTable? {
+    guard let vtablePtr = _bridged.specializeVTableForType(type.bridged, function.bridged) else {
+      return nil
+    }
+    return VTable(bridged: BridgedVTable(vTable: vtablePtr))
+  }
+
+  func specializeClassMethodInst(_ cm: ClassMethodInst) -> Bool {
+    if _bridged.specializeClassMethodInst(cm.bridged) {
+      notifyInstructionsChanged()
+      notifyCallsChanged()
+      return true
+    }
+    return false
+  }
+
   func specializeApplies(in function: Function, isMandatory: Bool) -> Bool {
     if _bridged.specializeAppliesInFunction(function.bridged, isMandatory) {
       notifyInstructionsChanged()
@@ -458,6 +485,14 @@ extension AllocRefInst {
   func setIsBare(_ context: some MutatingContext) {
     context.notifyInstructionsChanged()
     bridged.AllocRefInst_setIsBare()
+    context.notifyInstructionChanged(self)
+  }
+}
+
+extension RefElementAddrInst {
+  func set(isImmutable: Bool, _ context: some MutatingContext) {
+    context.notifyInstructionsChanged()
+    bridged.RefElementAddrInst_setImmutable(isImmutable)
     context.notifyInstructionChanged(self)
   }
 }

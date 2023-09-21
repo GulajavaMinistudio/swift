@@ -15,6 +15,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "GenKeyPath.h"
+#include "swift/AST/ExtInfo.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/DiagnosticsIRGen.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -1295,7 +1297,8 @@ public:
   void visitReleaseValueAddrInst(ReleaseValueAddrInst *i);
   void visitDestroyValueInst(DestroyValueInst *i);
   void visitAutoreleaseValueInst(AutoreleaseValueInst *i);
-  void visitSetDeallocatingInst(SetDeallocatingInst *i);
+  void visitBeginDeallocRefInst(BeginDeallocRefInst *i);
+  void visitEndInitLetRefInst(EndInitLetRefInst *i);
   void visitObjectInst(ObjectInst *i)  {
     llvm_unreachable("object instruction cannot appear in a function");
   }
@@ -2188,6 +2191,75 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
     llvm::Value *contextPtr = emission->getContext();
     (void)contextPtr;
     assert(contextPtr->getType() == IGF.IGM.RefCountedPtrTy);
+  } else if (isKeyPathAccessorRepresentation(funcTy->getRepresentation())) {
+    auto genericEnv = IGF.CurSILFn->getGenericEnvironment();
+    SmallVector<GenericRequirement, 4> requirements;
+    CanGenericSignature genericSig;
+    if (genericEnv) {
+      genericSig = IGF.CurSILFn->getGenericSignature().getCanonicalSignature();
+      enumerateGenericSignatureRequirements(genericSig,
+        [&](GenericRequirement reqt) { requirements.push_back(reqt); });
+    }
+
+    unsigned baseIndexOfIndicesArguments;
+    unsigned numberOfIndicesArguments;
+    switch (funcTy->getRepresentation()) {
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+      baseIndexOfIndicesArguments = 1;
+      numberOfIndicesArguments = 1;
+      break;
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+      baseIndexOfIndicesArguments = 2;
+      numberOfIndicesArguments = 1;
+      break;
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+      baseIndexOfIndicesArguments = 0;
+      numberOfIndicesArguments = 2;
+      break;
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+      baseIndexOfIndicesArguments = 0;
+      numberOfIndicesArguments = 1;
+      break;
+    default:
+      llvm_unreachable("unhandled keypath accessor representation");
+    }
+
+    llvm::Value *componentArgsBufSize = allParamValues.takeLast();
+    llvm::Value *componentArgsBuf;
+    bool hasSubscriptIndices = params.size() > baseIndexOfIndicesArguments;
+
+    // Bind the indices arguments if present.
+    if (hasSubscriptIndices) {
+      assert(baseIndexOfIndicesArguments + numberOfIndicesArguments == params.size());
+
+      for (unsigned i = 0; i < numberOfIndicesArguments; ++i) {
+        SILArgument *indicesArg = params[baseIndexOfIndicesArguments + i];
+        componentArgsBuf = allParamValues.takeLast();
+        bindParameter(
+            IGF, *emission, baseIndexOfIndicesArguments + i, indicesArg,
+            conv.getSILArgumentType(baseIndexOfIndicesArguments + i,
+                                    IGF.IGM.getMaximalTypeExpansionContext()),
+            [&](unsigned startIndex, unsigned size) {
+              assert(size == 1);
+              Explosion indicesTemp;
+              auto castedIndices = IGF.Builder.CreateBitCast(
+                  componentArgsBuf, IGF.getTypeInfo(indicesArg->getType())
+                                        .getStorageType()
+                                        ->getPointerTo());
+              indicesTemp.add(castedIndices);
+              return indicesTemp;
+            });
+      }
+      params = params.drop_back(numberOfIndicesArguments);
+    } else {
+      // Discard the trailing unbound LLVM IR arguments.
+      for (unsigned i = 0; i < numberOfIndicesArguments; ++i) {
+        componentArgsBuf = allParamValues.takeLast();
+      }
+    }
+    bindPolymorphicArgumentsFromComponentIndices(
+        IGF, genericEnv, requirements, componentArgsBuf, componentArgsBufSize,
+        hasSubscriptIndices);
   }
 
   // Map the remaining SIL parameters to LLVM parameters.
@@ -2205,7 +2277,9 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
 
   // Bind polymorphic arguments.  This can only be done after binding
   // all the value parameters.
-  if (hasPolymorphicParameters(funcTy)) {
+  // Polymorphic parameters in KeyPath accessors are already bound above
+  if (hasPolymorphicParameters(funcTy) &&
+      !isKeyPathAccessorRepresentation(funcTy->getRepresentation())) {
     emitPolymorphicParameters(
         IGF, *IGF.CurSILFn, *emission, &witnessMetadata,
         [&](unsigned paramIndex) -> llvm::Value * {
@@ -2876,6 +2950,10 @@ FunctionPointer::Kind irgen::classifyFunctionPointerKind(SILFunction *fn) {
       return SpecialKind::DistributedExecuteTarget;
   }
 
+  if (isKeyPathAccessorRepresentation(fn->getRepresentation())) {
+    return SpecialKind::KeyPathAccessor;
+  }
+
   return fn->getLoweredFunctionType();
 }
 // Async functions that end up with weak_odr or linkonce_odr linkage may not be
@@ -3273,6 +3351,10 @@ Callee LoweredValue::getCallee(IRGenFunction &IGF,
     case SILFunctionType::Representation::WitnessMethod:
     case SILFunctionType::Representation::Thin:
     case SILFunctionType::Representation::Method:
+    case SILFunctionType::Representation::KeyPathAccessorGetter:
+    case SILFunctionType::Representation::KeyPathAccessorSetter:
+    case SILFunctionType::Representation::KeyPathAccessorEquals:
+    case SILFunctionType::Representation::KeyPathAccessorHash:
       return getSwiftFunctionPointerCallee(IGF, functionValue, selfValue,
                                            std::move(calleeInfo), false, false);
     case SILFunctionType::Representation::Closure:
@@ -3337,6 +3419,10 @@ static std::unique_ptr<CallEmission> getCallEmissionForLoweredValue(
   case SILFunctionType::Representation::CFunctionPointer:
   case SILFunctionType::Representation::Method:
   case SILFunctionType::Representation::Closure:
+  case SILFunctionType::Representation::KeyPathAccessorGetter:
+  case SILFunctionType::Representation::KeyPathAccessorSetter:
+  case SILFunctionType::Representation::KeyPathAccessorEquals:
+  case SILFunctionType::Representation::KeyPathAccessorHash:
     break;
   }
 
@@ -3716,6 +3802,10 @@ getPartialApplicationFunction(IRGenSILFunction &IGF, SILValue v,
     case SILFunctionTypeRepresentation::Thin:
     case SILFunctionTypeRepresentation::Method:
     case SILFunctionTypeRepresentation::Closure:
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
       break;
     }
 
@@ -4819,8 +4909,12 @@ void IRGenSILFunction::visitAutoreleaseValueInst(swift::AutoreleaseValueInst *i)
   emitObjCAutoreleaseCall(val);
 }
 
-void IRGenSILFunction::visitSetDeallocatingInst(SetDeallocatingInst *i) {
-  auto *ARI = dyn_cast<AllocRefInst>(i->getOperand());
+void IRGenSILFunction::visitBeginDeallocRefInst(BeginDeallocRefInst *i) {
+  Explosion lowered = getLoweredExplosion(i->getReference());
+  llvm::Value *ref = *lowered.begin();
+  setLoweredExplosion(i, lowered);
+
+  AllocRefInst *ARI = dyn_cast<AllocRefInst>(i->getAllocation());
   if (ARI && StackAllocs.count(ARI)) {
     if (ARI->isBare())
       return;
@@ -4840,7 +4934,7 @@ void IRGenSILFunction::visitSetDeallocatingInst(SetDeallocatingInst *i) {
     for (++Iter; Iter != End; ++Iter) {
       SILInstruction *I = &*Iter;
       if (auto *DRI = dyn_cast<DeallocRefInst>(I)) {
-        if (DRI->getOperand() == ARI) {
+        if (DRI->getOperand() == i) {
           // The set_deallocating is followed by a dealloc_ref -> we can ignore
           // it.
           return;
@@ -4852,8 +4946,12 @@ void IRGenSILFunction::visitSetDeallocatingInst(SetDeallocatingInst *i) {
         break;
     }
   }
-  Explosion lowered = getLoweredExplosion(i->getOperand());
-  emitNativeSetDeallocating(lowered.claimNext());
+  emitNativeSetDeallocating(ref);
+}
+
+void IRGenSILFunction::visitEndInitLetRefInst(EndInitLetRefInst *i) {
+  Explosion v = getLoweredExplosion(i->getOperand());
+  setLoweredExplosion(i, v);
 }
 
 void IRGenSILFunction::visitReleaseValueInst(swift::ReleaseValueInst *i) {
@@ -5843,7 +5941,10 @@ void IRGenSILFunction::visitDeallocRefInst(swift::DeallocRefInst *i) {
   // Lower the operand.
   Explosion self = getLoweredExplosion(i->getOperand());
   auto selfValue = self.claimNext();
-  auto *ARI = dyn_cast<AllocRefInstBase>(i->getOperand());
+  SILValue op = i->getOperand();
+  if (auto *beginDealloc = dyn_cast<BeginDeallocRefInst>(op))
+    op = beginDealloc->getAllocation();
+  auto *ARI = dyn_cast<AllocRefInstBase>(op);
   if (ARI && StackAllocs.count(ARI)) {
     // We can ignore dealloc_refs for stack allocated objects.
     //

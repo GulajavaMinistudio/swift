@@ -1935,12 +1935,9 @@ WARNING(access_control_non_objc_open_member,none,
       "non-'@objc' %0 in extensions cannot be overridden; use 'public' instead",
       (DescriptiveDeclKind))
 ERROR(access_control_requires_package_name, none,
-      "%0 has a package access level but no -package-name was specified: %1",
-      (Identifier, StringRef))
-ERROR(access_control_requires_package_name_import, none,
-      "package import can only be used from a module with a package name; "
-      "set it with the compiler flag -package-name",
-      ())
+      "the package access level %select{|used on %1 }0"
+      "requires a package name; set it with the compiler flag -package-name",
+      (bool, const Decl*))
 ERROR(invalid_decl_attribute,none,
       "'%0' attribute cannot be applied to this declaration", (DeclAttribute))
 ERROR(attr_invalid_on_decl_kind,none,
@@ -5331,6 +5328,9 @@ NOTE(protocol_isolated_to_global_actor_here,none,
 
 ERROR(isolated_parameter_not_actor,none,
       "'isolated' parameter has non-actor type %0", (Type))
+ERROR(isolated_parameter_no_actor_conformance,none,
+      "'isolated' parameter %0 must conform to 'Actor' "
+      "or 'DistributedActor' protocol", (Type))
 ERROR(isolated_parameter_duplicate,none,
       "cannot have more than one 'isolated' parameter", ())
 ERROR(isolated_parameter_duplicate_type,none,

@@ -2038,6 +2038,13 @@ void ASTMangler::appendImplFunctionType(SILFunctionType *fn,
     case SILFunctionTypeRepresentation::WitnessMethod:
       OpArgs.push_back('W');
       break;
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+      // KeyPath accessors are mangled separately based on their index types
+      // by mangleKeyPathGetterThunkHelper, and so on.
+      llvm_unreachable("key path accessors should not mangle its function type");
   }
 
   // Coroutine kind.  This is mangled in all pointer auth modes.
@@ -2541,8 +2548,8 @@ ASTMangler::getTypeDefForCXXCFOptionsDefinition(const ValueDecl *decl) {
   if (!clangDecl)
     return nullptr;
 
-  const auto &clangModuleLoader = decl->getASTContext().getClangModuleLoader();
-  return clangModuleLoader->getTypeDefForCXXCFOptionsDefinition(clangDecl);
+  auto &ctx = decl->getASTContext();
+  return ClangImporter::getTypedefForCXXCFOptionsDefinition(clangDecl, ctx);
 }
 
 const clang::NamedDecl *

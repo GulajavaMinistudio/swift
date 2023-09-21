@@ -1394,9 +1394,13 @@ void swift::tryDiagnoseExecutorConformance(ASTContext &C,
   // If both old and new enqueue are implemented, but the old one cannot be removed,
   // emit a warning that the new enqueue is unused.
   if (!canRemoveOldDecls && unownedEnqueueWitnessDecl && moveOnlyEnqueueWitnessDecl) {
-    if (!isStdlibDefaultImplDecl(moveOnlyEnqueueWitnessDecl)) {
+    if (!isStdlibDefaultImplDecl(moveOnlyEnqueueWitnessDecl) &&
+        !isStdlibDefaultImplDecl(unownedEnqueueWitnessDecl)) {
       diags.diagnose(moveOnlyEnqueueWitnessDecl->getLoc(),
                      diag::executor_enqueue_unused_implementation);
+      if (auto decl = unownedEnqueueWitnessDecl) {
+         decl->diagnose(diag::decl_declared_here, decl);
+      }
     }
   }
 
@@ -4092,12 +4096,26 @@ ActorIsolation ActorIsolationRequest::evaluate(
   if (auto paramIdx = getIsolatedParamIndex(value)) {
     checkDeclWithIsolatedParameter(value);
 
-    // FIXME: This doesn't allow us to find an Actor or DistributedActor
-    // bound on the parameter type effectively.
-    auto param = getParameterList(value)->get(*paramIdx);
+    ParamDecl *param = getParameterList(value)->get(*paramIdx);
     Type paramType = param->getInterfaceType();
     if (paramType->isTypeParameter()) {
       paramType = param->getDeclContext()->mapTypeIntoContext(paramType);
+
+      auto &ctx = value->getASTContext();
+      auto conformsTo = [&](KnownProtocolKind kind) {
+        if (auto *proto = ctx.getProtocol(kind))
+          return value->getModuleContext()->conformsToProtocol(paramType, proto);
+        return ProtocolConformanceRef::forInvalid();
+      };
+
+      // The type parameter must be bound by Actor or DistributedActor, as they
+      // have an unownedExecutor. AnyActor does NOT have an unownedExecutor!
+      if (!conformsTo(KnownProtocolKind::Actor)
+          && !conformsTo(KnownProtocolKind::DistributedActor)) {
+        ctx.Diags.diagnose(param->getLoc(),
+                           diag::isolated_parameter_no_actor_conformance,
+                           paramType);
+      }
     }
 
     if (auto actor = paramType->getAnyActor())

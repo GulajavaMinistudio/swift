@@ -190,6 +190,14 @@ struct BridgedPassContext {
     return {invocation->getPassManager()->getAnalysis<swift::BasicCalleeAnalysis>()};
   }
 
+  bool hadError() const {
+    return invocation->getPassManager()->getModule()->getASTContext().hadError();
+  }
+
+  swift::SILStage getSILStage() const {
+    return invocation->getPassManager()->getModule()->getStage();
+  }
+
   SWIFT_IMPORT_UNSAFE
   BridgedDeadEndBlocksAnalysis getDeadEndBlocksAnalysis() const {
     auto *dba = invocation->getPassManager()->getAnalysis<swift::DeadEndBlocksAnalysis>();
@@ -245,6 +253,11 @@ struct BridgedPassContext {
 
   SWIFT_IMPORT_UNSAFE
   OptionalBridgedValue constantFoldBuiltin(BridgedInstruction builtin) const;
+
+  SWIFT_IMPORT_UNSAFE
+  swift::SILVTable * _Nullable specializeVTableForType(swift::SILType type, BridgedFunction function) const;
+
+  bool specializeClassMethodInst(BridgedInstruction cm) const;
 
   bool specializeAppliesInFunction(BridgedFunction function, bool isMandatory) const;
 
