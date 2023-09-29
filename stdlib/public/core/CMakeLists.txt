@@ -254,7 +254,10 @@ if(SWIFT_STDLIB_ENABLE_VECTOR_TYPES)
   list(APPEND SWIFTLIB_GYB_SOURCES SIMDConcreteOperations.swift.gyb SIMDVectorTypes.swift.gyb)
 endif()
 
-list(APPEND SWIFTLIB_EMBEDDED_SOURCES EmbeddedStubs.swift)
+list(APPEND SWIFTLIB_EMBEDDED_SOURCES
+  EmbeddedRuntime.swift
+  EmbeddedStubs.swift
+  )
 
 set(GROUP_INFO_JSON_FILE ${CMAKE_CURRENT_SOURCE_DIR}/GroupInfo.json)
 set(swift_core_link_flags "${SWIFT_RUNTIME_SWIFT_LINK_FLAGS}")
@@ -416,6 +419,7 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB)
     list(GET list 2 triple)
     
     set(SWIFT_SDK_embedded_ARCH_${arch}_MODULE "${mod}")
+    set(SWIFT_SDK_embedded_LIB_SUBDIR "embedded")
     add_swift_target_library_single(
       embedded-stdlib-${triple}
       swiftCore
@@ -427,7 +431,8 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB)
       MODULE_DIR "${CMAKE_BINARY_DIR}/lib/swift/embedded"
       SDK "embedded"
       ARCHITECTURE "${arch}"
-      INSTALL_IN_COMPONENT "never_install"
+      FILE_DEPENDS ${swiftCore_common_dependencies}
+      INSTALL_IN_COMPONENT stdlib
       )
     add_dependencies(embedded-stdlib embedded-stdlib-${triple})
   endforeach()
