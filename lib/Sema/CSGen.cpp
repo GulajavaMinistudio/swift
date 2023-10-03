@@ -2453,6 +2453,49 @@ namespace {
       auto resultLocator =
           CS.getConstraintLocator(closure, ConstraintLocator::ClosureResult);
 
+      // FIXME: Need a better locator.
+      auto thrownErrorLocator =
+        CS.getConstraintLocator(closure, ConstraintLocator::ClosureThrownError);
+
+      // Determine the thrown error type, when appropriate.
+      Type thrownErrorTy = [&] {
+        // Explicitly-specified thrown type.
+        if (auto thrownTypeRepr = closure->getExplicitThrownTypeRepr()) {
+          Type resolvedTy = resolveTypeReferenceInExpression(
+              thrownTypeRepr, TypeResolverContext::InExpression,
+              thrownErrorLocator);
+          if (resolvedTy)
+            return resolvedTy;
+        }
+
+        // Thrown type inferred from context.
+        if (auto contextualType = CS.getContextualType(
+                closure, /*forConstraint=*/false)) {
+          if (auto fnType = contextualType->getAs<AnyFunctionType>()) {
+            if (Type thrownErrorTy = fnType->getThrownError())
+              return thrownErrorTy;
+          }
+        }
+
+        // We do not try to infer a thrown error type if one isn't immediately
+        // available. We could attempt this in the future.
+        return Type();
+      }();
+
+      if (thrownErrorTy) {
+        // Record the thrown error type in the extended info for the function
+        // type of the closure.
+        extInfo = extInfo.withThrows(true, thrownErrorTy);
+
+        // Ensure that the thrown error type conforms to Error.
+        if (auto errorProto =
+                CS.getASTContext().getProtocol(KnownProtocolKind::Error)) {
+          CS.addConstraint(
+              ConstraintKind::ConformsTo, thrownErrorTy,
+              errorProto->getDeclaredInterfaceType(), thrownErrorLocator);
+        }
+      }
+
       // Closure expressions always have function type. In cases where a
       // parameter or return type is omitted, a fresh type variable is used to
       // stand in for that parameter or return type, allowing it to be inferred
@@ -4536,22 +4579,16 @@ generateForEachStmtConstraints(ConstraintSystem &cs,
                                            /*flags=*/0);
   {
     auto nextType = cs.getType(forEachStmtInfo.nextCall);
-    // Note that `OptionalObject` is not used here. This is due to inference
-    // behavior where it would bind `elementType` to the `initType` before
-    // resolving `optional object` constraint which is sometimes too eager.
-    cs.addConstraint(ConstraintKind::Conversion, nextType,
-                     OptionalType::get(elementType), elementTypeLoc);
+    cs.addConstraint(ConstraintKind::OptionalObject, nextType, elementType,
+                     elementTypeLoc);
     cs.addConstraint(ConstraintKind::Conversion, elementType, initType,
                      elementLocator);
   }
 
   // Generate constraints for the "where" expression, if there is one.
-  if (auto *whereExpr = stmt->getWhere()) {
-    auto *boolDecl = dc->getASTContext().getBoolDecl();
-    if (!boolDecl)
-      return llvm::None;
-
-    Type boolType = boolDecl->getDeclaredInterfaceType();
+  auto *whereExpr = stmt->getWhere();
+  if (whereExpr && !target.ignoreForEachWhereClause()) {
+    Type boolType = dc->getASTContext().getBoolType();
     if (!boolType)
       return llvm::None;
 

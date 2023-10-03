@@ -2,8 +2,11 @@
 // RUN: %target-swift-emit-ir %s %S/Inputs/print.swift -module-name main -Xcc -ffreestanding -enable-experimental-feature Embedded | %FileCheck %s
 
 // REQUIRES: swift_in_compiler
+// REQUIRES: optimized_stdlib
 // REQUIRES: VENDOR=apple
 // REQUIRES: OS=macosx
+
+// REQUIRES: rdar116354297
 
 public func foo() -> [Int] {
 	var a = [1, 2, 3]
