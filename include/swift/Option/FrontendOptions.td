@@ -524,6 +524,15 @@ def code_complete_call_pattern_heuristics : Flag<["-"], "code-complete-call-patt
 def disable_autolink_framework : Separate<["-"],"disable-autolink-framework">,
   HelpText<"Disable autolinking against the provided framework">;
 
+def disable_autolink_library : Separate<["-"],"disable-autolink-library">,
+  HelpText<"Disable autolinking against the provided library">;
+
+def disable_autolink_frameworks : Flag<["-"],"disable-autolink-frameworks">,
+  HelpText<"Disable autolinking against all frameworks">;
+
+def disable_all_autolinking : Flag<["-"],"disable-all-autolinking">,
+  HelpText<"Disable all Swift autolink directives">;
+
 def disable_diagnostic_passes : Flag<["-"], "disable-diagnostic-passes">,
   HelpText<"Don't run diagnostic passes">;
 
@@ -1232,6 +1241,13 @@ def enable_new_llvm_pass_manager :
 def disable_new_llvm_pass_manager :
   Flag<["-"], "disable-new-llvm-pass-manager">,
   HelpText<"Disable the new llvm pass manager">;
+
+def enable_objective_c_protocol_symbolic_references :
+  Flag<["-"], "enable-objective-c-protocol-symbolic-references">,
+  HelpText<"Enable objective-c protocol symbolic references">;
+def disable_objective_c_protocol_symbolic_references :
+  Flag<["-"], "disable-objective-c-protocol-symbolic-references">,
+  HelpText<"Disable objective-c protocol symbolic references">;
 
 def disable_emit_generic_class_ro_t_list :
   Flag<["-"], "disable-emit-generic-class-ro_t-list">,
