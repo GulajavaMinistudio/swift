@@ -1259,6 +1259,9 @@ ERROR(single_value_stmt_must_be_unlabeled,none,
 ERROR(if_expr_must_be_syntactically_exhaustive,none,
       "'if' must have an unconditional 'else' to be used as expression",
       ())
+ERROR(do_catch_expr_must_be_syntactically_exhaustive,none,
+      "'do catch' must have an unconditional 'catch' to be used as expression",
+      ())
 ERROR(single_value_stmt_branch_empty,none,
       "expected expression in branch of '%0' expression",
       (StmtKind))
@@ -1272,8 +1275,8 @@ ERROR(cannot_jump_in_single_value_stmt,none,
 ERROR(effect_marker_on_single_value_stmt,none,
       "'%0' may not be used on '%1' expression", (StringRef, StmtKind))
 ERROR(out_of_place_then_stmt,none,
-      "'then' may only appear as the last statement in an 'if' or 'switch' "
-      "expression", ())
+      "'then' may only appear as the last statement in an 'if', 'switch', or "
+      "'do' expression", ())
 
 ERROR(did_not_call_function_value,none,
       "function value was used as a property; add () to call it",
@@ -4417,10 +4420,21 @@ ERROR(cannot_specialize_self,none,
       "cannot specialize 'Self'", ())
 NOTE(specialize_explicit_type_instead,none,
      "did you mean to explicitly reference %0 instead?", (Type))
-ERROR(type_parameter_count_mismatch,none,
-      "generic type %0 specialized with %select{too many|too few}3 type "
-      "parameters (got %2, but expected %select{%1|at least %1}4)",
-      (Identifier, unsigned, unsigned, bool, bool))
+ERROR(too_few_generic_arguments,none,
+      "generic type %0 specialized with too few type parameters "
+      "(got %1, but expected %2)",
+      (Identifier, unsigned, unsigned))
+ERROR(too_few_generic_arguments_pack,none,
+      "generic type %0 specialized with too few type parameters "
+      "(got %1, but expected at least %2)",
+      (Identifier, unsigned, unsigned))
+ERROR(too_many_generic_arguments,none,
+      "generic type %0 specialized with too many type parameters "
+      "(got %1, but expected %2)",
+      (Identifier, unsigned, unsigned))
+ERROR(generic_argument_pack_mismatch,none,
+      "generic type %0 specialized with mismatched type parameter pack",
+      (Identifier))
 ERROR(generic_type_requires_arguments,none,
       "reference to generic type %0 requires arguments in <...>", (Type))
 NOTE(descriptive_generic_type_declared_here,none,
@@ -5718,7 +5732,7 @@ ERROR(superclass_with_pack,none,
       "cannot inherit from a generic class that declares a type pack", ())
 ERROR(expansion_not_allowed,none,
       "pack expansion %0 can only appear in a function parameter list, "
-      "tuple element, or generic argument list", (Type))
+      "tuple element, or generic argument of a variadic type", (Type))
 ERROR(expansion_expr_not_allowed,none,
       "value pack expansion can only appear inside a function argument list "
       "or tuple element", ())
@@ -7290,7 +7304,7 @@ ERROR(experimental_no_metadata_feature_can_only_be_used_when_enabled,
 ERROR(expected_macro_expansion_expr,PointsToFirstBadToken,
       "expected macro expansion to produce an expression", ())
 ERROR(expected_macro_expansion_decls,PointsToFirstBadToken,
-      "expected macro expansion to produce declarations", ())
+      "expected macro expansion to produce a declaration", ())
 ERROR(macro_undefined,PointsToFirstBadToken,
       "no macro named %0", (Identifier))
 ERROR(external_macro_not_found,none,

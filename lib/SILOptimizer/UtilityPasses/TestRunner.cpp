@@ -60,14 +60,17 @@ class TestRunner : public SILFunctionTransform {
       : public test::FunctionTest::Dependencies {
     TestRunner *pass;
     SILFunction *function;
-    SwiftPassInvocation invocation;
+    SwiftPassInvocation swiftPassInvocation;
     FunctionTestDependenciesImpl(TestRunner *pass, SILFunction *function)
-        : pass(pass), function(function), invocation(pass->getPassManager()) {}
+        : pass(pass), function(function),
+          swiftPassInvocation(pass->getPassManager(), pass, function) {}
     DominanceInfo *getDominanceInfo() override {
       auto *dominanceAnalysis = pass->getAnalysis<DominanceAnalysis>();
       return dominanceAnalysis->get(function);
     }
-    SwiftPassInvocation *getInvocation() override { return &invocation; }
+    SwiftPassInvocation *getSwiftPassInvocation() override {
+      return &swiftPassInvocation;
+    }
     SILPassManager *getPassManager() override { return pass->getPassManager(); }
     ~FunctionTestDependenciesImpl() {}
   };
@@ -77,7 +80,7 @@ void TestRunner::printTestLifetime(bool begin, unsigned testIndex,
                                    unsigned testCount, StringRef name,
                                    ArrayRef<StringRef> components) {
   StringRef word = begin ? "\nbegin" : "end";
-  llvm::errs() << word << " running test " << testIndex + 1 << " of "
+  llvm::outs() << word << " running test " << testIndex + 1 << " of "
                << testCount << " on " << getFunction()->getName() << ": "
                << name << " with: ";
   for (unsigned long index = 0, size = components.size(); index < size;
@@ -86,18 +89,18 @@ void TestRunner::printTestLifetime(bool begin, unsigned testIndex,
     if (componentString.empty())
       continue;
 
-    llvm::errs() << componentString;
+    llvm::outs() << componentString;
     if (index != size - 1) {
-      llvm::errs() << ", ";
+      llvm::outs() << ", ";
     }
   }
-  llvm::errs() << "\n";
+  llvm::outs() << "\n";
 }
 
 void TestRunner::runTest(StringRef name, Arguments &arguments) {
   auto *test = FunctionTest::get(name);
   if (!test) {
-    llvm::errs() << "No test named: " << name << "\n";
+    llvm::outs() << "No test named: " << name << "\n";
     assert(false && "Invalid test name");
   }
   auto *function = getFunction();
@@ -137,7 +140,7 @@ void TestRunner::run() {
 // - the function
 static FunctionTest DumpFunctionTest("dump-function",
                                      [](auto &function, auto &, auto &) {
-                                       function.dump();
+                                       function.print(llvm::outs());
                                      });
 
 // Arguments: NONE
@@ -145,7 +148,7 @@ static FunctionTest DumpFunctionTest("dump-function",
 static FunctionTest FunctionGetSelfArgumentIndex(
     "function-get-self-argument-index", [](auto &function, auto &, auto &) {
       auto index = BridgedFunction{&function}.getSelfArgumentIndex();
-      llvm::errs() << "self argument index = " << index << "\n";
+      llvm::outs() << "self argument index = " << index << "\n";
     });
 
 } // namespace swift::test

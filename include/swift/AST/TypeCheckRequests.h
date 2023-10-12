@@ -2737,6 +2737,30 @@ public:
   void cacheResult(Witness value) const;
 };
 
+class AssociatedConformanceRequest
+    : public SimpleRequest<AssociatedConformanceRequest,
+                           ProtocolConformanceRef(NormalProtocolConformance *,
+                                                  CanType, ProtocolDecl *,
+                                                  unsigned),
+                           RequestFlags::SeparatelyCached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+private:
+  friend SimpleRequest;
+
+  // Evaluation.
+  ProtocolConformanceRef
+  evaluate(Evaluator &evaluator, NormalProtocolConformance *conformance,
+           CanType t, ProtocolDecl *proto, unsigned index) const;
+
+public:
+  // Separate caching.
+  bool isCached() const { return true; }
+  llvm::Optional<ProtocolConformanceRef> getCachedResult() const;
+  void cacheResult(ProtocolConformanceRef value) const;
+};
+
 struct PreCheckResultBuilderDescriptor {
   AnyFunctionRef Fn;
   bool SuppressDiagnostics;
@@ -3947,6 +3971,10 @@ public:
     /// The statement is an 'if' statement without an unconditional 'else'.
     NonExhaustiveIf,
 
+    /// The statement is a 'do catch' statement without an unconditional
+    /// 'catch'.
+    NonExhaustiveDoCatch,
+
     /// There is no branch that produces a resulting value.
     NoResult,
 
@@ -4003,6 +4031,9 @@ public:
   static IsSingleValueStmtResult nonExhaustiveIf() {
     return IsSingleValueStmtResult(Kind::NonExhaustiveIf);
   }
+  static IsSingleValueStmtResult nonExhaustiveDoCatch() {
+    return IsSingleValueStmtResult(Kind::NonExhaustiveDoCatch);
+  }
   static IsSingleValueStmtResult noResult() {
     return IsSingleValueStmtResult(Kind::NoResult);
   }
@@ -4039,9 +4070,12 @@ public:
 };
 
 /// Computes whether a given statement can be treated as a SingleValueStmtExpr.
+///
+// TODO: We ought to consider storing a reference to the ASTContext on the
+// evaluator.
 class IsSingleValueStmtRequest
     : public SimpleRequest<IsSingleValueStmtRequest,
-                           IsSingleValueStmtResult(const Stmt *),
+                           IsSingleValueStmtResult(const Stmt *, ASTContext *),
                            RequestFlags::Cached> {
 public:
   using SimpleRequest::SimpleRequest;
@@ -4049,8 +4083,8 @@ public:
 private:
   friend SimpleRequest;
 
-  IsSingleValueStmtResult
-  evaluate(Evaluator &evaluator, const Stmt *stmt) const;
+  IsSingleValueStmtResult evaluate(Evaluator &evaluator, const Stmt *stmt,
+                                   ASTContext *ctx) const;
 
 public:
   bool isCached() const { return true; }

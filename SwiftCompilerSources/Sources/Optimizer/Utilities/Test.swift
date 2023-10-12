@@ -16,8 +16,8 @@
 //       FunctionTest("my_new_test") { function, arguments, context in
 //       }
 // - In SwiftCompilerSources/Sources/SIL/Test.swift's registerOptimizerTests
-//   function, register the new test:
-//       registerFunctionTest(myNewTest)
+//   function, add a new argument to the variadic function:
+//       registerFunctionTests(..., myNewTest)
 //
 //===----------------------------------------------------------------------===//
 //
@@ -100,7 +100,7 @@ struct FunctionTest {
   let name: String
   let invocation: FunctionTestInvocation
 
-  public init(name: String, invocation: @escaping FunctionTestInvocation) {
+  public init(_ name: String, invocation: @escaping FunctionTestInvocation) {
     self.name = name
     self.invocation = invocation
   }
@@ -135,12 +135,19 @@ extension BridgedTestArguments {
 /// Registration of each test in the SIL module.
 public func registerOptimizerTests() {
   // Register each test.
-  registerFunctionTest(parseTestSpecificationTest)
+  registerFunctionTests(
+      parseTestSpecificationTest,
+      forwardingUseDefTest,
+      forwardingDefUseTest
+    )
 
   // Finally register the thunk they all call through.
   registerFunctionTestThunk(functionTestThunk)
 }
 
+private func registerFunctionTests(_ tests: FunctionTest...) {
+  tests.forEach { registerFunctionTest($0) }
+}
 
 private func registerFunctionTest(_ test: FunctionTest) {
   test.name._withBridgedStringRef { ref in
@@ -164,6 +171,7 @@ private func functionTestThunk(
   let invocation = castToInvocation(fromOpaquePointer: erasedInvocation)
   let context = FunctionPassContext(_bridged: BridgedPassContext(invocation: passInvocation.invocation))
   invocation(function.function, arguments.native, context)
+  fflush(stdout)
 }
 
 /// Bitcast a thin test closure to void *.
@@ -201,47 +209,37 @@ private func castToInvocation(fromOpaquePointer erasedInvocation: UnsafeMutableR
 //   - its type
 //   - something to identify the instance (mostly this means calling dump)
 let parseTestSpecificationTest = 
-FunctionTest(name: "test_specification_parsing") { function, arguments, context in 
-  struct _Stderr : TextOutputStream {
-    public init() {}
-
-    public mutating func write(_ string: String) {
-      for c in string.utf8 {
-        writeCharToStderr(CInt(c))
-      }
-    }
-  }
-  var stderr = _Stderr()
+FunctionTest("test_specification_parsing") { function, arguments, context in 
   let expectedFields = arguments.takeString()
   for expectedField in expectedFields.string {
     switch expectedField {
     case "A":
       let argument = arguments.takeArgument()
-      print("argument:\n\(argument)", to: &stderr)
+      print("argument:\n\(argument)")
     case "F":
       let function = arguments.takeFunction()
-      print("function: \(function.name)", to: &stderr)
+      print("function: \(function.name)")
     case "B":
       let block = arguments.takeBlock()
-      print("block:\n\(block)", to: &stderr)
+      print("block:\n\(block)")
     case "I":
       let instruction = arguments.takeInstruction()
-      print("instruction: \(instruction)", to: &stderr)
+      print("instruction: \(instruction)")
     case "V":
       let value = arguments.takeValue()
-      print("value: \(value)", to: &stderr)
+      print("value: \(value)")
     case "O":
       let operand = arguments.takeOperand()
-      print("operand: \(operand)", to: &stderr)
+      print("operand: \(operand)")
     case "u":
       let u = arguments.takeInt()
-      print("uint: \(u)", to: &stderr)
+      print("uint: \(u)")
     case "b":
       let b = arguments.takeBool()
-      print("bool: \(b)", to: &stderr)
+      print("bool: \(b)")
     case "s":
       let s = arguments.takeString()
-      print("string: \(s)", to: &stderr)
+      print("string: \(s)")
     default:
       fatalError("unknown field type was expected?!");
     }

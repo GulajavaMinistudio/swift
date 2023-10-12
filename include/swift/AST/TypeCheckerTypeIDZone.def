@@ -403,6 +403,10 @@ SWIFT_REQUEST(TypeChecker, TypeWitnessRequest,
               TypeWitnessAndDecl(NormalProtocolConformance *,
                                  AssociatedTypeDecl *),
               SeparatelyCached, NoLocationInfo)
+SWIFT_REQUEST(TypeChecker, AssociatedConformanceRequest,
+              ProtocolConformanceRef(NormalProtocolConformance *,
+                                     Type, ProtocolDecl *, unsigned),
+              SeparatelyCached, NoLocationInfo)
 SWIFT_REQUEST(TypeChecker, ValueWitnessRequest,
               Witness(NormalProtocolConformance *, ValueDecl *),
               SeparatelyCached, NoLocationInfo)
@@ -448,7 +452,7 @@ SWIFT_REQUEST(TypeChecker, PreCheckReturnStmtRequest,
               Stmt *(ReturnStmt *, DeclContext *),
               Cached, NoLocationInfo)
 SWIFT_REQUEST(TypeChecker, IsSingleValueStmtRequest,
-              IsSingleValueStmtResult(const Stmt *),
+              IsSingleValueStmtResult(const Stmt *, ASTContext *),
               Cached, NoLocationInfo)
 SWIFT_REQUEST(TypeChecker, MacroDefinitionRequest,
               MacroDefinition(MacroDecl *),

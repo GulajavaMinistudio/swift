@@ -1694,12 +1694,15 @@ void Serializer::writeLocalNormalProtocolConformance(
   SmallVector<DeclID, 32> data;
   unsigned numValueWitnesses = 0;
   unsigned numTypeWitnesses = 0;
-  unsigned numSignatureConformances =
-      conformance->getSignatureConformances().size();
+  unsigned numSignatureConformances = 0;
 
-  for (auto sigConformance : conformance->getSignatureConformances()) {
-    data.push_back(addConformanceRef(sigConformance));
-  }
+  conformance->forEachAssociatedConformance(
+      [&](Type t, ProtocolDecl *proto, unsigned index) {
+        auto assocConf = conformance->getAssociatedConformance(t, proto);
+        data.push_back(addConformanceRef(assocConf));
+        ++numSignatureConformances;
+        return false;
+      });
 
   conformance->forEachTypeWitness([&](AssociatedTypeDecl *assocType,
                                       Type type, TypeDecl *typeDecl) {
@@ -4863,12 +4866,11 @@ static bool canSkipWhenInvalid(const Decl *D) {
 }
 
 bool Serializer::shouldSkipDecl(const Decl *D) const {
-  // The presence of -experimental-serialize-external-decls-only is the only
+  // The presence of -experimental-skip-non-exportable-decls is the only
   // reason to omit decls during serialization.
-  if (!Options.SerializeExternalDeclsOnly)
+  if (!Options.SkipNonExportableDecls)
     return false;
 
-  // For our purposes, "deserialization safe" is the same thing as "external".
   if (DeclSerializer::isDeserializationSafe(D))
     return false;
 

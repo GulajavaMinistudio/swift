@@ -24,13 +24,13 @@
 #include "swift/AST/ClangNode.h"
 #include "swift/AST/ConcreteDeclRef.h"
 #include "swift/AST/DefaultArgumentKind.h"
-#include "swift/AST/DiagnosticConsumer.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/ForeignAsyncConvention.h"
 #include "swift/AST/ForeignErrorConvention.h"
 #include "swift/AST/FreestandingMacroExpansion.h"
 #include "swift/AST/GenericParamKey.h"
 #include "swift/AST/IfConfigClause.h"
+#include "swift/AST/Import.h"
 #include "swift/AST/LayoutConstraint.h"
 #include "swift/AST/LifetimeAnnotation.h"
 #include "swift/AST/ReferenceCounting.h"
@@ -45,13 +45,19 @@
 #include "swift/Basic/Debug.h"
 #include "swift/Basic/InlineBitfield.h"
 #include "swift/Basic/Located.h"
+#include "swift/Basic/Nullability.h"
 #include "swift/Basic/NullablePtr.h"
 #include "swift/Basic/OptionalEnum.h"
 #include "swift/Basic/Range.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Support/TrailingObjects.h"
 #include <map>
 #include <type_traits>
+
+namespace clang {
+class PointerAuthQualifier;
+} // end namespace clang
 
 namespace swift {
   enum class AccessSemantics : unsigned char;
@@ -7123,7 +7129,7 @@ public:
   ///
   /// Functions with untyped throws will produce "any Error", functions that
   /// cannot throw or are specified to throw "Never" will return llvm::None.
-  llvm::Optional<Type> getEffectiveThrownInterfaceType() const;
+  llvm::Optional<Type> getEffectiveThrownErrorType() const;
 
   /// Returns if the function throws or is async.
   bool hasEffect(EffectKind kind) const;

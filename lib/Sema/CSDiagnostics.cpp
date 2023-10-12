@@ -17,9 +17,11 @@
 #include "CSDiagnostics.h"
 #include "MiscDiagnostics.h"
 #include "TypeCheckProtocol.h"
+#include "TypeCheckType.h"
 #include "TypoCorrection.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTPrinter.h"
+#include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticsClangImporter.h"
 #include "swift/AST/ExistentialLayout.h"
@@ -9312,7 +9314,9 @@ bool OutOfPlaceThenStmtFailure::diagnoseAsError() {
 }
 
 bool InvalidTypeSpecializationArity::diagnoseAsError() {
-  emitDiagnostic(diag::type_parameter_count_mismatch, D->getBaseIdentifier(),
-                 NumParams, NumArgs, NumArgs < NumParams, HasParameterPack);
+  diagnoseInvalidGenericArguments(getLoc(), D,
+                                  NumArgs, NumParams,
+                                  HasParameterPack,
+                                  /*generic=*/nullptr);
   return true;
 }
