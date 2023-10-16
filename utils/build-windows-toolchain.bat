@@ -156,7 +156,7 @@ cmake ^
   -D CMAKE_EXE_LINKER_FLAGS="/INCREMENTAL:NO" ^
   -D CMAKE_SHARED_LINKER_FLAGS="/INCREMENTAL:NO" ^
 
-  -D CMAKE_INSTALL_PREFIX=%BuildRoot%\Library\curl-7.77.0\usr ^
+  -D CMAKE_INSTALL_PREFIX=%BuildRoot%\Library\curl-8.4.0\usr ^
 
   -D BUILD_CURL_EXE=NO ^
   -D CMAKE_USE_OPENSSL=NO ^
@@ -319,7 +319,7 @@ cmake ^
 
   -D CMAKE_INSTALL_PREFIX=%SDKInstallRoot%\usr ^
 
-  -D CURL_DIR=%BuildRoot%\Library\curl-7.77.0\usr\lib\cmake\CURL ^
+  -D CURL_DIR=%BuildRoot%\Library\curl-8.4.0\usr\lib\cmake\CURL ^
   -D ICU_ROOT=%BuildRoot%\Library\icu-69.1\usr ^
   -D ICU_DATA_LIBRARY_RELEASE=%BuildRoot%\Library\icu-69.1\usr\lib\sicudt69.lib ^
   -D ICU_UC_LIBRARY_RELEASE=%BuildRoot%\Library\icu-69.1\usr\lib\sicuuc69.lib ^
@@ -741,6 +741,7 @@ cmake ^
   -D IndexStoreDB_DIR=%BuildRoot%\17\cmake\modules ^
   -D SwiftCollections_DIR=%BuildRoot%\13\cmake\modules ^
   -D SwiftSyntax_DIR=%BuildRoot%\18\cmake\modules ^
+  -D SwiftCrypto_DIR=%BuildRoot%\12\cmake\modules ^
 
   -G Ninja ^
   -S %SourceRoot%\sourcekit-lsp || (exit /b)
@@ -822,7 +823,7 @@ git clone --quiet --no-tags --depth 1 --branch v1.2.11 https://github.com/madler
 git clone --quiet --no-tags --depth 1 --branch v2.9.12 https://github.com/gnome/libxml2
 git clone --quiet --no-tags --depth 1 --branch version-3.36.0 https://github.com/sqlite/sqlite
 git clone --quiet --no-tags --depth 1 --branch maint/maint-69 https://github.com/unicode-org/icu
-git clone --quiet --no-tags --depth 1 --branch curl-7_77_0 https://github.com/curl/curl
+git clone --quiet --no-tags --depth 1 --branch curl-8_4_0 https://github.com/curl/curl
 
 goto :eof
 endlocal
@@ -895,7 +896,7 @@ cmake ^
 
   -D CMAKE_INSTALL_PREFIX=%SDKInstallRoot%\usr ^
 
-  -D CURL_DIR=%BuildRoot%\Library\curl-7.77.0\usr\lib\cmake\CURL ^
+  -D CURL_DIR=%BuildRoot%\Library\curl-8.4.0\usr\lib\cmake\CURL ^
   -D ICU_ROOT=%BuildRoot%\Library\icu-69.1\usr ^
   -D ICU_DATA_LIBRARY_RELEASE=%BuildRoot%\Library\icu-69.1\usr\lib\sicudt69.lib ^
   -D ICU_I18N_LIBRARY_RELEASE=%BuildRoot%\Library\icu-69.1\usr\lib\sicuin69.lib ^
@@ -973,6 +974,8 @@ msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\bundle\installer.
   -p:BaseReleaseDownloadUrl=https://download.swift.org/development/windows ^
   -p:Configuration=Release ^
   -p:BaseOutputPath=%PackageRoot%\online\ ^
+  -p:VCRedistInstaller="%VCToolsRedistDir%\vc_redist.%VSCMD_ARG_TGT_ARCH%.exe" ^
+  -p:VSVersion=%VSCMD_VER% ^
   -p:DEVTOOLS_ROOT=%BuildRoot%\Library\Developer\Toolchains\unknown-Asserts-development.xctoolchain ^
   -p:TOOLCHAIN_ROOT=%BuildRoot%\Library\Developer\Toolchains\unknown-Asserts-development.xctoolchain ^
   -p:PLATFORM_ROOT=%PlatformRoot%\ ^
@@ -987,6 +990,8 @@ msbuild %SourceRoot%\swift-installer-scripts\platforms\Windows\bundle\installer.
   -p:BundleFlavor=offline ^
   -p:Configuration=Release ^
   -p:BaseOutputPath=%PackageRoot%\offline\ ^
+  -p:VCRedistInstaller="%VCToolsRedistDir%\vc_redist.%VSCMD_ARG_TGT_ARCH%.exe" ^
+  -p:VSVersion=%VSCMD_VER% ^
   -p:DEVTOOLS_ROOT=%BuildRoot%\Library\Developer\Toolchains\unknown-Asserts-development.xctoolchain ^
   -p:TOOLCHAIN_ROOT=%BuildRoot%\Library\Developer\Toolchains\unknown-Asserts-development.xctoolchain ^
   -p:PLATFORM_ROOT=%PlatformRoot%\ ^

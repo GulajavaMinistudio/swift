@@ -11,12 +11,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "Serialization.h"
+#include "ModuleFormat.h"
 #include "SILFormat.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTMangler.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/AutoDiff.h"
-#include "swift/AST/DeclExportabilityVisitor.h"
 #include "swift/AST/DiagnosticsCommon.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/FileSystem.h"
@@ -53,6 +53,8 @@
 #include "swift/Serialization/SerializationOptions.h"
 #include "swift/Strings.h"
 #include "clang/AST/DeclTemplate.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Serialization/ASTReader.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
@@ -1297,15 +1299,28 @@ void Serializer::writeInputBlock() {
     off_t importedHeaderSize = 0;
     time_t importedHeaderModTime = 0;
     std::string contents;
-    if (!Options.ImportedHeader.empty()) {
+    auto importedHeaderPath = Options.ImportedHeader;
+    // We do not want to serialize the explicitly-specified .pch path if one was
+    // provided. Instead we write out the path to the original header source so
+    // that clients can consume it.
+    if (Options.ExplicitModuleBuild &&
+        llvm::sys::path::extension(importedHeaderPath)
+            .endswith(file_types::getExtension(file_types::TY_PCH)))
+      importedHeaderPath = clangImporter->getClangInstance()
+                               .getASTReader()
+                               ->getModuleManager()
+                               .lookupByFileName(importedHeaderPath)
+                               ->OriginalSourceFileName;
+
+    if (!importedHeaderPath.empty()) {
       contents = clangImporter->getBridgingHeaderContents(
-          Options.ImportedHeader, importedHeaderSize, importedHeaderModTime);
+          importedHeaderPath, importedHeaderSize, importedHeaderModTime);
     }
     assert(publicImportSet.count(bridgingHeaderImport));
     ImportedHeader.emit(ScratchRecord,
                         publicImportSet.count(bridgingHeaderImport),
                         importedHeaderSize, importedHeaderModTime,
-                        Options.ImportedHeader);
+                        importedHeaderPath);
     if (!contents.empty()) {
       contents.push_back('\0');
       ImportedHeaderContents.emit(ScratchRecord, contents);
@@ -3115,6 +3130,18 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
       return;
     }
 
+    case DAK_Extern: {
+      auto *theAttr = cast<ExternAttr>(DA);
+      auto abbrCode = S.DeclTypeAbbrCodes[ExternDeclAttrLayout::Code];
+      llvm::SmallString<32> blob;
+      blob.append(theAttr->ModuleName);
+      blob.append(theAttr->Name);
+      ExternDeclAttrLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode, theAttr->isImplicit(),
+          theAttr->ModuleName.size(), theAttr->Name.size(), blob);
+      return;
+    }
+
     case DAK_Section: {
       auto *theAttr = cast<SectionAttr>(DA);
       auto abbrCode = S.DeclTypeAbbrCodes[SectionDeclAttrLayout::Code];
@@ -3306,7 +3333,7 @@ public:
   /// it, but at the same time keep the safety checks precise to avoid
   /// XRef errors and such.
   static bool isDeserializationSafe(const Decl *decl) {
-    return DeclExportabilityVisitor().visit(decl);
+    return decl->isExposedToClients();
   }
 
 private:

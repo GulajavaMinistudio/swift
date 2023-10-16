@@ -1423,6 +1423,19 @@ static Type diagnoseUnknownType(TypeResolution resolution,
 
       return I->second;
     }
+    
+    // type-casting operators such as 'is' and 'as'.
+    if (resolution.getOptions().is(TypeResolverContext::ExplicitCastExpr)) {
+      auto lookupResult = TypeChecker::lookupUnqualified(
+          dc, repr->getNameRef(), repr->getLoc(), lookupOptions);
+      if (!lookupResult.empty()) {
+        auto first = lookupResult.front().getValueDecl();
+        diags.diagnose(L, diag::cannot_find_type_in_cast_expression, first)
+          .highlight(R);
+        diags.diagnose(first, diag::decl_declared_here, first);
+        return ErrorType::get(ctx);
+      }
+    }
 
     diags.diagnose(L, diag::cannot_find_type_in_scope, repr->getNameRef())
         .highlight(R);
@@ -4077,11 +4090,28 @@ bool TypeResolver::resolveSingleSILResult(
 
     // Recognize @error.
     if (attrs.has(TypeAttrKind::TAK_error)) {
+      assert(!isErrorResult);
       attrs.clearAttribute(TypeAttrKind::TAK_error);
       isErrorResult = true;
 
       // Error results are always implicitly @owned.
       convention = ResultConvention::Owned;
+    }
+    if (attrs.has(TypeAttrKind::TAK_error_indirect)) {
+      assert(!isErrorResult);
+      attrs.clearAttribute(TypeAttrKind::TAK_error_indirect);
+      isErrorResult = true;
+
+      // Indirect error results are always implicitly @out.
+      convention = ResultConvention::Indirect;
+    }
+    if (attrs.has(TypeAttrKind::TAK_error_unowned)) {
+      assert(!isErrorResult);
+      attrs.clearAttribute(TypeAttrKind::TAK_error_unowned);
+      isErrorResult = true;
+
+      // Indirect error results are always implicitly @out.
+      convention = ResultConvention::Unowned;
     }
 
     // Recognize `@noDerivative`.
@@ -4124,7 +4154,6 @@ bool TypeResolver::resolveSingleSILResult(
     return false;
   }
 
-  assert(!isErrorResult || convention == ResultConvention::Owned);
   SILResultInfo resolvedResult(type->getCanonicalType(), convention,
                                differentiability);
 
