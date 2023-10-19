@@ -3312,10 +3312,6 @@ static bool usesFeatureLayoutStringValueWitnessesInstantiation(Decl *decl) {
   return false;
 }
 
-static bool usesFeatureModuleInterfaceExportAs(Decl *decl) {
-  return false;
-}
-
 static bool usesFeatureAccessLevelOnImport(Decl *decl) {
   return false;
 }
@@ -3512,6 +3508,11 @@ static bool usesFeatureStructLetDestructuring(Decl *decl) {
   return false;
 }
 
+static bool usesFeatureNonEscapableTypes(Decl *decl) {
+  return decl->getAttrs().hasAttribute<NonEscapableAttr>()
+    || decl->getAttrs().hasAttribute<UnsafeNonEscapableResultAttr>();
+}
+
 static bool hasParameterPacks(Decl *decl) {
   if (auto genericContext = decl->getAsGenericContext()) {
     auto sig = genericContext->getGenericSignature();
@@ -3573,6 +3574,10 @@ static bool usesFeatureDoExpressions(Decl *decl) {
 
 static bool usesFeatureNewCxxMethodSafetyHeuristics(Decl *decl) {
   return decl->hasClangNode();
+}
+
+static bool usesFeatureFullTypedThrows(Decl *decl) {
+  return false;
 }
 
 static bool usesFeatureTypedThrows(Decl *decl) {
