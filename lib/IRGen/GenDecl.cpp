@@ -1066,7 +1066,7 @@ void IRGenModule::addObjCClassStub(llvm::Constant *classPtr) {
 
 void IRGenModule::addRuntimeResolvableType(GenericTypeDecl *type) {
   // Collect the nominal type records we emit into a special section.
-  if (type->isMoveOnly()) {
+  if (type->isNoncopyable()) {
     // Older runtimes should not be allowed to discover noncopyable types, since
     // they will try to expose them dynamically as copyable types. Record
     // noncopyable type descriptors in a separate vector so that future
@@ -2757,11 +2757,6 @@ Address IRGenModule::getAddrOfSILGlobalVariable(SILGlobalVariable *var,
   if (gvar) {
     if (forDefinition) {
       updateLinkageForDefinition(*this, gvar, entity);
-
-      if (var->getStaticInitializerValue()) {
-        assert(gvar->hasInitializer() &&
-               "global variable referenced before created");
-      }
     }
     if (forDefinition && !gvar->hasInitializer())
       initVal = getGlobalInitValue(var, storageType, fixedAlignment);

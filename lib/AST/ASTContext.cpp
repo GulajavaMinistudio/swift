@@ -1474,7 +1474,11 @@ AbstractFunctionDecl *ASTContext::getOnReturnOnDistributedTargetInvocationResult
 
 FuncDecl *ASTContext::getDoneRecordingOnDistributedInvocationEncoder(
     NominalTypeDecl *nominal) const {
-  for (auto result : nominal->lookupDirect(Id_doneRecording)) {
+
+  llvm::SmallVector<ValueDecl *, 2> results;
+  nominal->lookupQualified(nominal, DeclNameRef(Id_doneRecording),
+                           SourceLoc(), NL_QualifiedDefault, results);
+  for (auto result : results) {
     auto *fd = dyn_cast<FuncDecl>(result);
     if (!fd)
       continue;
@@ -6173,6 +6177,17 @@ BuiltinTupleDecl *ASTContext::getBuiltinTupleDecl() {
 
   result = new (*this) BuiltinTupleDecl(Id_TheTupleType, dc);
   result->setAccess(AccessLevel::Public);
+
+  // Avoid going through InferredGenericSignatureRequest and directly set the
+  // generic signature to <each Element>
+  {
+    GenericParamList *list = result->getGenericParams();
+    assert(list->size() == 1);
+    auto paramTy = (*list->begin())->getDeclaredInterfaceType()
+                                   ->castTo<GenericTypeParamType>();
+    auto baseSig = GenericSignature::get({paramTy}, {});
+    result->setGenericSignature(baseSig);
+  }
 
   // Cook up conditional conformances to Sendable and Copyable.
   auto buildFakeExtension = [&](ProtocolDecl *proto) {
