@@ -626,7 +626,7 @@ void SourceLookupCache::lookupVisibleDecls(ImportPath::Access AccessPath,
   // 'names' in macro role attributes). Since expansions are cached, it doesn't
   // cause duplicated expansions, but different 'unexpandedDecl' may report the
   // same 'ValueDecl'.
-  SmallSetVector<ValueDecl *, 4> macroExpandedDecls;
+  llvm::SmallSetVector<ValueDecl *, 4> macroExpandedDecls;
   for (MissingDecl *unexpandedDecl : unexpandedDecls) {
     unexpandedDecl->forEachMacroExpandedDecl([&](ValueDecl *vd) {
       macroExpandedDecls.insert(vd);
@@ -1329,6 +1329,11 @@ void ModuleDecl::getLocalTypeDecls(SmallVectorImpl<TypeDecl*> &Results) const {
 
 void ModuleDecl::getTopLevelDecls(SmallVectorImpl<Decl*> &Results) const {
   FORWARD(getTopLevelDecls, (Results));
+}
+
+void ModuleDecl::getTopLevelDeclsWithAuxiliaryDecls(
+    SmallVectorImpl<Decl *> &Results) const {
+  FORWARD(getTopLevelDeclsWithAuxiliaryDecls, (Results));
 }
 
 void ModuleDecl::dumpDisplayDecls() const {
@@ -2927,6 +2932,23 @@ ModuleDecl::getDeclaringModuleAndBystander() {
   return *(declaringModuleAndBystander = {nullptr, Identifier()});
 }
 
+bool ModuleDecl::isClangOverlayOf(ModuleDecl *potentialUnderlying) {
+  return getUnderlyingModuleIfOverlay() == potentialUnderlying;
+}
+
+bool ModuleDecl::isSameModuleLookingThroughOverlays(
+  ModuleDecl *other) {
+  if (this == other) {
+    return true;
+  }
+
+  if (this->isClangOverlayOf(other) || other->isClangOverlayOf(this)) {
+    return true;
+  }
+
+  return false;
+}
+
 bool ModuleDecl::isCrossImportOverlayOf(ModuleDecl *other) {
   ModuleDecl *current = this;
   ModuleDecl *otherClang = other->getUnderlyingModuleIfOverlay();
@@ -3078,7 +3100,9 @@ void SourceFile::print(raw_ostream &OS, const PrintOptions &PO) {
 void SourceFile::print(ASTPrinter &Printer, const PrintOptions &PO) {
   std::set<DeclKind> MajorDeclKinds = {DeclKind::Class, DeclKind::Enum,
     DeclKind::Extension, DeclKind::Protocol, DeclKind::Struct};
-  for (auto decl : getTopLevelDecls()) {
+  SmallVector<Decl *> topLevelDecls;
+  getTopLevelDeclsWithAuxiliaryDecls(topLevelDecls);
+  for (auto decl : topLevelDecls) {
     if (!decl->shouldPrintInContext(PO))
       continue;
     // For a major decl, we print an empty line before it.
@@ -4173,14 +4197,18 @@ void FileUnit::getTopLevelDeclsWhereAttributesMatch(
 
 void FileUnit::getTopLevelDeclsWithAuxiliaryDecls(
     SmallVectorImpl<Decl*> &results) const {
+
+  std::function<void(Decl *)> addResult;
+  addResult = [&](Decl *decl) {
+    results.push_back(decl);
+    decl->visitAuxiliaryDecls(addResult);
+  };
+
   SmallVector<Decl *, 32> nonExpandedDecls;
   nonExpandedDecls.reserve(results.capacity());
   getTopLevelDecls(nonExpandedDecls);
   for (auto *decl : nonExpandedDecls) {
-    decl->visitAuxiliaryDecls([&](Decl *auxDecl) {
-      results.push_back(auxDecl);
-    });
-    results.push_back(decl);
+    addResult(decl);
   }
 }
 

@@ -1035,12 +1035,6 @@ public:
         Options.TransformContext->isPrintingSynthesizedExtension() &&
         isa<ExtensionDecl>(D);
 
-    SWIFT_DEFER {
-      D->visitAuxiliaryDecls([&](Decl *auxDecl) {
-        visit(auxDecl);
-      });
-    };
-
     if (!shouldPrint(D, true) && !Synthesize)
       return false;
 
@@ -2579,6 +2573,9 @@ void PrintAST::printInherited(const Decl *decl) {
   interleave(TypesToPrint, [&](InheritedEntry inherited) {
     if (inherited.isUnchecked)
       Printer << "@unchecked ";
+    if (inherited.isRetroactive &&
+        !llvm::is_contained(Options.ExcludeAttrList, TAK_retroactive))
+      Printer << "@retroactive ";
 
     printTypeLoc(inherited);
   }, [&]() {
@@ -3049,6 +3046,18 @@ static bool usesFeatureGlobalActors(Decl *decl) {
   return false;
 }
 
+static bool usesFeatureRetroactiveAttribute(Decl *decl) {
+  auto ext = dyn_cast<ExtensionDecl>(decl);
+  if (!ext)
+    return false;
+
+  ArrayRef<InheritedEntry> entries = ext->getInherited().getEntries();
+  return std::find_if(entries.begin(), entries.end(), 
+    [](const InheritedEntry &entry) {
+      return entry.isRetroactive;
+    }) != entries.end();
+}
+
 static bool usesBuiltinType(Decl *decl, BuiltinTypeKind kind) {
   auto typeMatches = [kind](Type type) {
     return type.findIf([&](Type type) {
@@ -3477,6 +3486,14 @@ suppressingFeatureNoAsyncAvailability(PrintOptions &options,
   action();
 }
 
+static void suppressingFeatureRetroactiveAttribute(
+  PrintOptions &options,
+  llvm::function_ref<void()> action) {
+  llvm::SaveAndRestore<PrintOptions> originalOptions(options);
+  options.ExcludeAttrList.push_back(TAK_retroactive);
+  action();
+}
+
 static bool usesFeatureReferenceBindings(Decl *decl) {
   auto *vd = dyn_cast<VarDecl>(decl);
   return vd && vd->getIntroducer() == VarDecl::Introducer::InOut;
@@ -3587,6 +3604,10 @@ static bool usesFeatureTypedThrows(Decl *decl) {
     return func->getThrownTypeRepr() != nullptr;
 
   return false;
+}
+
+static bool usesFeatureExtern(Decl *decl) {
+  return decl->getAttrs().hasAttribute<ExternAttr>();
 }
 
 /// Suppress the printing of a particular feature.
@@ -4483,13 +4504,20 @@ bool PrintAST::printASTNodes(const ArrayRef<ASTNode> &Elements,
                              bool NeedIndent) {
   IndentRAII IndentMore(*this, NeedIndent);
   bool PrintedSomething = false;
+
+  std::function<void(Decl *)> printDecl;
+  printDecl = [&](Decl *d) {
+    if (d->shouldPrintInContext(Options))
+      visit(d);
+    d->visitAuxiliaryDecls(printDecl);
+  };
+
   for (auto element : Elements) {
     PrintedSomething = true;
     Printer.printNewline();
     indent();
     if (auto decl = element.dyn_cast<Decl*>()) {
-      if (decl->shouldPrintInContext(Options))
-        visit(decl);
+      printDecl(decl);
     } else if (auto stmt = element.dyn_cast<Stmt*>()) {
       visit(stmt);
     } else {
@@ -7894,7 +7922,8 @@ swift::getInheritedForPrinting(
     }
 
     Results.push_back({TypeLoc::withoutLoc(proto->getDeclaredInterfaceType()),
-                       isUnchecked});
+                       isUnchecked,
+                       /*isRetroactive=*/false});
   }
 }
 

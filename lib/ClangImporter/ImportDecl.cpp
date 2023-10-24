@@ -2199,6 +2199,13 @@ namespace {
       // FIXME: Figure out what to do with superclasses in C++. One possible
       // solution would be to turn them into members and add conversion
       // functions.
+      if (auto cxxRecordDecl = dyn_cast<clang::CXXRecordDecl>(decl)) {
+        for (auto base : cxxRecordDecl->bases()) {
+          if (auto *baseRecordDecl = base.getType()->getAsCXXRecordDecl()) {
+            Impl.importDecl(baseRecordDecl, getVersion());
+          }
+        }
+      }
 
       // Import each of the members.
       SmallVector<VarDecl *, 4> members;
@@ -2238,7 +2245,7 @@ namespace {
         if (auto field = dyn_cast<clang::FieldDecl>(nd)) {
           // Non-nullable pointers can't be zero-initialized.
           if (auto nullability =
-                  field->getType()->getNullability(Impl.getClangASTContext())) {
+                  field->getType()->getNullability()) {
             if (*nullability == clang::NullabilityKind::NonNull)
               hasZeroInitializableStorage = false;
           }
@@ -4388,8 +4395,7 @@ namespace {
         isIUO = false;
 
         OptionalTypeKind nullability = OTK_ImplicitlyUnwrappedOptional;
-        if (auto typeNullability = decl->getReturnType()->getNullability(
-                                     Impl.getClangASTContext())) {
+        if (auto typeNullability = decl->getReturnType()->getNullability()) {
           // If the return type has nullability, use it.
           nullability = translateNullability(*typeNullability);
         }
@@ -7095,7 +7101,7 @@ void SwiftDeclConverter::importObjCProtocols(
       inheritedTypes.push_back(
         InheritedEntry(
           TypeLoc::withoutLoc(proto->getDeclaredInterfaceType()),
-          /*isUnchecked=*/false));
+          /*isUnchecked=*/false, /*isRetroactive=*/false));
     }
   }
 

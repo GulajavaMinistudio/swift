@@ -2760,7 +2760,8 @@ namespace {
         return false;
 
       bool result = false;
-      auto diagnoseIsolatedInoutState = [this, call, isPartialApply, &result](
+      bool downgradeToWarning = false;
+      auto diagnoseIsolatedInoutState = [&](
           ConcreteDeclRef declRef, SourceLoc argLoc) {
         auto decl = declRef.getDecl();
         auto isolation = getActorIsolationForReference(decl, getDeclContext());
@@ -2777,7 +2778,8 @@ namespace {
               ValueDecl *fnDecl = declRef->getDecl();
               ctx.Diags.diagnose(apply->getLoc(),
                                  diag::actor_isolated_mutating_func,
-                                 fnDecl->getName(), decl);
+                                 fnDecl->getName(), decl)
+                  .warnUntilSwiftVersionIf(downgradeToWarning, 6);
               result = true;
               return;
             }
@@ -2800,6 +2802,11 @@ namespace {
       };
 
       auto findIsolatedState = [&](Expr *expr) -> Expr * {
+        // This code used to not walk into InOutExpr, which allowed
+        // some invalid code to slip by in compilers <=5.9.
+        if (isa<InOutExpr>(expr))
+          downgradeToWarning = true;
+
         if (LookupExpr *lookup = dyn_cast<LookupExpr>(expr)) {
           if (isa<DeclRefExpr>(lookup->getBase())) {
             diagnoseIsolatedInoutState(lookup->getMember().getDecl(),
@@ -5138,7 +5145,7 @@ ProtocolConformance *swift::deriveImplicitSendableConformance(
       // FIXME: This is a hack--we should give conformances real availability.
       auto inherits = ctx.AllocateCopy(makeArrayRef(
           InheritedEntry(TypeLoc::withoutLoc(proto->getDeclaredInterfaceType()),
-                         /*isUnchecked*/true)));
+                         /*isUnchecked*/true, /*isRetroactive=*/false)));
       // If you change the use of AtLoc in the ExtensionDecl, make sure you
       // update isNonSendableExtension() in ASTPrinter.
       auto extension = ExtensionDecl::create(ctx, attrMakingUnavailable->AtLoc,

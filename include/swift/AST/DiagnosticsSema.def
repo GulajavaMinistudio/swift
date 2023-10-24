@@ -1871,9 +1871,31 @@ ERROR(section_not_at_top_level,none,
 ERROR(section_empty_name,none,
       "@_section section name cannot be empty", ())
 
-// @_extern
+// @extern
+ERROR(attr_extern_experimental,none,
+      "@extern requires '-enable-experimental-feature Extern'", ())
 ERROR(extern_not_at_top_level_func,none,
-      "@_extern attribute can only be applied to global functions", ())
+      "@extern attribute can only be applied to global functions", ())
+ERROR(extern_empty_c_name,none,
+      "expected non-empty C name in @extern attribute", ())
+ERROR(extern_only_non_other_attr,none,
+      "@extern attribute cannot be applied to an '@%0' declaration", (StringRef))
+WARNING(extern_c_maybe_invalid_name, none,
+        "C name '%0' may be invalid; explicitly specify the name in @extern(c) to suppress this warning",
+        (StringRef))
+
+ERROR(c_func_variadic, none,
+      "cannot declare variadic argument %0 in %kind1",
+      (DeclName, const ValueDecl *))
+ERROR(c_func_unsupported_specifier, none,
+      "cannot declare '%0' argument %1 in %kind2",
+      (StringRef, DeclName, const ValueDecl *))
+ERROR(c_func_unsupported_type, none, "%0 cannot be represented in C",
+      (Type))
+ERROR(c_func_async,none,
+      "async functions cannot be represented in C", ())
+ERROR(c_func_throws,none,
+      "raising errors from C functions is not supported", ())
 
 ERROR(expose_wasm_not_at_top_level_func,none,
       "@_expose attribute with 'wasm' can only be applied to global functions", ())
@@ -1921,6 +1943,13 @@ ERROR(attr_methods_only,none,
       "only methods can be declared %0", (DeclAttribute))
 ERROR(attr_decl_async,none,
       "@%0 %1 cannot be asynchronous", (StringRef, DescriptiveDeclKind))
+
+ERROR(attr_only_at_non_local_scope, none,
+      "attribute '%0' can only be used in a non-local scope", (StringRef))
+ERROR(attr_only_at_non_generic_scope, none,
+      "attribute '%0' cannot be used in a generic context", (StringRef))
+ERROR(attr_only_on_static_properties, none,
+      "properties with attribute '_section' must be static", (StringRef))
 
 ERROR(access_control_in_protocol,none,
       "%0 modifier cannot be used in protocols", (DeclAttribute))
@@ -2453,6 +2482,23 @@ NOTE(invalid_extension_rewrite,none,
      "did you mean to extend %0 instead?", (Type))
 ERROR(synthesized_nominal_extension,none,
       "cannot extend synthesized type %0", (Type))
+
+ERROR(retroactive_not_in_extension_inheritance_clause,none,
+      "'retroactive' attribute only applies in inheritance clauses in "
+      "extensions", ())
+
+ERROR(retroactive_attr_does_not_apply,none,
+      "'retroactive' attribute does not apply; %0 is declared in this module",
+      (Identifier))
+
+WARNING(extension_retroactive_conformance,none,
+       "extension declares a conformance of imported type %0 to imported "
+       "%select{protocols|protocol}1 %2; this will not behave correctly if "
+       "the owners of %3 introduce this conformance in the future",
+       (Identifier, bool, StringRef, Identifier))
+
+NOTE(extension_retroactive_conformance_silence,none,
+     "add '@retroactive' to silence this warning", ())
 
 // Protocols
 ERROR(type_does_not_conform,none,
@@ -3743,6 +3789,8 @@ ERROR(attr_not_on_variadic_parameters,none,
       "'%0' must not be used on variadic parameters", (StringRef))
 ERROR(attr_not_on_stored_properties,none,
       "'%0' must not be used on stored properties", (DeclAttribute))
+ERROR(attr_not_on_computed_properties,none,
+      "'%0' must not be used on computed properties", (DeclAttribute))
 
 WARNING(attr_has_no_effect_on_decl_with_access_level,none,
        "'%0' does not have any effect on "

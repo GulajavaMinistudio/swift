@@ -1573,10 +1573,14 @@ struct InheritedEntry : public TypeLoc {
   /// Whether there was an @unchecked attribute.
   bool isUnchecked = false;
 
+  /// Whether there was an @retroactive attribute.
+  bool isRetroactive = false;
+
   InheritedEntry(const TypeLoc &typeLoc);
 
-  InheritedEntry(const TypeLoc &typeLoc, bool isUnchecked)
-    : TypeLoc(typeLoc), isUnchecked(isUnchecked) { }
+  InheritedEntry(const TypeLoc &typeLoc, bool isUnchecked, bool isRetroactive)
+    : TypeLoc(typeLoc), isUnchecked(isUnchecked), isRetroactive(isRetroactive) {
+    }
 };
 
 /// A wrapper for the collection of inherited types for either a `TypeDecl` or
@@ -5016,7 +5020,7 @@ class ProtocolDecl final : public NominalTypeDecl {
   /// \c None if it hasn't yet been computed.
   llvm::Optional<bool> getCachedHasSelfOrAssociatedTypeRequirements() {
     if (Bits.ProtocolDecl.HasSelfOrAssociatedTypeRequirementsValid)
-      return Bits.ProtocolDecl.HasSelfOrAssociatedTypeRequirements;
+      return static_cast<bool>(Bits.ProtocolDecl.HasSelfOrAssociatedTypeRequirements);
 
     return llvm::None;
   }
