@@ -1173,7 +1173,7 @@ NeedsNewVTableEntryRequest::evaluate(Evaluator &evaluator,
                                      AbstractFunctionDecl *decl) const {
   auto *dc = decl->getDeclContext();
 
-  if (!isa<ClassDecl>(dc))
+  if (!isa<ClassDecl>(dc->getImplementedObjCContext()))
     return false;
 
   // Destructors always use a fixed vtable entry.
@@ -2639,11 +2639,11 @@ InterfaceTypeRequest::evaluate(Evaluator &eval, ValueDecl *D) const {
     Type thrownTy = AFD->getThrownInterfaceType();
     if (thrownTy) {
       thrownTy = AFD->getThrownInterfaceType();
-      ProtocolDecl *errorProto = Context.getErrorDecl();
-      if (thrownTy && errorProto) {
+      auto anyErrorType = Context.getErrorExistentialType();
+      if (thrownTy && anyErrorType) {
         Type thrownTyInContext = AFD->mapTypeIntoContext(thrownTy);
-        if (!TypeChecker::conformsToProtocol(
-                thrownTyInContext, errorProto, AFD->getParentModule())) {
+        if (!TypeChecker::isConvertibleTo(
+                thrownTyInContext, anyErrorType, AFD)) {
           SourceLoc loc;
           if (auto thrownTypeRepr = AFD->getThrownTypeRepr())
             loc = thrownTypeRepr->getLoc();
