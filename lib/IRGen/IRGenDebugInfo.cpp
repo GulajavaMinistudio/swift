@@ -29,7 +29,6 @@
 #include "swift/AST/Pattern.h"
 #include "swift/AST/TypeDifferenceVisitor.h"
 #include "swift/Basic/Compiler.h"
-#include "swift/Basic/Dwarf.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/Version.h"
 #include "swift/ClangImporter/ClangImporter.h"
@@ -1770,6 +1769,7 @@ private:
     case TypeKind::Unresolved:
     case TypeKind::LValue:
     case TypeKind::TypeVariable:
+    case TypeKind::Inverse:
     case TypeKind::Placeholder:
     case TypeKind::Module:
     case TypeKind::SILBlockStorage:

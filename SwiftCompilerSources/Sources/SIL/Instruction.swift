@@ -357,9 +357,9 @@ final public class FixLifetimeInst : Instruction, UnaryInstruction {}
 public struct VarDecl {
   var bridged: BridgedVarDecl
   
-  public init?(bridged: OptionalBridgedVarDecl) {
-    guard let decl = bridged.decl else { return nil }
-    self.bridged = BridgedVarDecl(decl: decl)
+  public init?(bridged: BridgedNullableVarDecl) {
+    guard let decl = bridged.raw else { return nil }
+    self.bridged = BridgedVarDecl(raw: decl)
   }
   
   public var userFacingName: String { String(bridged.getUserFacingName()) }
@@ -795,6 +795,11 @@ final public
 class ThinToThickFunctionInst : SingleValueInstruction, ConversionInstruction {}
 
 final public
+class ConvertEscapeToNoEscapeInst : SingleValueInstruction, UnaryInstruction {
+  public var fromFunction: Value { operand.value }
+}
+
+final public
 class ObjCExistentialMetatypeToObjectInst : SingleValueInstruction,
                                             ConversionInstruction {}
 
@@ -1086,6 +1091,10 @@ final public class ReturnInst : TermInst, UnaryInstruction {
 
 final public class ThrowInst : TermInst, UnaryInstruction {
   public var thrownValue: Value { operand.value }
+  public override var isFunctionExiting: Bool { true }
+}
+
+final public class ThrowAddrInst : TermInst {
   public override var isFunctionExiting: Bool { true }
 }
 

@@ -21,7 +21,6 @@
 #define DEBUG_TYPE "sil-combine"
 
 #include "SILCombiner.h"
-#include "swift/Basic/BridgingUtils.h"
 #include "swift/SIL/BasicBlockDatastructures.h"
 #include "swift/SIL/DebugUtils.h"
 #include "swift/SIL/SILBuilder.h"
@@ -542,7 +541,7 @@ static bool passesRegistered = false;
 // Called from initializeSwiftModules().
 void SILCombine_registerInstructionPass(BridgedStringRef instClassName,
                                         BridgedInstructionPassRunFn runFn) {
-  swiftInstPasses[instClassName.get()] = runFn;
+  swiftInstPasses[instClassName.unbridged()] = runFn;
   passesRegistered = true;
 }
 

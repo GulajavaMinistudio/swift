@@ -2690,12 +2690,22 @@ public:
 
   void visitForceTryExpr(ForceTryExpr *E, StringRef label) {
     printCommon(E, "force_try_expr", label);
+
+    PrintOptions PO;
+    PO.PrintTypesForDebugging = true;
+    printFieldQuoted(E->getThrownError().getString(PO), "thrown_error", TypeColor);
+
     printRec(E->getSubExpr());
     printFoot();
   }
 
   void visitOptionalTryExpr(OptionalTryExpr *E, StringRef label) {
     printCommon(E, "optional_try_expr", label);
+
+    PrintOptions PO;
+    PO.PrintTypesForDebugging = true;
+    printFieldQuoted(E->getThrownError().getString(PO), "thrown_error", TypeColor);
+
     printRec(E->getSubExpr());
     printFoot();
   }
@@ -4227,9 +4237,6 @@ namespace {
         printFlag(T->isAsync(), "async");
         printFlag(T->isThrowing(), "throws");
       }
-      if (Type thrownError = T->getThrownError()) {
-        printFieldQuoted(thrownError.getString(), "thrown_error");
-      }
       if (Type globalActor = T->getGlobalActor()) {
         printFieldQuoted(globalActor.getString(), "global_actor");
       }
@@ -4237,6 +4244,9 @@ namespace {
       printClangTypeRec(T->getClangTypeInfo(), T->getASTContext());
       printAnyFunctionParamsRec(T->getParams(), "input");
       printRec(T->getResult(), "output");
+      if (Type thrownError = T->getThrownError()) {
+        printRec(thrownError, "thrown_error");
+      }
     }
 
     void visitFunctionType(FunctionType *T, StringRef label) {
@@ -4351,6 +4361,12 @@ namespace {
                               StringRef label) {
       printCommon("existential_type", label);
       printRec(T->getConstraintType());
+      printFoot();
+    }
+
+    void visitInverseType(InverseType *T, StringRef label) {
+      printCommon("inverse_type", label);
+      printRec(T->getInvertedProtocol());
       printFoot();
     }
 

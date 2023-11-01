@@ -64,6 +64,15 @@ bool SILFunctionArgument::isIndirectResult() const {
   return getIndex() < numIndirectResults;
 }
 
+bool SILFunctionArgument::isIndirectErrorResult() const {
+  auto numIndirectResults =
+      getFunction()->getConventions().getNumIndirectSILResults();
+  auto numIndirectErrorResults =
+      getFunction()->getConventions().getNumIndirectSILErrorResults();
+  return ((getIndex() >= numIndirectResults) &&
+          (getIndex() < numIndirectResults + numIndirectErrorResults));
+}
+
 SILArgumentConvention SILFunctionArgument::getArgumentConvention() const {
   return getFunction()->getConventions().getSILArgumentConvention(getIndex());
 }
@@ -303,6 +312,7 @@ getSingleTerminatorOperandForPred(const SILBasicBlock *parentBlock,
   case TermKind::UnreachableInst:
   case TermKind::ReturnInst:
   case TermKind::ThrowInst:
+  case TermKind::ThrowAddrInst:
   case TermKind::UnwindInst:
     llvm_unreachable("Have terminator that implies no successors?!");
   case TermKind::TryApplyInst:

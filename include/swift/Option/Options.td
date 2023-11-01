@@ -548,7 +548,7 @@ def module_abi_name : Separate<["-"], "module-abi-name">,
   Flags<[FrontendOption, ModuleInterfaceOption]>,
   HelpText<"ABI name to use for the contents of this module">;
 def package_name : Separate<["-"], "package-name">,
-  Flags<[FrontendOption, ModuleInterfaceOptionIgnorablePrivate]>,
+  Flags<[FrontendOption, ModuleInterfaceOption]>,
   HelpText<"Name of the package the module belongs to">;
 def export_as : Separate<["-"], "export-as">,
   Flags<[FrontendOption, ModuleInterfaceOption]>,
@@ -991,8 +991,8 @@ def gdwarf_types : Flag<["-"], "gdwarf-types">,
   Group<g_Group>, Flags<[FrontendOption]>,
   HelpText<"Emit full DWARF type info.">;
 def debug_prefix_map : Separate<["-"], "debug-prefix-map">,
-    Flags<[FrontendOption]>,
-    HelpText<"Remap source paths in debug info">, MetaVarName<"<prefix=replacement>">;
+  Flags<[FrontendOption]>,
+  HelpText<"Remap source paths in debug info">, MetaVarName<"<prefix=replacement>">;
 def coverage_prefix_map : Separate<["-"], "coverage-prefix-map">,
   Flags<[FrontendOption]>,
   HelpText<"Remap source paths in coverage info">, MetaVarName<"<prefix=replacement>">;
@@ -1007,6 +1007,10 @@ def file_compilation_dir : Separate<["-"], "file-compilation-dir">,
 def debug_info_format : Joined<["-"], "debug-info-format=">,
   Flags<[FrontendOption]>,
   HelpText<"Specify the debug info format type to either 'dwarf' or 'codeview'">;
+def dwarf_version : Joined<["-"], "dwarf-version=">,
+  Flags<[FrontendOption]>,
+  HelpText<"DWARF debug info version to produce if requested">,
+  MetaVarName<"<version>">;
 
 def prefix_serialized_debugging_options : Flag<["-"], "prefix-serialized-debugging-options">,
   Flags<[FrontendOption]>,

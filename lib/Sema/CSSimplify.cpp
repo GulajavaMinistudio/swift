@@ -7058,6 +7058,9 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
     case TypeKind::TypeVariable:
       llvm_unreachable("type variables should have already been handled by now");
 
+    case TypeKind::Inverse:
+      llvm_unreachable("unexpected inverse type in constraint solver");
+
     case TypeKind::DependentMember: {
       // If types are identical, let's consider this constraint solved
       // even though they are dependent members, they would be resolved
@@ -8034,6 +8037,9 @@ ConstraintSystem::simplifyConstructionConstraint(
 
   case TypeKind::BuiltinTuple:
     llvm_unreachable("BuiltinTupleType in constraint");
+
+  case TypeKind::Inverse:
+    llvm_unreachable("unexpected inverse type in constraint solver");
     
   case TypeKind::Unresolved:
   case TypeKind::Error:
@@ -12248,6 +12254,16 @@ ConstraintSystem::simplifyKeyPathConstraint(
       // { root in root[keyPath: kp] }.
       boundRoot = fnTy->getParams()[0].getParameterType();
       boundValue = fnTy->getResult();
+
+      // Key paths never throw, so if the function has a thrown error type
+      // that is a type variable, infer it to be Never.
+      if (auto thrownError = fnTy->getThrownError()) {
+        if (thrownError->isTypeVariableOrMember()) {
+          (void)matchTypes(
+            thrownError, getASTContext().getNeverType(),
+            ConstraintKind::Equal, TMF_GenerateConstraints, locator);
+        }
+      }
     }
 
     if (boundRoot &&

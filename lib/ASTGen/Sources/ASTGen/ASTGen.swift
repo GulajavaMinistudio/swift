@@ -1,5 +1,5 @@
-import CASTBridging
-import CBasicBridging
+import ASTBridging
+import BasicBridging
 // Needed to use BumpPtrAllocator
 @_spi(BumpPtrAllocator) import SwiftSyntax
 
@@ -48,11 +48,11 @@ enum ASTNode {
   var bridged: BridgedASTNode {
     switch self {
     case .expr(let e):
-      return BridgedASTNode(ptr: e.raw, kind: .expr)
+      return BridgedASTNode(raw: e.raw, kind: .expr)
     case .stmt(let s):
-      return BridgedASTNode(ptr: s.raw, kind: .stmt)
+      return BridgedASTNode(raw: s.raw, kind: .stmt)
     case .decl(let d):
-      return BridgedASTNode(ptr: d.raw, kind: .decl)
+      return BridgedASTNode(raw: d.raw, kind: .decl)
     default:
       fatalError("Must be expr, stmt, or decl.")
     }
@@ -421,7 +421,7 @@ extension Collection {
       }
     }
 
-    return .init(data: baseAddress, numElements: self.count)
+    return .init(data: baseAddress, count: self.count)
   }
 }
 
@@ -435,7 +435,7 @@ extension LazyCollectionProtocol {
     let buffer = astgen.allocator.allocate(Element.self, count: self.count)
     _ = buffer.initialize(from: self)
 
-    return .init(data: buffer.baseAddress, numElements: self.count)
+    return .init(data: buffer.baseAddress, count: self.count)
   }
 }
 
@@ -465,7 +465,7 @@ extension Optional where Wrapped: LazyCollectionProtocol {
 /// Generate AST nodes for all top-level entities in the given source file.
 @_cdecl("swift_ASTGen_buildTopLevelASTNodes")
 public func buildTopLevelASTNodes(
-  diagEnginePtr: UnsafeMutablePointer<UInt8>,
+  diagEnginePtr: UnsafeMutableRawPointer,
   sourceFilePtr: UnsafePointer<UInt8>,
   dc: UnsafeMutableRawPointer,
   ctx: UnsafeMutableRawPointer,

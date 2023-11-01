@@ -4435,10 +4435,6 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
           requiredAccessScope.requiredAccessForDiagnostics();
         auto proto = conformance->getProtocol();
         auto protoAccessScope = proto->getFormalAccessScope(DC);
-        // Skip diagnostics of a witness of a package protocol that is inlinalbe
-        // referenced in an interface file.
-        if (proto->skipAccessCheckIfInterface(DC, requiredAccess, protoAccessScope))
-          return;
         bool protoForcesAccess =
           requiredAccessScope.hasEqualDeclContextWith(protoAccessScope);
         auto diagKind = protoForcesAccess
@@ -5904,7 +5900,8 @@ TypeChecker::couldDynamicallyConformToProtocol(Type type, ProtocolDecl *Proto,
   // as an intermediate collection cast can dynamically change if the conditions
   // are met or not.
   if (type->isKnownStdlibCollectionType())
-    return !M->lookupConformance(type, Proto).isInvalid();
+    return !M->lookupConformance(type, Proto, /*allowMissing=*/true)
+                .isInvalid();
   return !conformsToProtocol(type, Proto, M).isInvalid();
 }
 

@@ -957,6 +957,10 @@ public:
   unsigned getAttachedMacroDiscriminator(DeclBaseName macroName, MacroRole role,
                                          const CustomAttr *attr) const;
 
+  /// Returns the resolved type for the give custom attribute attached to this
+  /// declaration.
+  Type getResolvedCustomAttrType(CustomAttr *attr) const;
+
   /// Determines if this declaration is exposed to clients of the module it is
   /// defined in. For example, `public` declarations are exposed to clients.
   bool isExposedToClients() const;
@@ -2737,25 +2741,6 @@ public:
   /// Returns \c true if this value decl is inlinable with attributes
   /// \c \@usableFromInline, \c \@inlinalbe, and \c \@_alwaysEmitIntoClient
   bool isUsableFromInline() const;
-
-  /// Returns \c true if this value decl needs a special case handling for an
-  /// interface file.
-  ///
-  /// One such case is a reference of an inlinable decl with a `package` access level
-  /// in an interface file as follows: Package decls are only printed in interface files if
-  /// they are inlinable (as defined in \c isUsableFromInline). They could be
-  /// referenced by a module outside of its defining module that belong to the same
-  /// package determined by the `package-name` flag. However, the flag is only in
-  /// .swiftmodule and .private.swiftinterface, thus type checking references of inlinable
-  /// package symbols in public interfaces fails due to the missing flag.
-  /// Instead of adding the package-name flag to the public interfaces, which
-  /// could raise a security concern, we grant access to such cases. 
-  ///
-  /// \sa useDC The use site where this value decl is referenced.
-  /// \sa useAcl The access level of its use site.
-  /// \sa declScope The access scope of this decl site.
-  bool skipAccessCheckIfInterface(const DeclContext *useDC, AccessLevel useAcl,
-                                  AccessScope declScope) const;
 
   /// Returns \c true if this declaration is *not* intended to be used directly
   /// by application developers despite the visibility.

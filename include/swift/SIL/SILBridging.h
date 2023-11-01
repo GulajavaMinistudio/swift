@@ -17,7 +17,7 @@
 // Function implementations should be placed into SILBridgingImpl.h or SILBridging.cpp and
 // required header files should be added there.
 //
-#include "swift/Basic/BasicBridging.h"
+#include "swift/AST/ASTBridging.h"
 
 #ifdef USED_IN_CPP_SOURCE
 #include "llvm/ADT/ArrayRef.h"
@@ -39,7 +39,6 @@ struct BridgedFunction;
 struct BridgedBasicBlock;
 struct BridgedSuccessorArray;
 struct OptionalBridgedBasicBlock;
-struct BridgedNominalTypeDecl;
 
 namespace swift {
 class ValueBase;
@@ -81,7 +80,7 @@ struct BridgedType {
 #ifdef USED_IN_CPP_SOURCE
   BridgedType(swift::SILType t) : opaqueValue(t.getOpaqueValue()) {}
 
-  swift::SILType get() const {
+  swift::SILType unbridged() const {
     return swift::SILType::getFromOpaqueValue(opaqueValue);
   }
 #endif
@@ -129,26 +128,7 @@ struct BridgedType {
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedStringRef getFieldName(SwiftInt idx) const;
   BRIDGED_INLINE SwiftInt getNumTupleElements() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedType getTupleElementType(SwiftInt idx) const;
-};
-
-// AST bridging
-
-struct BridgedNominalTypeDecl {
-  swift::NominalTypeDecl * _Nonnull decl;
-
-  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedStringRef getName() const;
-  bool isStructWithUnreferenceableStorage() const;
-  BRIDGED_INLINE bool isGlobalActor() const;
-};
-
-struct BridgedVarDecl {
-  const swift::VarDecl * _Nonnull decl;
-
-  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedStringRef getUserFacingName() const;
-};
-
-struct OptionalBridgedVarDecl {
-  const swift::VarDecl * _Nullable decl;
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedType getFunctionTypeWithNoEscape(bool withNoEscape) const;
 };
 
 // SIL Bridging
@@ -403,7 +383,7 @@ struct BridgedMultiValueResult {
   SwiftObject obj;
 
 #ifdef USED_IN_CPP_SOURCE
-  swift::MultipleValueInstructionResult * _Nonnull get() const {
+  swift::MultipleValueInstructionResult * _Nonnull unbridged() const {
     return static_cast<swift::MultipleValueInstructionResult *>(obj);
   }
 #endif
@@ -419,7 +399,7 @@ struct BridgedSubstitutionMap {
   BridgedSubstitutionMap(swift::SubstitutionMap map) {
     *reinterpret_cast<swift::SubstitutionMap *>(&storage) = map;
   }
-  swift::SubstitutionMap get() const {
+  swift::SubstitutionMap unbridged() const {
     return *reinterpret_cast<const swift::SubstitutionMap *>(&storage);
   }
 #endif
@@ -431,10 +411,18 @@ struct BridgedSubstitutionMap {
 struct BridgedTypeArray {
   BridgedArrayRef typeArray;
 
+#ifdef USED_IN_CPP_SOURCE
+  BridgedTypeArray(llvm::ArrayRef<swift::Type> types) : typeArray(types) {}
+
+  llvm::ArrayRef<swift::Type> unbridged() const {
+    return typeArray.unbridged<swift::Type>();
+  }
+#endif
+
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE
   static BridgedTypeArray fromReplacementTypes(BridgedSubstitutionMap substMap);
 
-  SwiftInt getCount() const { return SwiftInt(typeArray.numElements); }
+  SwiftInt getCount() const { return SwiftInt(typeArray.Length); }
 
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE
   BridgedType getAt(SwiftInt index) const;
@@ -443,7 +431,16 @@ struct BridgedTypeArray {
 struct BridgedSILTypeArray {
   BridgedArrayRef typeArray;
 
-  SwiftInt getCount() const { return SwiftInt(typeArray.numElements); }
+#ifdef USED_IN_CPP_SOURCE
+  BridgedSILTypeArray(llvm::ArrayRef<swift::SILType> silTypes)
+      : typeArray(silTypes) {}
+
+  llvm::ArrayRef<swift::SILType> unbridged() const {
+    return typeArray.unbridged<swift::SILType>();
+  }
+#endif
+
+  SwiftInt getCount() const { return SwiftInt(typeArray.Length); }
 
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE
   BridgedType getAt(SwiftInt index) const;
@@ -499,7 +496,7 @@ struct BridgedInstruction {
   template <class I> I *_Nonnull getAs() const {
     return llvm::cast<I>(static_cast<swift::SILNode *>(obj)->castToInstruction());
   }
-  swift::SILInstruction * _Nonnull get() const {
+  swift::SILInstruction * _Nonnull unbridged() const {
     return getAs<swift::SILInstruction>();
   }
 #endif
@@ -653,19 +650,19 @@ struct BridgedInstruction {
   //                   VarDeclInst and DebugVariableInst
   // =========================================================================//
 
-  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE OptionalBridgedVarDecl
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedNullableVarDecl
   DebugValue_getDecl() const;
 
-  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE OptionalBridgedVarDecl
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedNullableVarDecl
   AllocStack_getDecl() const;
 
-  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE OptionalBridgedVarDecl
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedNullableVarDecl
   AllocBox_getDecl() const;
 
-  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE OptionalBridgedVarDecl
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedNullableVarDecl
   GlobalAddr_getDecl() const;
 
-  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE OptionalBridgedVarDecl
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedNullableVarDecl
   RefElementAddr_getDecl() const;
 
   BRIDGED_INLINE OptionalBridgedSILDebugVariable DebugValue_getVarInfo() const;
@@ -679,7 +676,7 @@ struct OptionalBridgedInstruction {
   OptionalSwiftObject obj;
 
 #ifdef USED_IN_CPP_SOURCE
-  swift::SILInstruction * _Nullable get() const {
+  swift::SILInstruction * _Nullable unbridged() const {
     if (!obj)
       return nullptr;
     return llvm::cast<swift::SILInstruction>(static_cast<swift::SILNode *>(obj)->castToInstruction());
@@ -707,7 +704,7 @@ struct OptionalBridgedBasicBlock {
   OptionalSwiftObject obj;
 
 #ifdef USED_IN_CPP_SOURCE
-  swift::SILBasicBlock * _Nullable get() const {
+  swift::SILBasicBlock * _Nullable unbridged() const {
     return obj ? static_cast<swift::SILBasicBlock *>(obj) : nullptr;
   }
 #endif
@@ -722,7 +719,7 @@ struct BridgedBasicBlock {
 #ifdef USED_IN_CPP_SOURCE
   BridgedBasicBlock(swift::SILBasicBlock * _Nonnull block) : obj(block) {
   }
-  swift::SILBasicBlock * _Nonnull get() const {
+  swift::SILBasicBlock * _Nonnull unbridged() const {
     return static_cast<swift::SILBasicBlock *>(obj);
   }
 #endif
@@ -843,12 +840,14 @@ struct BridgedBuilder{
   BridgedLocation loc;
 
 #ifdef USED_IN_CPP_SOURCE
-  swift::SILBuilder get() const {
+  swift::SILBuilder unbridged() const {
     switch (insertAt) {
     case BridgedBuilder::InsertAt::beforeInst:
-      return swift::SILBuilder(BridgedInstruction(insertionObj).get(), loc.getLoc().getScope());
+      return swift::SILBuilder(BridgedInstruction(insertionObj).unbridged(),
+                               loc.getLoc().getScope());
     case BridgedBuilder::InsertAt::endOfBlock:
-      return swift::SILBuilder(BridgedBasicBlock(insertionObj).get(), loc.getLoc().getScope());
+      return swift::SILBuilder(BridgedBasicBlock(insertionObj).unbridged(),
+                               loc.getLoc().getScope());
     case BridgedBuilder::InsertAt::intoGlobal:
       return swift::SILBuilder(BridgedGlobalVar(insertionObj).getGlobal());
     }
@@ -899,6 +898,8 @@ struct BridgedBuilder{
                                           SwiftInt caseIdx, BridgedType resultType) const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedInstruction createEnum(SwiftInt caseIdx, OptionalBridgedValue payload,
                                           BridgedType resultType) const;
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedInstruction createThinToThickFunction(BridgedValue fn,
+                                                                                  BridgedType resultType) const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedInstruction createBranch(BridgedBasicBlock destBlock,
                                                                      BridgedValueArray arguments) const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedInstruction createUnreachable() const;
@@ -993,7 +994,9 @@ void writeCharToStderr(int c);
 SWIFT_END_NULLABILITY_ANNOTATIONS
 
 #ifndef PURE_BRIDGING_MODE
-// In _not_ PURE_BRIDGING_MODE, briding functions are inlined and therefore inluded in the header file.
+// In _not_ PURE_BRIDGING_MODE, bridging functions are inlined and therefore
+// included in the header file. This is because they rely on C++ headers that
+// we don't want to pull in when using "pure bridging mode".
 #include "SILBridgingImpl.h"
 #endif
 
