@@ -1338,7 +1338,8 @@ void swift::tryDiagnoseExecutorConformance(ASTContext &C,
                                            const NominalTypeDecl *nominal,
                                            ProtocolDecl *proto) {
   assert(proto->isSpecificProtocol(KnownProtocolKind::Executor) ||
-         proto->isSpecificProtocol(KnownProtocolKind::SerialExecutor));
+         proto->isSpecificProtocol(KnownProtocolKind::SerialExecutor) ||
+         proto->isSpecificProtocol(KnownProtocolKind::TaskExecutor));
 
   auto &diags = C.Diags;
   auto module = nominal->getParentModule();
@@ -5933,7 +5934,8 @@ ActorReferenceResult ActorReferenceResult::forReference(
       declIsolation.isGlobalActor()) {
     auto *init = dyn_cast<ConstructorDecl>(fromDC);
     auto *decl = declRef.getDecl();
-    if (init && init->isDesignatedInit() && isStoredProperty(decl)) {
+    if (init && init->isDesignatedInit() && isStoredProperty(decl) &&
+        (!actorInstance || actorInstance->isSelf())) {
       auto type =
           fromDC->mapTypeIntoContext(declRef.getDecl()->getInterfaceType());
       if (!isSendableType(fromDC->getParentModule(), type)) {

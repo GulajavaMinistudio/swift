@@ -39,11 +39,12 @@ func testPublicStruct() {
   let _: String = s.publicPropertyInferredType
   let _: Double = s.publicWrappedProperty
   let _: Double = s.$publicWrappedProperty.wrappedValue
+  let _: Int = s.publicTransparentProperty
   PublicStruct.publicStaticMethod()
   PublicStruct.activeMethod()
 }
 
-func testPublicClass() {
+func testPublicClasses() {
   let c = PublicClass(x: 2)
   let _: Int = c.publicMethod()
   let _: Int = c.publicProperty
@@ -55,6 +56,11 @@ func testPublicClass() {
   let _: Int = d.publicProperty
   let _: String = d.publicPropertyInferredType
   PublicDerivedClass.publicClassMethod()
+
+  class DerivedFromPublicClassSynthesizedDesignatedInit: PublicClassSynthesizedDesignatedInit {
+    init() {}
+  }
+  let _ = DerivedFromPublicClassSynthesizedDesignatedInit()
 }
 
 func testPublicEnum(_ e: PublicEnum) {

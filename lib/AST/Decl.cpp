@@ -375,12 +375,17 @@ OrigDeclAttributes Decl::getOriginalAttrs() const {
   return OrigDeclAttributes(getAttrs(), this);
 }
 
-DeclAttributes Decl::getSemanticAttrs() const {
+DeclAttributes Decl::getExpandedAttrs() const {
   auto mutableThis = const_cast<Decl *>(this);
   (void)evaluateOrDefault(getASTContext().evaluator,
-                          ExpandMemberAttributeMacros{mutableThis},
-                          { });
+                          ExpandMemberAttributeMacros{mutableThis}, {});
 
+  return getAttrs();
+}
+
+DeclAttributes Decl::getSemanticAttrs() const {
+  (void)evaluateOrDefault(getASTContext().evaluator,
+                          SemanticDeclAttrsRequest{this}, {});
   return getAttrs();
 }
 
@@ -441,7 +446,7 @@ void Decl::visitAuxiliaryDecls(
 
 void Decl::forEachAttachedMacro(MacroRole role,
                                 MacroCallback macroCallback) const {
-  for (auto customAttrConst : getSemanticAttrs().getAttributes<CustomAttr>()) {
+  for (auto customAttrConst : getExpandedAttrs().getAttributes<CustomAttr>()) {
     auto customAttr = const_cast<CustomAttr *>(customAttrConst);
     auto *macroDecl = getResolvedMacro(customAttr);
 

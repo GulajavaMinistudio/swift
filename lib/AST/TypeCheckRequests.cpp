@@ -2062,3 +2062,34 @@ void ExpandPeerMacroRequest::noteCycleStep(DiagnosticEngine &diags) const {
                    "peer");
   }
 }
+
+//----------------------------------------------------------------------------//
+// SemanticDeclAttrsRequest computation.
+//----------------------------------------------------------------------------//
+
+DeclAttributes SemanticDeclAttrsRequest::evaluate(Evaluator &evaluator,
+                                                  const Decl *decl) const {
+  // Expand attributes contributed by attached macros.
+  auto mutableDecl = const_cast<Decl *>(decl);
+  (void)evaluateOrDefault(evaluator, ExpandMemberAttributeMacros{mutableDecl},
+                          {});
+
+  // Trigger requests that cause additional semantic attributes to be added.
+  if (auto afd = dyn_cast<AbstractFunctionDecl>(decl)) {
+    (void)afd->isTransparent();
+  }
+  return decl->getAttrs();
+}
+
+llvm::Optional<DeclAttributes>
+SemanticDeclAttrsRequest::getCachedResult() const {
+  auto decl = std::get<0>(getStorage());
+  if (decl->getSemanticAttrsComputed())
+    return decl->getAttrs();
+  return llvm::None;
+}
+
+void SemanticDeclAttrsRequest::cacheResult(DeclAttributes attrs) const {
+  auto decl = std::get<0>(getStorage());
+  const_cast<Decl *>(decl)->setSemanticAttrsComputed(true);
+}

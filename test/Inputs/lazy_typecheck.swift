@@ -128,6 +128,9 @@ public struct PublicStruct {
   public var publicProperty: Int
   public var publicPropertyInferredType = ""
   @PublicWrapper public var publicWrappedProperty = 3.14
+  @_transparent public var publicTransparentProperty: Int {
+    get { return 1 }
+  }
 
   public init(x: Int) {
     self.publicProperty = 1
@@ -205,6 +208,8 @@ public class PublicClass {
 }
 
 public class PublicDerivedClass: PublicClass {}
+
+open class PublicClassSynthesizedDesignatedInit {}
 
 class InternalClass: NoTypecheckProto {
   init(x: NoTypecheck) {}
