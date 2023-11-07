@@ -371,8 +371,8 @@ StringRef Decl::getDescriptiveKindName(DescriptiveDeclKind K) {
   llvm_unreachable("bad DescriptiveDeclKind");
 }
 
-OrigDeclAttributes Decl::getOriginalAttrs() const {
-  return OrigDeclAttributes(getAttrs(), this);
+ParsedDeclAttributes Decl::getParsedAttrs() const {
+  return ParsedDeclAttributes(getAttrs(), this);
 }
 
 DeclAttributes Decl::getExpandedAttrs() const {
@@ -777,7 +777,7 @@ SourceRange Decl::getSourceRangeIncludingAttrs() const {
 
     // Otherwise, include attributes directly attached to the accessor.
     SourceLoc VarLoc = AD->getStorage()->getStartLoc();
-    for (auto *Attr : getOriginalAttrs()) {
+    for (auto *Attr : getParsedAttrs()) {
       if (!Attr->getRange().isValid())
         continue;
 
@@ -796,13 +796,13 @@ SourceRange Decl::getSourceRangeIncludingAttrs() const {
   if (auto *PBD = dyn_cast<PatternBindingDecl>(this)) {
     for (auto i : range(PBD->getNumPatternEntries()))
       PBD->getPattern(i)->forEachVariable([&](VarDecl *VD) {
-        for (auto *Attr : VD->getOriginalAttrs())
+        for (auto *Attr : VD->getParsedAttrs())
           if (Attr->getRange().isValid())
             Range.widen(Attr->getRangeWithAt());
       });
   }
 
-  for (auto *Attr : getOriginalAttrs()) {
+  for (auto *Attr : getParsedAttrs()) {
     if (Attr->getRange().isValid())
       Range.widen(Attr->getRangeWithAt());
   }
@@ -3203,9 +3203,37 @@ bool swift::conflicting(const OverloadSignature& sig1,
   if (sig1.IsInstanceMember != sig2.IsInstanceMember)
     return false;
 
-  // If one is an async function and the other is not, they can't conflict.
-  if (sig1.IsAsyncFunction != sig2.IsAsyncFunction)
-    return false;
+  // For distributed decls, check there's no async/no-async overloads,
+  // since those are more fragile in distribution than we'd want distributed calls to be.
+  //
+  // A remote call is always 'async throws', and we can always record
+  // an async throws "accessor" (see AccessibleFunction.cpp) as such.
+  // This means, if we allowed async/no-async overloads of functions,
+  // we'd have to store the precise "it was not throwing" information,
+  // but we'll _never_ make use of such because all remote calls are
+  // necessarily going to async to the actor in the recipient process,
+  // and for the remote caller, they are always as-if-async.
+  //
+  // By banning such overloads, which may be useful in local APIs,
+  // but too fragile in distributed APIs, we allow a remote 'v2' version
+  // of an implementation to add or remove `async` to their implementation
+  // without breaking calls which were made on previous 'v1' versions of
+  // the same interface; Callers are never broken this way, and rollouts
+  // are simpler.
+  //
+  // The restriction on overloads is not a problem for distributed calls,
+  // as we don't have a vast swab of APIs which must compatibly get async
+  // versions, as that is what the async overloading aimed to address.
+  //
+  // Note also, that overloading on throws is already illegal anyway.
+  if (sig1.IsDistributed || sig2.IsDistributed) {
+    if (sig1.IsAsyncFunction != sig2.IsAsyncFunction)
+      return true;
+  } else {
+    // Otherwise one is an async function and the other is not, they don't conflict.
+    if (sig1.IsAsyncFunction != sig2.IsAsyncFunction)
+      return false;
+  }
 
   // If one is a macro and the other is not, they can't conflict.
   if (sig1.IsMacro != sig2.IsMacro)
@@ -3458,6 +3486,8 @@ OverloadSignature ValueDecl::getOverloadSignature() const {
     signature.IsFunction = true;
     if (func->hasAsync())
       signature.IsAsyncFunction = true;
+    if (func->isDistributed())
+      signature.IsDistributed = true;
   }
 
   if (auto *extension = dyn_cast<ExtensionDecl>(getDeclContext()))
@@ -6743,13 +6773,11 @@ void AbstractStorageDecl::setImplInfo(StorageImplInfo implInfo) {
   cacheImplInfo(implInfo);
 
   if (isImplicit()) {
-    auto &evaluator = getASTContext().evaluator;
-    HasStorageRequest request{this};
-    if (!evaluator.hasCachedResult(request))
-      evaluator.cacheOutput(request, implInfo.hasStorage());
-    else {
-      assert(
-        evaluateOrDefault(evaluator, request, false) == implInfo.hasStorage());
+    if (!LazySemanticInfo.HasStorageComputed) {
+      LazySemanticInfo.HasStorageComputed = true;
+      LazySemanticInfo.HasStorage = implInfo.hasStorage();
+    } else {
+      assert(LazySemanticInfo.HasStorage == implInfo.hasStorage());
     }
   }
 }
@@ -9545,6 +9573,25 @@ GenericTypeParamDecl *OpaqueTypeDecl::getExplicitGenericParam(
 
   auto genericParamType = getOpaqueGenericParams()[ordinal];
   return genericParamType->getDecl();
+}
+
+bool OpaqueTypeDecl::exportUnderlyingType() const {
+  auto mod = getDeclContext()->getParentModule();
+  if (mod->getResilienceStrategy() != ResilienceStrategy::Resilient)
+    return true;
+
+  ValueDecl *namingDecl = getNamingDecl();
+  if (auto *AFD = dyn_cast<AbstractFunctionDecl>(namingDecl))
+    return AFD->getResilienceExpansion() == ResilienceExpansion::Minimal;
+
+  if (auto *ASD = dyn_cast<AbstractStorageDecl>(namingDecl)) {
+    for (auto *accessor : ASD->getAllAccessors())
+      if (accessor->getResilienceExpansion() == ResilienceExpansion::Minimal)
+        return true;
+    return false;
+  }
+
+  llvm_unreachable("The naming decl is expected to be either an AFD or ASD");
 }
 
 llvm::Optional<unsigned>

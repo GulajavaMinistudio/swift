@@ -830,6 +830,16 @@ CheckRedeclarationRequest::evaluate(Evaluator &eval, ValueDecl *current,
         wouldBeSwift5Redeclaration = false;
       }
 
+      // Distributed declarations cannot be overloaded on async-ness only,
+      // because it'd cause problems with the always async distributed thunks.
+      // Provide an extra diagnostic if this is the case we're facing.
+      bool diagnoseDistributedAsyncOverload = false;
+      if (auto func = dyn_cast<AbstractFunctionDecl>(other)) {
+        diagnoseDistributedAsyncOverload = func->isDistributed();
+      } else  if (auto var = dyn_cast<VarDecl>(other)) {
+        diagnoseDistributedAsyncOverload = var->isDistributed();
+      }
+
       // If this isn't a redeclaration in the current version of Swift, but
       // would be in Swift 5 mode, emit a warning instead of an error.
       if (wouldBeSwift5Redeclaration) {
@@ -936,7 +946,13 @@ CheckRedeclarationRequest::evaluate(Evaluator &eval, ValueDecl *current,
         } else {
           ctx.Diags.diagnoseWithNotes(
             current->diagnose(diag::invalid_redecl, current), [&]() {
-            other->diagnose(diag::invalid_redecl_prev, other);
+
+            // Add a specialized note about the 'other' overload
+            if (diagnoseDistributedAsyncOverload) {
+              other->diagnose(diag::distributed_func_cannot_overload_on_async_only, other);
+            } else {
+              other->diagnose(diag::invalid_redecl_prev, other);
+            }
           });
 
           current->setInvalid();
@@ -1113,6 +1129,12 @@ Expr *DefaultArgumentExprRequest::evaluate(Evaluator &evaluator,
   auto paramTy = param->getTypeInContext();
   auto *initExpr = param->getStructuralDefaultExpr();
   assert(initExpr);
+
+  // Prohibit default argument that is a non-built-in macro to avoid confusion.
+  if (isa<MacroExpansionExpr>(initExpr)) {
+    ctx.Diags.diagnose(initExpr->getLoc(), diag::macro_as_default_argument);
+    return new (ctx) ErrorExpr(initExpr->getSourceRange(), ErrorType::get(ctx));
+  }
 
   // If the param has an error type, there's no point type checking the default
   // expression, unless we are type checking for code completion, in which case
@@ -2330,11 +2352,6 @@ public:
     VD->visitAuxiliaryDecls([&](VarDecl *var) {
       this->visitBoundVariable(var);
     });
-
-    // Add the '@_hasStorage' attribute if this property is stored.
-    if (VD->hasStorage() && !VD->getAttrs().hasAttribute<HasStorageAttr>())
-      VD->getAttrs().add(new (getASTContext())
-                             HasStorageAttr(/*isImplicit=*/true));
 
     // Reject cases where this is a variable that has storage but it isn't
     // allowed.
