@@ -1055,15 +1055,7 @@ static void checkDefaultArguments(ParameterList *params) {
 
     // If the default argument has isolation, it must match the
     // isolation of the decl context.
-    auto defaultArgIsolation = param->getInitializerIsolation();
-    if (defaultArgIsolation.isActorIsolated()) {
-      auto *dc = param->getDeclContext();
-      auto enclosingIsolation = getActorIsolationOfContext(dc);
-      if (enclosingIsolation != defaultArgIsolation) {
-        param->diagnose(diag::isolated_default_argument_context,
-            defaultArgIsolation, enclosingIsolation);
-      }
-    }
+    (void)param->getInitializerIsolation();
 
     if (!ifacety->hasPlaceholder()) {
       continue;
@@ -2056,12 +2048,7 @@ public:
   ASTContext &Ctx;
   SourceFile *SF;
 
-  bool LeaveClosureBodiesUnchecked;
-
-  explicit DeclChecker(ASTContext &ctx, SourceFile *SF,
-                       bool LeaveClosureBodiesUnchecked = false)
-      : Ctx(ctx), SF(SF),
-        LeaveClosureBodiesUnchecked(LeaveClosureBodiesUnchecked) {}
+  explicit DeclChecker(ASTContext &ctx, SourceFile *SF) : Ctx(ctx), SF(SF) {}
 
   ASTContext &getASTContext() const { return Ctx; }
   void addDelayedFunction(AbstractFunctionDecl *AFD) {
@@ -2481,6 +2468,21 @@ public:
         }
       }
     }
+
+    // @_staticExclusiveOnly types cannot be put into 'var's, only 'let'.
+    if (auto SD = VD->getInterfaceType()->getStructOrBoundGenericStruct()) {
+      if (getASTContext().LangOpts.hasFeature(Feature::StaticExclusiveOnly) &&
+          SD->getAttrs().hasAttribute<StaticExclusiveOnlyAttr>() &&
+          !VD->isLet()) {
+        SD->getASTContext().Diags.diagnoseWithNotes(
+          VD->diagnose(diag::attr_static_exclusive_only_let_only,
+                       VD->getInterfaceType()),
+          [&]() {
+            SD->diagnose(diag::attr_static_exclusive_only_type_nonmutating,
+                       SD->getDeclaredInterfaceType());
+          });
+      }
+    }
   }
 
   bool checkBoundInOutVarDecl(PatternBindingDecl *pbd, unsigned patternIndex,
@@ -2513,8 +2515,7 @@ public:
     for (auto i : range(PBD->getNumPatternEntries())) {
       const auto *entry = PBD->isFullyValidated(i)
                               ? &PBD->getPatternList()[i]
-                              : PBD->getCheckedPatternBindingEntry(
-                                    i, LeaveClosureBodiesUnchecked);
+                              : PBD->getCheckedPatternBindingEntry(i);
       assert(entry && "No pattern binding entry?");
 
       const auto *Pat = PBD->getPattern(i);
@@ -2639,9 +2640,6 @@ public:
 
       if (!PBD->isInitializerChecked(i)) {
         TypeCheckExprOptions options;
-
-        if (LeaveClosureBodiesUnchecked)
-          options |= TypeCheckExprFlags::LeaveClosureBodyUnchecked;
 
         TypeChecker::typeCheckPatternBinding(PBD, i, /*patternType=*/Type(),
                                              options);
@@ -4053,9 +4051,9 @@ public:
 };
 } // end anonymous namespace
 
-void TypeChecker::typeCheckDecl(Decl *D, bool LeaveClosureBodiesUnchecked) {
+void TypeChecker::typeCheckDecl(Decl *D) {
   auto *SF = D->getDeclContext()->getParentSourceFile();
-  DeclChecker(D->getASTContext(), SF, LeaveClosureBodiesUnchecked).visit(D);
+  DeclChecker(D->getASTContext(), SF).visit(D);
 }
 
 void TypeChecker::checkParameterList(ParameterList *params,
@@ -4161,6 +4159,22 @@ void TypeChecker::checkParameterList(ParameterList *params,
           param->diagnose(diag::noimplicitcopy_attr_not_allowed_on_moveonlytype)
             .fixItRemove(attr->getRange());
         }
+      }
+    }
+
+    // @_staticExclusiveOnly types cannot be passed as 'inout', only as either
+    // a borrow or as consuming.
+    if (auto SD = param->getInterfaceType()->getStructOrBoundGenericStruct()) {
+      if (SD->getASTContext().LangOpts.hasFeature(Feature::StaticExclusiveOnly) &&
+          SD->getAttrs().hasAttribute<StaticExclusiveOnlyAttr>() &&
+          param->isInOut()) {
+        SD->getASTContext().Diags.diagnoseWithNotes(
+          param->diagnose(diag::attr_static_exclusive_only_let_only_param,
+                          param->getInterfaceType()),
+          [&]() {
+            SD->diagnose(diag::attr_static_exclusive_only_type_nonmutating,
+                       SD->getDeclaredInterfaceType());
+          });
       }
     }
   }

@@ -239,7 +239,10 @@ extension StoreInst {
           builder.createStore(source: fieldValue, destination: destFieldAddr, ownership: splitOwnership(for: fieldValue))
         }
       } else {
-        for idx in 0..<type.getNominalFields(in: parentFunction).count {
+        guard let fields = type.getNominalFields(in: parentFunction) else {
+          return
+        }
+        for idx in 0..<fields.count {
           let srcField = builder.createStructExtract(struct: source, fieldIndex: idx)
           let fieldAddr = builder.createStructElementAddr(structAddress: destination, fieldIndex: idx)
           builder.createStore(source: srcField, destination: fieldAddr, ownership: splitOwnership(for: srcField))
@@ -283,7 +286,10 @@ extension LoadInst {
       if type.nominal.isStructWithUnreferenceableStorage {
         return
       }
-      for idx in 0..<type.getNominalFields(in: parentFunction).count {
+      guard let fields = type.getNominalFields(in: parentFunction) else {
+        return
+      }
+      for idx in 0..<fields.count {
         let fieldAddr = builder.createStructElementAddr(structAddress: address, fieldIndex: idx)
         let splitLoad = builder.createLoad(fromAddress: fieldAddr, ownership: self.splitOwnership(for: fieldAddr))
         elements.append(splitLoad)
@@ -522,6 +528,28 @@ extension GlobalVariable {
         context.erase(instruction: endAccess)
       default:
         break
+      }
+    }
+  }
+}
+
+extension InstructionRange {
+  /// Adds the instruction range of a borrow-scope by transitively visiting all (potential) re-borrows.
+  mutating func insert(borrowScopeOf borrow: BorrowIntroducingInstruction, _ context: some Context) {
+    var worklist = ValueWorklist(context)
+    defer { worklist.deinitialize() }
+
+    worklist.pushIfNotVisited(borrow)
+    while let value = worklist.pop() {
+      for use in value.uses {
+        switch use.instruction {
+        case let endBorrow as EndBorrowInst:
+          self.insert(endBorrow)
+        case let branch as BranchInst:
+          worklist.pushIfNotVisited(branch.getArgument(for: use))
+        default:
+          break
+        }
       }
     }
   }

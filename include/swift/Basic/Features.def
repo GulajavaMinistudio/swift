@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift.org open source project
 //
-// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Copyright (c) 2021 - 2023 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See https://swift.org/LICENSE.txt for license information
@@ -120,7 +120,7 @@ UPCOMING_FEATURE(ExistentialAny, 335, 6)
 UPCOMING_FEATURE(ImportObjcForwardDeclarations, 384, 6)
 UPCOMING_FEATURE(DisableOutwardActorInference, 401, 6)
 UPCOMING_FEATURE(InternalImportsByDefault, 409, 6)
-UPCOMING_FEATURE(FullTypedThrows, 410, 6)
+UPCOMING_FEATURE(FullTypedThrows, 413, 6)
 
 EXPERIMENTAL_FEATURE(StaticAssert, false)
 EXPERIMENTAL_FEATURE(NamedOpaqueTypes, false)
@@ -258,6 +258,9 @@ EXPERIMENTAL_FEATURE(Extern, true)
 // Infer Sendability of unapplied and partial applied methods,
 // global functions and key paths.
 EXPERIMENTAL_FEATURE(InferSendableFromCaptures, false)
+
+/// Enable the `@_staticExclusiveOnly` attribute.
+EXPERIMENTAL_FEATURE(StaticExclusiveOnly, true)
 
 #undef EXPERIMENTAL_FEATURE_EXCLUDED_FROM_MODULE_INTERFACE
 #undef EXPERIMENTAL_FEATURE
