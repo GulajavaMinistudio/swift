@@ -531,22 +531,41 @@ void BindingSet::inferTransitiveBindings(
   }
 }
 
-static BoundGenericType *getKeyPathType(ASTContext &ctx,
-                                        KeyPathCapability capability,
-                                        Type rootType, Type valueType) {
-  switch (capability) {
-  case KeyPathCapability::ReadOnly:
-    return BoundGenericType::get(ctx.getKeyPathDecl(), /*parent=*/Type(),
-                                 {rootType, valueType});
+static Type getKeyPathType(ASTContext &ctx, KeyPathCapability capability,
+                           Type rootType, Type valueType) {
+  KeyPathMutability mutability;
+  bool isSendable;
 
-  case KeyPathCapability::Writable:
-    return BoundGenericType::get(ctx.getWritableKeyPathDecl(),
-                                 /*parent=*/Type(), {rootType, valueType});
+  std::tie(mutability, isSendable) = capability;
 
-  case KeyPathCapability::ReferenceWritable:
-    return BoundGenericType::get(ctx.getReferenceWritableKeyPathDecl(),
-                                 /*parent=*/Type(), {rootType, valueType});
+  Type keyPathTy;
+  switch (mutability) {
+  case KeyPathMutability::ReadOnly:
+    keyPathTy = BoundGenericType::get(ctx.getKeyPathDecl(), /*parent=*/Type(),
+                                      {rootType, valueType});
+    break;
+
+  case KeyPathMutability::Writable:
+    keyPathTy = BoundGenericType::get(ctx.getWritableKeyPathDecl(),
+                                      /*parent=*/Type(), {rootType, valueType});
+    break;
+
+  case KeyPathMutability::ReferenceWritable:
+    keyPathTy = BoundGenericType::get(ctx.getReferenceWritableKeyPathDecl(),
+                                      /*parent=*/Type(), {rootType, valueType});
+    break;
   }
+
+  if (isSendable &&
+      ctx.LangOpts.hasFeature(Feature::InferSendableFromCaptures)) {
+    auto *sendable = ctx.getProtocol(KnownProtocolKind::Sendable);
+    keyPathTy = ProtocolCompositionType::get(
+        ctx, {keyPathTy, sendable->getDeclaredInterfaceType()},
+        /*hasExplicitAnyObject=*/false);
+    return ExistentialType::get(keyPathTy);
+  }
+
+  return keyPathTy;
 }
 
 void BindingSet::finalize(
@@ -1425,6 +1444,27 @@ PotentialBindings::inferFromRelational(Constraint *constraint) {
 
     if (!(isKnownKeyPathType(objectTy) || objectTy->is<AnyFunctionType>()))
       return llvm::None;
+  }
+
+  if (TypeVar->getImpl().isKeyPathSubscriptIndex()) {
+    // Key path subscript index can only be a r-value non-optional
+    // type that is a subtype of a known KeyPath type.
+    type = type->getRValueType()->lookThroughAllOptionalTypes();
+
+    // If argument to a key path subscript is an existential,
+    // we can erase it to superclass (if any) here and solver
+    // will perform the opening if supertype turns out to be
+    // a valid key path type of its subtype.
+    if (kind == AllowedBindingKind::Supertypes) {
+      if (type->isExistentialType()) {
+        auto layout = type->getExistentialLayout();
+        if (auto superclass = layout.explicitSuperclass) {
+          type = superclass;
+        } else if (!CS.shouldAttemptFixes()) {
+          return llvm::None;
+        }
+      }
+    }
   }
 
   if (auto *locator = TypeVar->getImpl().getLocator()) {

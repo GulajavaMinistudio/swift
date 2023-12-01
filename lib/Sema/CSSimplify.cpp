@@ -12195,6 +12195,12 @@ ConstraintSystem::simplifyKeyPathConstraint(
     if (contextualTy->isPlaceholder())
       return true;
 
+    // Situations like `any KeyPath<...> & Sendable`.
+    if (contextualTy->isExistentialType()) {
+      contextualTy = contextualTy->getExistentialLayout().explicitSuperclass;
+      assert(contextualTy);
+    }
+
     // If there are no other options the solver might end up picking
     // `AnyKeyPath` or `PartialKeyPath` based on a contextual conversion.
     // This is an error during normal type-checking but okay in
@@ -12414,9 +12420,18 @@ ConstraintSystem::simplifyKeyPathApplicationConstraint(
     // Otherwise, we don't have a key path type at all.
     return SolutionKind::Error;
   }
-  if (!keyPathTy->isTypeVariableOrMember())
+
+  if (!keyPathTy->isTypeVariableOrMember()) {
+    if (shouldAttemptFixes()) {
+      auto *fix = IgnoreKeyPathSubscriptIndexMismatch::create(
+          *this, keyPathTy, getConstraintLocator(locator));
+      recordAnyTypeVarAsPotentialHole(valueTy);
+      return recordFix(fix) ? SolutionKind::Error : SolutionKind::Solved;
+    }
+
     return SolutionKind::Error;
-  
+  }
+
   return unsolved();
 }
 
@@ -13013,19 +13028,6 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyApplicableFnConstraint(
         result2 = typeEraseOpenedExistentialReference(
             result2, opened.second->getExistentialType(), opened.first,
             TypePosition::Covariant);
-      }
-
-      // If result type has any erased existential types it requires explicit
-      // `as` coercion.
-      if (AddExplicitExistentialCoercion::isRequired(
-              *this, func2->getResult(), openedExistentials, locator)) {
-
-        if (!shouldAttemptFixes())
-          return SolutionKind::Error;
-
-        if (recordFix(AddExplicitExistentialCoercion::create(
-                *this, result2, getConstraintLocator(locator))))
-          return SolutionKind::Error;
       }
     }
 
@@ -14899,7 +14901,8 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyFixConstraint(
   case FixKind::AllowAssociatedValueMismatch:
   case FixKind::GenericArgumentsMismatch:
   case FixKind::AllowConcreteTypeSpecialization:
-  case FixKind::IgnoreGenericSpecializationArityMismatch: {
+  case FixKind::IgnoreGenericSpecializationArityMismatch:
+  case FixKind::IgnoreKeyPathSubscriptIndexMismatch: {
     return recordFix(fix) ? SolutionKind::Error : SolutionKind::Solved;
   }
   case FixKind::IgnoreThrownErrorMismatch: {

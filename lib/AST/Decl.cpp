@@ -1029,7 +1029,7 @@ Expr *AbstractFunctionDecl::getSingleExpressionBody() const {
 
 void AbstractFunctionDecl::setSingleExpressionBody(Expr *NewBody) {
   assert(hasSingleExpressionBody() && "Not a single-expression body");
-  auto body = getBody()->getLastElement();
+  auto body = getBody(/*canSynthesize=*/false)->getLastElement();
   if (auto *stmt = body.dyn_cast<Stmt *>()) {
     if (auto *returnStmt = dyn_cast<ReturnStmt>(stmt)) {
       returnStmt->setResult(NewBody);
@@ -6394,6 +6394,16 @@ bool ProtocolDecl::isMarkerProtocol() const {
   return getAttrs().hasAttribute<MarkerAttr>();
 }
 
+bool ProtocolDecl::isInvertibleProtocol() const {
+  if (auto kp = getKnownProtocolKind()) {
+    if (getInvertibleProtocolKind(*kp)) {
+      assert(isMarkerProtocol());
+      return true;
+    }
+  }
+  return false;
+}
+
 ArrayRef<ProtocolDecl *> ProtocolDecl::getInheritedProtocols() const {
   auto *mutThis = const_cast<ProtocolDecl *>(this);
   return evaluateOrDefault(getASTContext().evaluator,
@@ -9117,6 +9127,113 @@ bool AbstractFunctionDecl::hasBody() const {
   }
 }
 
+/// Expand all preamble macros attached to the given function declaration.
+static std::vector<ASTNode> expandPreamble(AbstractFunctionDecl *func) {
+  std::vector<ASTNode> preamble;
+
+  ASTContext &ctx = func->getASTContext();
+  ExpandPreambleMacroRequest request{func};
+  auto module = func->getParentModule();
+  for (auto bufferID : evaluateOrDefault(ctx.evaluator, request, { })) {
+    auto bufferStart = ctx.SourceMgr.getLocForBufferStart(bufferID);
+    auto preambleSF = module->getSourceFileContainingLocation(bufferStart);
+    preamble.insert(preamble.end(),
+                    preambleSF->getTopLevelItems().begin(),
+                    preambleSF->getTopLevelItems().end());
+  }
+
+  return preamble;
+}
+
+/// Expand body macros and produce the resulting body.
+static BraceStmt *expandBodyMacro(AbstractFunctionDecl *fn) {
+  ASTContext &ctx = fn->getASTContext();
+
+  // Expand the preamble.
+  auto preamble = expandPreamble(fn);
+
+  // Expand a body macro, if there is one.
+  if (auto bufferID = evaluateOrDefault(
+          ctx.evaluator, ExpandBodyMacroRequest{fn}, llvm::None)) {
+    CharSourceRange bufferRange = ctx.SourceMgr.getRangeForBuffer(*bufferID);
+    auto bufferStart = bufferRange.getStart();
+    auto module = fn->getParentModule();
+    auto macroSourceFile = module->getSourceFileContainingLocation(bufferStart);
+
+    // When there is no preamble, adopt the body itself.
+    if (preamble.empty()) {
+      return BraceStmt::create(
+          ctx, bufferRange.getStart(), macroSourceFile->getTopLevelItems(),
+          bufferRange.getEnd());
+    }
+
+    // Merge the preamble into the macro-produced body.
+    auto contents = std::move(preamble);
+    contents.insert(
+        contents.end(),
+        macroSourceFile->getTopLevelItems().begin(),
+        macroSourceFile->getTopLevelItems().end());
+    return BraceStmt::create(
+        ctx, bufferRange.getStart(), contents, bufferRange.getEnd());
+  }
+
+  // There is no body macro. If there's no preamble, either, then there is
+  // nothing to do.
+  if (preamble.empty())
+    return nullptr;
+
+  // If there is no body, the preamble has nowhere to go.
+  auto body = fn->getBody(/*canSynthesize=*/true);
+  if (!body) {
+    // FIXME: diagnose this
+    return nullptr;
+  }
+
+  // Merge the preamble into the existing body.
+  auto contents = std::move(preamble);
+  contents.insert(
+      contents.end(), body->getElements().begin(), body->getElements().end());
+  return BraceStmt::create(
+      ctx, body->getLBraceLoc(), contents, body->getRBraceLoc());
+}
+
+BraceStmt *AbstractFunctionDecl::getMacroExpandedBody() const {
+  auto mutableThis = const_cast<AbstractFunctionDecl *>(this);
+  switch (getBodyKind()) {
+  case BodyKind::None:
+  case BodyKind::Unparsed:
+  case BodyKind::Parsed:
+    switch (getBodyExpandedStatus()) {
+    case BodyExpandedStatus::NotExpanded:
+      if (auto expandedBody = expandBodyMacro(mutableThis)) {
+        // Save the original body's source range.
+        mutableThis->keepOriginalBodySourceRange();
+
+        // Cache the expanded macro body as the parsed body of the function.
+        mutableThis->setBodyExpandedStatus(BodyExpandedStatus::Expanded);
+        mutableThis->setBodyParsed(expandedBody);
+
+        return expandedBody;
+      }
+
+      mutableThis->setBodyExpandedStatus(BodyExpandedStatus::NoMacros);
+      break;
+
+    case BodyExpandedStatus::NoMacros:
+    case BodyExpandedStatus::Expanded:
+      break;
+    }
+
+    // Fall through to get the body.
+    LLVM_FALLTHROUGH;
+
+  case BodyKind::Synthesize:
+  case BodyKind::TypeChecked:
+  case BodyKind::SILSynthesize:
+  case BodyKind::Deserialized:
+    return getBody(/*canSynthesize=*/true);
+  }
+}
 
 BraceStmt *AbstractFunctionDecl::getBody(bool canSynthesize) const {
   if ((getBodyKind() == BodyKind::Synthesize ||
@@ -11325,6 +11442,8 @@ void MacroDecl::getIntroducedNames(MacroRole role, ValueDecl *attachedTo,
   case MacroRole::Accessor:
   case MacroRole::Conformance:
   case MacroRole::MemberAttribute:
+  case MacroRole::Preamble:
+  case MacroRole::Body:
     break;
   }
 }

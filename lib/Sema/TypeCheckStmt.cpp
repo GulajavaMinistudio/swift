@@ -2778,7 +2778,7 @@ TypeCheckFunctionBodyRequest::evaluate(Evaluator &eval,
   if (AFD->isBodySkipped())
     return nullptr;
 
-  BraceStmt *body = AFD->getBody();
+  BraceStmt *body = AFD->getMacroExpandedBody();
 
   // If there is no function body, there is nothing to type-check.
   if (!body) {
@@ -2858,6 +2858,8 @@ TypeCheckFunctionBodyRequest::evaluate(Evaluator &eval,
     StmtChecker SC(AFD);
     hadError = SC.typeCheckBody(body);
   }
+
+
 
   // If this was a function with a single expression body, let's see
   // if implicit return statement came out to be `Never` which means
