@@ -18,12 +18,6 @@ import ParseBridging
 
 import struct SwiftDiagnostics.Diagnostic
 
-extension UnsafePointer {
-  public var raw: UnsafeMutableRawPointer {
-    UnsafeMutableRawPointer(mutating: self)
-  }
-}
-
 enum ASTNode {
   case decl(BridgedDecl)
   case stmt(BridgedStmt)
@@ -102,7 +96,7 @@ struct ASTGenVisitor {
     self.legacyParse = legacyParser
   }
 
-  public func generate(sourceFile node: SourceFileSyntax) -> [BridgedDecl] {
+  func generate(sourceFile node: SourceFileSyntax) -> [BridgedDecl] {
     var out = [BridgedDecl]()
 
     for element in node.statements {
@@ -129,8 +123,6 @@ struct ASTGenVisitor {
           endLoc: loc
         )
         out.append(topLevelDecl.asDecl)
-      default:
-        fatalError("Top level nodes must be decls, stmts, or exprs.")
       }
     }
 
@@ -145,11 +137,10 @@ extension ASTGenVisitor {
   /// escaped identifier, backticks are stripped.
   @inline(__always)
   func generateIdentifier(_ token: TokenSyntax) -> BridgedIdentifier {
-    var text = token.rawText
-    // FIXME: Maybe `TokenSyntax.tokenView.rawKind == .wildcard`, or expose it as `.rawTokenKind`.
-    if text == "_" {
+    if token.rawTokenKind == .wildcard {
       return nil
     }
+    var text = token.rawText
     if text.count > 2 && text.hasPrefix("`") && text.hasSuffix("`") {
       text = .init(rebasing: text.dropFirst().dropLast())
     }
@@ -241,15 +232,15 @@ extension ASTGenVisitor {
 // Misc visits.
 // TODO: Some of these are called within a single file/method; we may want to move them to the respective files.
 extension ASTGenVisitor {
-  public func generate(memberBlockItem node: MemberBlockItemSyntax) -> BridgedDecl {
+  func generate(memberBlockItem node: MemberBlockItemSyntax) -> BridgedDecl {
     generate(decl: node.decl)
   }
 
-  public func generate(initializerClause node: InitializerClauseSyntax) -> BridgedExpr {
+  func generate(initializerClause node: InitializerClauseSyntax) -> BridgedExpr {
     generate(expr: node.value)
   }
 
-  public func generate(conditionElement node: ConditionElementSyntax) -> ASTNode {
+  func generate(conditionElement node: ConditionElementSyntax) -> ASTNode {
     // FIXME: returning ASTNode is wrong, non-expression conditions are not ASTNode.
     switch node.condition {
     case .availability(_):
@@ -264,7 +255,7 @@ extension ASTGenVisitor {
     fatalError("unimplemented")
   }
 
-  public func generate(codeBlockItem node: CodeBlockItemSyntax) -> ASTNode {
+  func generate(codeBlockItem node: CodeBlockItemSyntax) -> ASTNode {
     switch node.item {
     case .decl(let node):
       return .decl(self.generate(decl: node))
@@ -275,7 +266,7 @@ extension ASTGenVisitor {
     }
   }
 
-  public func generate(arrayElement node: ArrayElementSyntax) -> BridgedExpr {
+  func generate(arrayElement node: ArrayElementSyntax) -> BridgedExpr {
     generate(expr: node.expression)
   }
 
@@ -387,6 +378,24 @@ extension Optional where Wrapped: LazyCollectionProtocol {
     }
 
     return self.bridgedArray(in: astgen)
+  }
+}
+
+extension TokenSyntax {
+  /// Get `Keyword` kind if the token is a keyword.
+  var keywordKind: Keyword? {
+    // Performance note:
+    // This is faster than `token.tokenKind == .keyword(.true)` because
+    // `TokenKind.tokenKind` may instantiate `Swift.String`.
+    // That being said, `SwiftSyntax.Keyword` is a non-SPI public type, so it
+    // cannot be `@frozen`. Also `Keyword(_:SyntaxText)` itself is heavier than
+    // simple `token.rawText == "true"`.
+    // We should ensure `token.keywordKind == .true` is optimized out to
+    // a simple `cmp` instruction.
+    guard rawTokenKind == .keyword else {
+      return nil
+    }
+    return Keyword(self.rawText)
   }
 }
 

@@ -125,12 +125,22 @@ void ClangImporter::Implementation::makeComputed(AbstractStorageDecl *storage,
                                                  AccessorDecl *getter,
                                                  AccessorDecl *setter) {
   assert(getter);
+  // The synthesized computed property can either use a `get` or an
+  // `unsafeAddress` accessor.
+  auto isAddress = getter->getAccessorKind() == AccessorKind::Address;
   storage->getASTContext().evaluator.cacheOutput(HasStorageRequest{storage}, false);
   if (setter) {
-    storage->setImplInfo(StorageImplInfo::getMutableComputed());
+    if (isAddress)
+      assert(setter->getAccessorKind() == AccessorKind::MutableAddress);
+    storage->setImplInfo(
+        isAddress ? StorageImplInfo(ReadImplKind::Address,
+                                    WriteImplKind::MutableAddress,
+                                    ReadWriteImplKind::MutableAddress)
+                  : StorageImplInfo::getMutableComputed());
     storage->setAccessors(SourceLoc(), {getter, setter}, SourceLoc());
   } else {
-    storage->setImplInfo(StorageImplInfo::getImmutableComputed());
+    storage->setImplInfo(isAddress ? StorageImplInfo(ReadImplKind::Address)
+                                   : StorageImplInfo::getImmutableComputed());
     storage->setAccessors(SourceLoc(), {getter}, SourceLoc());
   }
 }
@@ -2183,17 +2193,23 @@ namespace {
       Impl.ImportedDecls[{decl->getCanonicalDecl(), getVersion()}] = result;
 
       if (recordHasMoveOnlySemantics(decl)) {
-        if (!Impl.SwiftContext.LangOpts.hasFeature(Feature::MoveOnly)) {
+        if (Impl.isCxxInteropCompatVersionAtLeast(
+                version::getUpcomingCxxInteropCompatVersion())) {
+          if (decl->isInStdNamespace() && decl->getName() == "promise") {
+            // Do not import std::promise.
+            return nullptr;
+          }
+          result->getAttrs().add(new (Impl.SwiftContext)
+                                     MoveOnlyAttr(/*Implicit=*/true));
+        } else {
           Impl.addImportDiagnostic(
-              decl, Diagnostic(
-                        diag::move_only_requires_move_only,
-                        Impl.SwiftContext.AllocateCopy(decl->getNameAsString())),
+              decl,
+              Diagnostic(
+                  diag::move_only_requires_move_only,
+                  Impl.SwiftContext.AllocateCopy(decl->getNameAsString())),
               decl->getLocation());
           return nullptr;
         }
-
-        result->getAttrs().add(new (Impl.SwiftContext)
-                                   MoveOnlyAttr(/*Implicit=*/true));
       }
 
       // FIXME: Figure out what to do with superclasses in C++. One possible
@@ -2812,13 +2828,24 @@ namespace {
       }
 
       if (auto *ntd = dyn_cast<NominalTypeDecl>(result))
-        addExplicitProtocolConformances(ntd);
+        addExplicitProtocolConformances(ntd, decl);
 
       return result;
     }
 
-    void addExplicitProtocolConformances(NominalTypeDecl *decl) {
-      auto clangDecl = decl->getClangDecl();
+    void
+    addExplicitProtocolConformances(NominalTypeDecl *decl,
+                                    const clang::CXXRecordDecl *clangDecl) {
+      if (Impl.isCxxInteropCompatVersionAtLeast(
+              version::getUpcomingCxxInteropCompatVersion())) {
+        // Propagate conforms_to attribute from public base classes.
+        for (auto base : clangDecl->bases()) {
+          if (base.getAccessSpecifier() != clang::AccessSpecifier::AS_public)
+            continue;
+          if (auto *baseClangDecl = base.getType()->getAsCXXRecordDecl())
+            addExplicitProtocolConformances(decl, baseClangDecl);
+        }
+      }
 
       if (!clangDecl->hasAttrs())
         return;
@@ -3964,7 +3991,7 @@ namespace {
       auto loc = Impl.importSourceLoc(decl->getLocation());
       auto dc = Impl.importDeclContextOf(
           decl, importedName.getEffectiveContext());
-
+      
       SmallVector<GenericTypeParamDecl *, 4> genericParams;
       for (auto &param : *decl->getTemplateParameters()) {
         auto genericParamDecl =

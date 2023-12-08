@@ -701,8 +701,8 @@ public:
           auto interfaceType = archetype->getInterfaceType();
           auto contextType = archetypeEnv->mapTypeIntoContext(interfaceType);
 
-          if (contextType.getPointer() != archetype) {
-            Out << "Archetype " << archetype->getString() << "does not appear"
+          if (!contextType->isEqual(archetype)) {
+            Out << "Archetype " << archetype->getString() << " does not appear"
                 << " inside its own generic environment\n";
             Out << "Interface type: " << interfaceType.getString() << "\n";
             Out << "Contextual type: " << contextType.getString() << "\n";
@@ -803,6 +803,13 @@ public:
       if (!shouldVerify(cast<Stmt>(S)))
         return false;
 
+      if (auto *expansion =
+              dyn_cast<PackExpansionExpr>(S->getParsedSequence())) {
+        if (!shouldVerify(expansion)) {
+          return false;
+        }
+      }
+
       if (!S->getElementExpr())
         return true;
 
@@ -812,6 +819,11 @@ public:
     }
 
     void cleanup(ForEachStmt *S) {
+      if (auto *expansion =
+              dyn_cast<PackExpansionExpr>(S->getParsedSequence())) {
+        cleanup(expansion);
+      }
+
       if (!S->getElementExpr())
         return;
 
@@ -2627,6 +2639,16 @@ public:
       // Variables must have materializable type.
       if (!var->getInterfaceType()->isMaterializable()) {
         Out << "VarDecl has non-materializable type: ";
+        var->getInterfaceType().print(Out);
+        Out << "\n";
+        abort();
+      }
+
+      // If we are performing pack iteration, variables have to carry the
+      // generic environment. Catching the missing environment here will prevent
+      // the code from being lowered.
+      if (var->getTypeInContext()->is<ErrorType>()) {
+        Out << "VarDecl is missing a Generic Environment: ";
         var->getInterfaceType().print(Out);
         Out << "\n";
         abort();

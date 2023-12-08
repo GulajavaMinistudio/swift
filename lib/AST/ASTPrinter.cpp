@@ -3605,6 +3605,10 @@ static bool usesFeatureNonEscapableTypes(Decl *decl) {
   if (fd && fd->getAttrs().getAttribute(DAK_ResultDependsOnSelf)) {
     return true;
   }
+  auto *pd = dyn_cast<ParamDecl>(decl);
+  if (pd && pd->hasResultDependsOn()) {
+    return true;
+  }
   return false;
 }
 
@@ -4359,6 +4363,9 @@ static void printParameterFlags(ASTPrinter &printer,
   
   if (flags.isIsolated())
     printer.printKeyword("isolated", options, " ");
+
+  if (flags.hasResultDependsOn())
+    printer.printKeyword("resultDependsOn", options, " ");
 
   if (!options.excludeAttrKind(TAK_escaping) && escaping)
     printer.printKeyword("@escaping", options, " ");
@@ -6055,7 +6062,7 @@ class TypePrinter : public TypeVisitor<TypePrinter> {
         switch (Options.OpaqueReturnTypePrinting) {
         case PrintOptions::OpaqueReturnTypePrintingMode::StableReference:
         case PrintOptions::OpaqueReturnTypePrintingMode::Description:
-          return true;
+          return false;
         case PrintOptions::OpaqueReturnTypePrintingMode::WithOpaqueKeyword:
           return opaque->getDecl()->hasExplicitGenericParams();
         case PrintOptions::OpaqueReturnTypePrintingMode::WithoutOpaqueKeyword:
@@ -7413,39 +7420,51 @@ public:
     Printer << "each ";
   }
 
-  void printArchetypeCommon(ArchetypeType *T) {
-    if (Options.AlternativeTypeNames) {
-      auto found = Options.AlternativeTypeNames->find(T->getCanonicalType());
-      if (found != Options.AlternativeTypeNames->end()) {
-        if (T->isParameterPack()) printEach();
-        Printer << found->second.str();
-        return;
+  void printArchetypeCommon(Type interfaceTy, ArchetypeType *archetypeTy) {
+    if (auto *paramTy = interfaceTy->getAs<GenericTypeParamType>()) {
+      assert(archetypeTy->isRoot());
+
+      if (Options.AlternativeTypeNames) {
+        auto found = Options.AlternativeTypeNames->find(CanType(archetypeTy));
+        if (found != Options.AlternativeTypeNames->end()) {
+          if (paramTy->isParameterPack()) printEach();
+          Printer << found->second.str();
+          return;
+        }
       }
+
+      visit(paramTy);
+      return;
     }
 
-    auto interfaceType = T->getInterfaceType();
-    if (auto *dependentMember = interfaceType->getAs<DependentMemberType>()) {
-      visitParentType(T->getParent());
-      printDependentMember(dependentMember);
-    } else {
-      visit(interfaceType);
+    auto *memberTy = interfaceTy->castTo<DependentMemberType>();
+    if (memberTy->getBase()->is<GenericTypeParamType>())
+      visitParentType(archetypeTy->getRoot());
+    else {
+      printArchetypeCommon(memberTy->getBase(), archetypeTy->getRoot());
+      Printer << ".";
     }
+
+    printDependentMember(memberTy);
   }
 
   void visitPrimaryArchetypeType(PrimaryArchetypeType *T) {
-    printArchetypeCommon(T);
+    printArchetypeCommon(T->getInterfaceType(), T);
   }
 
   void visitOpaqueTypeArchetypeType(OpaqueTypeArchetypeType *T) {
-    if (auto parent = T->getParent()) {
-      printArchetypeCommon(T);
+    auto interfaceTy = T->getInterfaceType();
+    auto *paramTy = interfaceTy->getAs<GenericTypeParamType>();
+
+    if (!paramTy) {
+      assert(interfaceTy->is<DependentMemberType>());
+      printArchetypeCommon(interfaceTy, T);
       return;
     }
 
     // Try to print a named opaque type.
     auto printNamedOpaque = [&] {
-      unsigned ordinal =
-          T->getInterfaceType()->castTo<GenericTypeParamType>()->getIndex();
+      unsigned ordinal = paramTy->getIndex();
       if (auto genericParam = T->getDecl()->getExplicitGenericParam(ordinal)) {
         visit(genericParam->getDeclaredInterfaceType());
         return true;
@@ -7492,9 +7511,7 @@ public:
       Printer.printEscapedStringLiteral(
                                    decl->getOpaqueReturnTypeIdentifier().str());
 
-      Printer << ", " << T->getInterfaceType()
-                          ->castTo<GenericTypeParamType>()
-                          ->getIndex();
+      Printer << ", " << paramTy->getIndex();
 
       // The identifier after the closing parenthesis is irrelevant and can be
       // anything. It just needs to be there for the @_opaqueReturnTypeOf
@@ -7526,7 +7543,7 @@ public:
   }
 
   void visitPackArchetypeType(PackArchetypeType *T) {
-    printArchetypeCommon(T);
+    printArchetypeCommon(T->getInterfaceType(), T);
   }
 
   void visitGenericTypeParamType(GenericTypeParamType *T) {
