@@ -4348,6 +4348,9 @@ namespace {
         case InvertibleProtocolKind::Copyable:
           printFlag("inverse_copyable");
           break;
+        case InvertibleProtocolKind::Escapable:
+          printFlag("inverse_escapable");
+          break;
         }
       }
 
@@ -4372,12 +4375,6 @@ namespace {
                               StringRef label) {
       printCommon("existential_type", label);
       printRec(T->getConstraintType());
-      printFoot();
-    }
-
-    void visitInverseType(InverseType *T, StringRef label) {
-      printCommon("inverse_type", label);
-      printRec(T->getInvertedProtocol());
       printFoot();
     }
 
@@ -4435,6 +4432,13 @@ namespace {
     void visitTypeVariableType(TypeVariableType *T, StringRef label) {
       printCommon("type_variable_type", label);
       printField(T->getID(), "id");
+      printFoot();
+    }
+
+    void visitErrorUnionType(ErrorUnionType *T, StringRef label) {
+      printCommon("error_union_type", label);
+      for (auto term : T->getTerms())
+        printRec(term);
       printFoot();
     }
 

@@ -7054,9 +7054,6 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
     case TypeKind::TypeVariable:
       llvm_unreachable("type variables should have already been handled by now");
 
-    case TypeKind::Inverse:
-      llvm_unreachable("unexpected inverse type in constraint solver");
-
     case TypeKind::DependentMember: {
       // If types are identical, let's consider this constraint solved
       // even though they are dependent members, they would be resolved
@@ -7461,6 +7458,9 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
 
       return matchTypes(pack1, pack2, kind, subflags, locator);
     }
+
+    case TypeKind::ErrorUnion:
+      break;
     }
   }
 
@@ -8033,9 +8033,6 @@ ConstraintSystem::simplifyConstructionConstraint(
 
   case TypeKind::BuiltinTuple:
     llvm_unreachable("BuiltinTupleType in constraint");
-
-  case TypeKind::Inverse:
-    llvm_unreachable("unexpected inverse type in constraint solver");
     
   case TypeKind::Unresolved:
   case TypeKind::Error:
@@ -8124,6 +8121,7 @@ ConstraintSystem::simplifyConstructionConstraint(
   case TypeKind::ParameterizedProtocol:
   case TypeKind::Protocol:
   case TypeKind::Existential:
+  case TypeKind::ErrorUnion:
     // Break out to handle the actual construction below.
     break;
 
@@ -15474,6 +15472,8 @@ void ConstraintSystem::addConstraint(Requirement req,
     if (req.getLayoutConstraint()->isClass()) {
       conformsToAnyObject = true;
       break;
+    } else {
+      llvm_unreachable("unexpected LayoutConstraint kind");
     }
     return;
   }

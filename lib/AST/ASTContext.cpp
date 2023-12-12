@@ -122,6 +122,11 @@ KnownProtocolKind swift::getKnownProtocolKind(InvertibleProtocolKind ip) {
   }
 }
 
+void swift::simple_display(llvm::raw_ostream &out,
+                           const InvertibleProtocolKind &value) {
+  out << getProtocolName(getKnownProtocolKind(value));
+}
+
 namespace {
 enum class SearchPathKind : uint8_t {
   Import = 1 << 0,
@@ -453,6 +458,7 @@ struct ASTContext::Implementation {
     llvm::DenseMap<Type, InOutType*> InOutTypes;
     llvm::DenseMap<std::pair<Type, void*>, DependentMemberType *>
       DependentMemberTypes;
+    llvm::FoldingSet<ErrorUnionType> ErrorUnionTypes;
     llvm::DenseMap<void *, PlaceholderType *> PlaceholderTypes;
     llvm::DenseMap<Type, DynamicSelfType *> DynamicSelfTypes;
     llvm::DenseMap<std::pair<EnumDecl*, Type>, EnumType*> EnumTypes;
@@ -460,7 +466,6 @@ struct ASTContext::Implementation {
     llvm::DenseMap<std::pair<ClassDecl*, Type>, ClassType*> ClassTypes;
     llvm::DenseMap<std::pair<ProtocolDecl*, Type>, ProtocolType*> ProtocolTypes;
     llvm::DenseMap<Type, ExistentialType *> ExistentialTypes;
-    llvm::DenseMap<Type, InverseType *> InverseTypes;
     llvm::FoldingSet<UnboundGenericType> UnboundGenericTypes;
     llvm::FoldingSet<BoundGenericType> BoundGenericTypes;
     llvm::FoldingSet<ProtocolCompositionType> ProtocolCompositionTypes;
@@ -3010,6 +3015,50 @@ Type ErrorType::get(Type originalType) {
   return entry = new (mem) ErrorType(ctx, originalType, properties);
 }
 
+void ErrorUnionType::Profile(llvm::FoldingSetNodeID &id, ArrayRef<Type> terms) {
+  id.AddInteger(terms.size());
+  for (auto term : terms) {
+    id.AddPointer(term.getPointer());
+  }
+}
+
+Type ErrorUnionType::get(const ASTContext &ctx, ArrayRef<Type> terms) {
+  // Peep-hole the simple cases. Error union types are always synthesized by
+  // the type checker and never written explicitly, so we have no use for
+  // extra type sugar around them.
+  switch (terms.size()) {
+  case 0: return ctx.getNeverType();
+  case 1: return terms[0];
+  default: break;
+  }
+
+  // Determine canonicality and recursive type properties.
+  bool isCanonical = true;
+  RecursiveTypeProperties properties;
+  for (Type term : terms) {
+    if (!term->isCanonical())
+      isCanonical = false;
+    properties |= term->getRecursiveProperties();
+  }
+
+  // Check whether we've seen this type before.
+  auto arena = getArena(properties);
+  void *insertPos = nullptr;
+  llvm::FoldingSetNodeID id;
+  ErrorUnionType::Profile(id, terms);
+  if (auto knownTy = ctx.getImpl().getArena(arena).ErrorUnionTypes
+          .FindNodeOrInsertPos(id, insertPos))
+    return knownTy;
+
+  // Use trailing objects for term storage.
+  auto size = totalSizeToAlloc<Type>(terms.size());
+  auto mem = ctx.Allocate(size, alignof(ErrorUnionType), arena);
+  auto unionTy = new (mem) ErrorUnionType(isCanonical ? &ctx : nullptr,
+                                          terms, properties);
+  ctx.getImpl().getArena(arena).ErrorUnionTypes.InsertNode(unionTy, insertPos);
+  return unionTy;
+}
+
 Type PlaceholderType::get(ASTContext &ctx, Originator originator) {
   assert(originator);
 
@@ -3840,28 +3889,6 @@ ExistentialMetatypeType::ExistentialMetatypeType(
 
 Type ExistentialMetatypeType::getExistentialInstanceType() {
   return ExistentialType::get(getInstanceType());
-}
-
-InvertibleProtocolKind InverseType::getInverseKind() const {
-  return *getInvertibleProtocolKind(*protocol->getKnownProtocol());
-}
-
-Type InverseType::get(Type invertedProto) {
-  auto &C = invertedProto->getASTContext();
-
-  auto properties = invertedProto->getRecursiveProperties();
-  auto arena = getArena(properties);
-
-  auto &entry = C.getImpl().getArena(arena).InverseTypes[invertedProto];
-  if (entry)
-    return entry;
-
-  const ASTContext *canonicalContext =
-      invertedProto->isCanonical() ? &C : nullptr;
-
-  return entry = new (C, arena) InverseType(invertedProto,
-                                            canonicalContext,
-                                            properties);
 }
 
 ModuleType *ModuleType::get(ModuleDecl *M) {
@@ -6047,7 +6074,8 @@ LayoutConstraint LayoutConstraint::getLayoutConstraint(LayoutConstraintKind Kind
                                                       unsigned SizeInBits,
                                                       unsigned Alignment,
                                                       ASTContext &C) {
-  if (!LayoutConstraintInfo::isKnownSizeTrivial(Kind)) {
+  if (!LayoutConstraintInfo::isKnownSizeTrivial(Kind) &&
+      !LayoutConstraintInfo::isTrivialStride(Kind)) {
     assert(SizeInBits == 0);
     assert(Alignment == 0);
     return getLayoutConstraint(Kind);
@@ -6264,6 +6292,9 @@ BuiltinTupleDecl *ASTContext::getBuiltinTupleDecl() {
     buildFakeExtension(proto);
 
   if (auto *proto = getProtocol(KnownProtocolKind::Copyable))
+    buildFakeExtension(proto);
+
+  if (auto *proto = getProtocol(KnownProtocolKind::Escapable))
     buildFakeExtension(proto);
 
   return result;

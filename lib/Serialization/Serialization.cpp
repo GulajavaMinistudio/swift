@@ -1480,6 +1480,8 @@ void Serializer::serializeGenericRequirements(
       if (layout->isKnownSizeTrivial()) {
         size = layout->getTrivialSizeInBits();
         alignment = layout->getAlignmentInBits();
+      } else if (layout->isTrivialStride()) {
+        size = layout->getTrivialStrideInBits();
       }
       LayoutRequirementKind rawKind = LayoutRequirementKind::UnknownLayout;
       switch (layout->getKind()) {
@@ -1506,6 +1508,12 @@ void Serializer::serializeGenericRequirements(
         break;
       case LayoutConstraintKind::UnknownLayout:
         rawKind = LayoutRequirementKind::UnknownLayout;
+        break;
+      case LayoutConstraintKind::BridgeObject:
+        rawKind = LayoutRequirementKind::BridgeObject;
+        break;
+      case LayoutConstraintKind::TrivialStride:
+        rawKind = LayoutRequirementKind::TrivialStride;
         break;
       }
       scratch.push_back(rawKind);
@@ -3197,6 +3205,9 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
       }
 
       unsigned numNames = introducedDeclNames.size();
+
+      (void)evaluateOrDefault(S.getASTContext().evaluator,
+                              ResolveMacroConformances{theAttr, D}, {});
 
       unsigned numConformances = 0;
       for (auto conformance : theAttr->getConformances()) {
@@ -5139,10 +5150,6 @@ public:
     llvm_unreachable("modules are currently not first-class values");
   }
 
-  void visitInverseType(const InverseType *) {
-    llvm_unreachable("inverse types should not escape the type checker");
-  }
-
   void visitInOutType(const InOutType *) {
     llvm_unreachable("inout types are only used in function type parameters");
   }
@@ -5153,6 +5160,10 @@ public:
 
   void visitTypeVariableType(const TypeVariableType *) {
     llvm_unreachable("type variables should not escape the type checker");
+  }
+
+  void visitErrorUnionType(const ErrorUnionType *) {
+    llvm_unreachable("error union types do not persist in the AST");
   }
 
   void visitBuiltinTypeImpl(Type ty) {
