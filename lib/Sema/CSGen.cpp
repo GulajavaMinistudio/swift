@@ -2459,13 +2459,17 @@ namespace {
       // Determine the thrown error type, when appropriate.
       Type thrownErrorTy = [&] {
         // Explicitly-specified thrown type.
-        if (auto thrownTypeRepr = closure->getExplicitThrownTypeRepr()) {
-          Type resolvedTy = resolveTypeReferenceInExpression(
-              thrownTypeRepr, TypeResolverContext::InExpression,
-              thrownErrorLocator);
-          if (resolvedTy)
-            return resolvedTy;
+        if (closure->getExplicitThrownTypeRepr()) {
+          if (Type explicitType = closure->getExplicitThrownType())
+            return explicitType;
         }
+
+        // Explicitly-specified 'throws' without a type is untyped throws.
+        // Use a NULL return here so that the inferred type is written with
+        // `throws` instead of `throws(any Error)`, although the two are
+        // semantically equivalent.
+        if (closure->getThrowsLoc().isValid())
+          return Type();
 
         // Thrown type inferred from context.
         if (auto contextualType = CS.getContextualType(
@@ -2477,7 +2481,7 @@ namespace {
         }
 
         // We do not try to infer a thrown error type if one isn't immediately
-        // available. We could attempt this in the future.
+        // available.
         return Type();
       }();
 

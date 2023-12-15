@@ -157,6 +157,8 @@ static bool isBarrier(SILInstruction *inst) {
     case BuiltinValueKind::StackDealloc:
     case BuiltinValueKind::AllocVector:
     case BuiltinValueKind::AssumeAlignment:
+    case BuiltinValueKind::GetEnumTag:
+    case BuiltinValueKind::InjectEnumTag:
       return false;
 
     // Handle some rare builtins that may be sensitive to object lifetime
@@ -185,6 +187,8 @@ static bool isBarrier(SILInstruction *inst) {
     case BuiltinValueKind::StartAsyncLet:
     case BuiltinValueKind::CreateAsyncTask:
     case BuiltinValueKind::CreateAsyncTaskInGroup:
+    case BuiltinValueKind::CreateAsyncTaskWithExecutor:
+    case BuiltinValueKind::CreateAsyncTaskInGroupWithExecutor:
     case BuiltinValueKind::TaskRunInline:
     case BuiltinValueKind::StartAsyncLetWithLocalBuffer:
     case BuiltinValueKind::ConvertTaskToJob:
@@ -192,6 +196,7 @@ static bool isBarrier(SILInstruction *inst) {
     case BuiltinValueKind::DestroyDefaultActor:
     case BuiltinValueKind::InitializeDistributedRemoteActor:
     case BuiltinValueKind::InitializeNonDefaultDistributedActor:
+    case BuiltinValueKind::BuildOrdinaryTaskExecutorRef:
     case BuiltinValueKind::BuildOrdinarySerialExecutorRef:
     case BuiltinValueKind::BuildComplexEqualitySerialExecutorRef:
     case BuiltinValueKind::BuildDefaultActorExecutorRef:

@@ -111,8 +111,10 @@ set(SWIFT_RUNTIME_CONCURRENCY_SWIFT_SOURCES
   PartialAsyncTask.swift
   SourceCompatibilityShims.swift
   Task.swift
+  Task+TaskExecutor.swift
   TaskCancellation.swift
   TaskGroup.swift
+  TaskGroup+TaskExecutor.swift
   DiscardingTaskGroup.swift
   TaskLocal.swift
   TaskSleep.swift
@@ -189,6 +191,7 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB AND SWIFT_SHOULD_BUILD_EMBEDDED_CONCURRENC
   set(SWIFT_STDLIB_SUPPORT_BACK_DEPLOYMENT OFF)
   set(SWIFT_STDLIB_STABLE_ABI OFF)
   set(SWIFT_STDLIB_ENABLE_OBJC_INTEROP OFF)
+  set(SWIFT_CONCURRENCY_USES_DISPATCH FALSE)
   set(SWIFT_STDLIB_SINGLE_THREADED_CONCURRENCY TRUE)
   set(SWIFT_STDLIB_CONCURRENCY_TRACING FALSE)
 

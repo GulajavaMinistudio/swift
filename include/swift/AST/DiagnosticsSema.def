@@ -1740,9 +1740,17 @@ ERROR(attr_objc_implementation_category_not_found,none,
       "could not find category %0 on Objective-C class %1; make sure your "
       "umbrella or bridging header imports the header that declares it",
       (Identifier, ValueDecl*))
+ERROR(attr_objc_implementation_func_not_found,none,
+      "could not find imported function '%0' matching %kind1; make sure your "
+      "umbrella or bridging header imports the header that declares it",
+      (StringRef, ValueDecl*))
 NOTE(attr_objc_implementation_fixit_remove_category_name,none,
      "remove arguments to implement the main '@interface' for this class",
      ())
+ERROR(attr_objc_implementation_no_category_for_func,none,
+      "%kind0 does not belong to an Objective-C category; remove the category "
+      "name from this attribute",
+      (ValueDecl*))
 ERROR(attr_objc_implementation_no_conformance,none,
       "'@_objcImplementation' extension cannot add conformance to %0; "
       "add this conformance %select{with an ordinary extension|"
@@ -4271,6 +4279,9 @@ WARNING(warn_use_async_alternative,none,
 
 NOTE(found_candidate,none,
      "found this candidate", ())
+NOTE(found_candidate_in_module,none,
+     "found this candidate %select{|in module %1}0",
+     (bool, const ModuleDecl *))
 NOTE(found_candidate_type,none,
      "found candidate with type %0", (Type))
 
@@ -7593,7 +7604,7 @@ NOTE(add_explicit_protocol_for_conformance,none,
      "consider making %kind0 explicitly conform to the '%1' protocol",
      (const ValueDecl *, StringRef))
 ERROR(escapable_requires_feature_flag,none,
-      "type '~Escapable' requires -enable-experimental-feature NonEscapableTypes",
+      "type '~Escapable' requires -enable-experimental-feature NonescapableTypes",
       ())
 
 // -- older ones below --
@@ -7688,7 +7699,7 @@ ERROR(noncopyable_cannot_have_read_set_accessor,none,
       (unsigned))
 
 ERROR(nonescapable_types_attr_disabled,none,
-      "attribute requires '-enable-experimental-feature NonEscapableTypes'", ())
+      "attribute requires '-enable-experimental-feature NonescapableTypes'", ())
 
 //------------------------------------------------------------------------------
 // MARK: Init accessors

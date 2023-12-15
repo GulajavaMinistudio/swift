@@ -979,10 +979,11 @@ bool Decl::preconcurrency() const {
 }
 
 Type AbstractFunctionDecl::getThrownInterfaceType() const {
-  return evaluateOrDefault(
-      getASTContext().evaluator,
-      ThrownTypeRequest{const_cast<AbstractFunctionDecl *>(this)},
-      Type());
+  if (!getThrownTypeRepr())
+    return ThrownType.getType();
+
+  auto mutableThis = const_cast<AbstractFunctionDecl *>(this);
+  return CatchNode(mutableThis).getExplicitCaughtType(getASTContext());
 }
 
 llvm::Optional<Type> 
@@ -1847,7 +1848,7 @@ Type ExtensionDecl::getExtendedType() const {
   return ErrorType::get(ctx);
 }
 
-bool ExtensionDecl::isObjCImplementation() const {
+bool Decl::isObjCImplementation() const {
   return getAttrs().hasAttribute<ObjCImplementationAttr>(/*AllowInvalid=*/true);
 }
 
@@ -3863,6 +3864,22 @@ void ValueDecl::setInterfaceType(Type type) {
                                         std::move(type));
 }
 
+StringRef ValueDecl::getCDeclName() const {
+  // Treat imported C functions as implicitly @_cdecl.
+  if (auto clangDecl = dyn_cast_or_null<clang::FunctionDecl>(getClangDecl())) {
+    if (clangDecl->getLanguageLinkage() == clang::CLanguageLinkage
+          && clangDecl->getIdentifier())
+      return clangDecl->getName();
+  }
+
+  // Handle explicit cdecl attributes.
+  if (auto cdeclAttr = getAttrs().getAttribute<CDeclAttr>()) {
+    return cdeclAttr->Name;
+  }
+
+  return "";
+}
+
 llvm::Optional<ObjCSelector>
 ValueDecl::getObjCRuntimeName(bool skipIsObjCResolution) const {
   if (auto func = dyn_cast<AbstractFunctionDecl>(this))
@@ -4398,7 +4415,8 @@ static bool checkAccess(const DeclContext *useDC, const ValueDecl *VD,
   // a context where we would access its storage directly, forbid access. Name
   // lookups will instead find and use the matching interface decl.
   // FIXME: Passing `true` for `isAccessOnSelf` may cause false positives.
-  if (isObjCMemberImplementation(VD, getAccessLevel) &&
+  if ((VD->isObjCImplementation() ||
+         isObjCMemberImplementation(VD, getAccessLevel)) &&
       VD->getAccessSemanticsFromContext(useDC, /*isAccessOnSelf=*/true)
           != AccessSemantics::DirectToStorage)
     return false;
@@ -4906,12 +4924,13 @@ InverseMarking TypeDecl::getMarking(InvertibleProtocolKind ip) const {
 }
 
 bool TypeDecl::canBeNoncopyable() const {
-  return getMarking(InvertibleProtocolKind::Copyable).getInverse().isPresent();
+  auto copyable = getMarking(InvertibleProtocolKind::Copyable);
+  return bool(copyable.getInverse()) && !copyable.getPositive();
 }
 
 bool TypeDecl::isEscapable() const {
   auto escapable = getMarking(InvertibleProtocolKind::Escapable);
-  return !escapable.getInverse().isPresent();
+  return !escapable.getInverse() || bool(escapable.getPositive());
 }
 
 Type TypeDecl::getDeclaredInterfaceType() const {
@@ -11059,17 +11078,18 @@ void swift::simple_display(llvm::raw_ostream &out, AnyFunctionRef fn) {
 
 ActorIsolation::ActorIsolation(Kind kind, NominalTypeDecl *actor,
                                unsigned parameterIndex)
-    : actorInstance(actor), kind(kind), 
-      isolatedByPreconcurrency(false),
-      parameterIndex(parameterIndex) { }
+    : actorInstance(actor), kind(kind), isolatedByPreconcurrency(false),
+      silParsed(false), parameterIndex(parameterIndex) {}
 
 ActorIsolation::ActorIsolation(Kind kind, VarDecl *capturedActor)
-    : actorInstance(capturedActor), kind(kind),
-      isolatedByPreconcurrency(false), 
-      parameterIndex(0) { }
+    : actorInstance(capturedActor), kind(kind), isolatedByPreconcurrency(false),
+      silParsed(false), parameterIndex(0) {}
 
 NominalTypeDecl *ActorIsolation::getActor() const {
   assert(getKind() == ActorInstance);
+
+  if (silParsed)
+    return nullptr;
 
   if (auto *instance = actorInstance.dyn_cast<VarDecl *>()) {
     return instance->getTypeInContext()
@@ -11081,10 +11101,17 @@ NominalTypeDecl *ActorIsolation::getActor() const {
 
 VarDecl *ActorIsolation::getActorInstance() const {
   assert(getKind() == ActorInstance);
+
+  if (silParsed)
+    return nullptr;
+
   return actorInstance.dyn_cast<VarDecl *>();
 }
 
 bool ActorIsolation::isMainActor() const {
+  if (silParsed)
+    return false;
+
   if (isGlobalActor()) {
     if (auto *nominal = getGlobalActor()->getAnyNominal())
       return nominal->isMainActor();
@@ -11094,6 +11121,9 @@ bool ActorIsolation::isMainActor() const {
 }
 
 bool ActorIsolation::isDistributedActor() const {
+  if (silParsed)
+    return false;
+
   return getKind() == ActorInstance && getActor()->isDistributedActor();
 }
 
@@ -11695,7 +11725,7 @@ MacroDiscriminatorContext::getParentOf(FreestandingMacroExpansion *expansion) {
 }
 
 llvm::Optional<Type>
-CatchNode::getThrownErrorTypeInContext(DeclContext *dc) const {
+CatchNode::getThrownErrorTypeInContext(ASTContext &ctx) const {
   if (auto func = dyn_cast<AbstractFunctionDecl *>()) {
     if (auto thrownError = func->getEffectiveThrownErrorType())
       return func->mapTypeIntoContext(*thrownError);
@@ -11703,16 +11733,22 @@ CatchNode::getThrownErrorTypeInContext(DeclContext *dc) const {
     return llvm::None;
   }
 
-  if (auto closure = dyn_cast<AbstractClosureExpr *>()) {
+  if (auto closure = dyn_cast<ClosureExpr *>()) {
     if (closure->getType())
       return closure->getEffectiveThrownType();
 
-    // FIXME: Should we lazily compute this?
+    if (Type thrownType = closure->getExplicitThrownType()) {
+      if (thrownType->isNever())
+        return llvm::None;
+
+      return thrownType;
+    }
+
     return llvm::None;
   }
 
   if (auto doCatch = dyn_cast<DoCatchStmt *>()) {
-    if (auto thrownError = doCatch->getCaughtErrorType(dc)) {
+    if (auto thrownError = doCatch->getCaughtErrorType()) {
       if (thrownError->isNever())
         return llvm::None;
 
@@ -11720,7 +11756,7 @@ CatchNode::getThrownErrorTypeInContext(DeclContext *dc) const {
     }
 
     // If we haven't computed the error type yet, return 'any Error'.
-    return dc->getASTContext().getErrorExistentialType();
+    return ctx.getErrorExistentialType();
   }
 
   auto tryExpr = get<AnyTryExpr *>();
@@ -11729,7 +11765,7 @@ CatchNode::getThrownErrorTypeInContext(DeclContext *dc) const {
       return thrownError;
 
     // If we haven't computed the error type yet, return 'any Error'.
-    return dc->getASTContext().getErrorExistentialType();
+    return ctx.getErrorExistentialType();
   }
 
   if (auto optTry = llvm::dyn_cast<OptionalTryExpr>(tryExpr)) {
@@ -11737,8 +11773,112 @@ CatchNode::getThrownErrorTypeInContext(DeclContext *dc) const {
       return thrownError;
 
     // If we haven't computed the error type yet, return 'any Error'.
-    return dc->getASTContext().getErrorExistentialType();
+    return ctx.getErrorExistentialType();
   }
 
   llvm_unreachable("Unhandled catch node kind");
+}
+
+Type CatchNode::getExplicitCaughtType(ASTContext &ctx) const {
+  return evaluateOrDefault(
+      ctx.evaluator, ExplicitCaughtTypeRequest{&ctx, *this}, Type());
+}
+
+void swift::simple_display(llvm::raw_ostream &out, CatchNode catchNode) {
+  out << "catch node";
+}
+
+SourceLoc swift::extractNearestSourceLoc(CatchNode catchNode) {
+  if (auto func = catchNode.dyn_cast<AbstractFunctionDecl *>())
+    return func->getLoc();
+  if (auto closure = catchNode.dyn_cast<ClosureExpr *>())
+    return closure->getLoc();
+  if (auto doCatch = catchNode.dyn_cast<DoCatchStmt *>())
+    return doCatch->getDoLoc();
+  if (auto tryExpr = catchNode.dyn_cast<AnyTryExpr *>())
+    return tryExpr->getTryLoc();
+  llvm_unreachable("Unhandled catch node");
+}
+
+//----------------------------------------------------------------------------//
+// ExplicitCaughtTypeRequest computation.
+//----------------------------------------------------------------------------//
+bool ExplicitCaughtTypeRequest::isCached() const {
+  auto catchNode = std::get<1>(getStorage());
+
+  // try? and try! never need to be cached.
+  if (catchNode.is<AnyTryExpr *>())
+    return false;
+
+  // Functions with explicitly-written thrown types need the result cached.
+  if (auto func = catchNode.dyn_cast<AbstractFunctionDecl *>()) {
+    return func->ThrownType.getTypeRepr() != nullptr;
+  }
+
+  // Closures with explicitly-written thrown types need the result cached.
+  if (auto closure = catchNode.dyn_cast<ClosureExpr *>()) {
+    return closure->ThrownType != nullptr;
+  }
+
+  // Do..catch with explicitly-written thrown types need the result cached.
+  if (auto doCatch = catchNode.dyn_cast<DoCatchStmt *>()) {
+    return doCatch->getThrowsLoc().isValid();
+  }
+
+  llvm_unreachable("Unhandled catch node");
+}
+
+llvm::Optional<Type> ExplicitCaughtTypeRequest::getCachedResult() const {
+  // Map a possibly-null Type to llvm::Optional<Type>.
+  auto nonnullTypeOrNone = [](Type type) -> llvm::Optional<Type> {
+    if (type.isNull())
+      return llvm::None;
+
+    return type;
+  };
+
+  auto catchNode = std::get<1>(getStorage());
+
+  if (auto func = catchNode.dyn_cast<AbstractFunctionDecl *>()) {
+    return nonnullTypeOrNone(func->ThrownType.getType());
+  }
+
+  if (auto closure = catchNode.dyn_cast<ClosureExpr *>()) {
+    if (closure->ThrownType) {
+      return nonnullTypeOrNone(closure->ThrownType->getInstanceType());
+    }
+
+    return llvm::None;
+  }
+
+  if (auto doCatch = catchNode.dyn_cast<DoCatchStmt *>()) {
+    return nonnullTypeOrNone(doCatch->ThrownType.getType());
+  }
+
+  llvm_unreachable("Unhandled catch node");
+}
+
+void ExplicitCaughtTypeRequest::cacheResult(Type type) const {
+  auto catchNode = std::get<1>(getStorage());
+
+  if (auto func = catchNode.dyn_cast<AbstractFunctionDecl *>()) {
+    func->ThrownType.setType(type);
+    return;
+  }
+
+  if (auto closure = catchNode.dyn_cast<ClosureExpr *>()) {
+    if (closure->ThrownType)
+      closure->ThrownType->setType(MetatypeType::get(type));
+    else
+      closure->ThrownType =
+          TypeExpr::createImplicit(type, type->getASTContext());
+    return;
+  }
+
+  if (auto doCatch = catchNode.dyn_cast<DoCatchStmt *>()) {
+    doCatch->ThrownType.setType(type);
+    return;
+  }
+
+  llvm_unreachable("Unhandled catch node");
 }

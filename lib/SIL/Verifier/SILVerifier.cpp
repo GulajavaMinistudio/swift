@@ -559,6 +559,11 @@ struct ImmutableAddressUseVerifier {
           if (isPolymorphicBuiltin(*builtinKind)) {
             break;
           }
+
+          // Get enum tag borrows its operand address value.
+          if (builtinKind == BuiltinValueKind::GetEnumTag) {
+            return false;
+          }
         }
 
         // Otherwise this is a builtin that we are not expecting to see, so bail
@@ -1796,6 +1801,32 @@ public:
           substConv.getSILArgumentType(i, F.getTypeExpansionContext()),
           "operand of 'apply' doesn't match function input type");
     }
+
+    // If we have any actor isolation, then our callee and caller must be
+    // asynchronous.
+    if (auto isolationCrossing = site.getIsolationCrossing()) {
+      require(bool(isolationCrossing->getCallerIsolation()) ||
+                  bool(isolationCrossing->getCalleeIsolation()),
+              "Should only have a non-std::nullopt isolation crossing if one "
+              "of callee/caller isolation is not Unspecified");
+
+      require(site->getFunction()->isAsync(),
+              "Caller must be asynchronous if we have an isolation corssing");
+      require(substTy->isAsync(),
+              "Callee must be asynchronous if we have an isolation crossing");
+
+      // If we have an AST node make sure that its isolation matches the
+      // isolation crossing on the apply site.
+      if (auto *fn = site.getCalleeFunction()) {
+        if (auto *fnDecl =
+                fn->getLocation().getAsASTNode<AbstractFunctionDecl>()) {
+          require(
+              getActorIsolation(fnDecl) ==
+                  isolationCrossing->getCalleeIsolation(),
+              "Callee's isolation must match isolation of isolation crossing");
+        }
+      }
+    }
   }
 
   void checkApplyInst(ApplyInst *AI) {
@@ -2121,8 +2152,10 @@ public:
       return;
     }
 
-    if (builtinKind == BuiltinValueKind::BuildOrdinarySerialExecutorRef ||
-        builtinKind == BuiltinValueKind::BuildComplexEqualitySerialExecutorRef ||
+    if (builtinKind == BuiltinValueKind::BuildOrdinaryTaskExecutorRef ||
+        builtinKind == BuiltinValueKind::BuildOrdinarySerialExecutorRef ||
+        builtinKind ==
+            BuiltinValueKind::BuildComplexEqualitySerialExecutorRef ||
         builtinKind == BuiltinValueKind::BuildDefaultActorExecutorRef) {
       require(arguments.size() == 1,
               "builtin expects one argument");

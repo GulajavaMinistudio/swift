@@ -1518,60 +1518,87 @@ void AttributeChecker::visitNonObjCAttr(NonObjCAttr *attr) {
 
 void AttributeChecker::
 visitObjCImplementationAttr(ObjCImplementationAttr *attr) {
-  auto ED = cast<ExtensionDecl>(D);
-  if (ED->isConstrainedExtension())
-    diagnoseAndRemoveAttr(attr,
-                          diag::attr_objc_implementation_must_be_unconditional);
+  if (auto ED = dyn_cast<ExtensionDecl>(D)) {
+    if (ED->isConstrainedExtension())
+      diagnoseAndRemoveAttr(attr,
+                            diag::attr_objc_implementation_must_be_unconditional);
 
-  auto CD = dyn_cast<ClassDecl>(ED->getExtendedNominal());
-  if (!CD) {
-    diagnoseAndRemoveAttr(attr,
-                          diag::attr_objc_implementation_must_extend_class,
-                          ED->getExtendedNominal());
-    ED->getExtendedNominal()->diagnose(diag::decl_declared_here,
-                                       ED->getExtendedNominal());
-    return;
-  }
-
-  if (!CD->hasClangNode()) {
-    diagnoseAndRemoveAttr(attr, diag::attr_objc_implementation_must_be_imported,
-                          CD);
-    CD->diagnose(diag::decl_declared_here, CD);
-    return;
-  }
-
-  if (!CD->hasSuperclass()) {
-    diagnoseAndRemoveAttr(attr, diag::attr_objc_implementation_must_have_super,
-                          CD);
-    CD->diagnose(diag::decl_declared_here, CD);
-    return;
-  }
-
-  if (CD->isTypeErasedGenericClass()) {
-    diagnoseAndRemoveAttr(attr, diag::objc_implementation_cannot_have_generics,
-                          CD);
-    CD->diagnose(diag::decl_declared_here, CD);
-  }
-
-  if (!attr->isCategoryNameInvalid() && !ED->getImplementedObjCDecl()) {
-    diagnose(attr->getLocation(),
-             diag::attr_objc_implementation_category_not_found,
-             attr->CategoryName, CD);
-
-    // attr->getRange() covers the attr name and argument list; adjust it to
-    // exclude the first token.
-    auto newStart = Lexer::getLocForEndOfToken(Ctx.SourceMgr,
-                                               attr->getRange().Start);
-    if (attr->getRange().contains(newStart)) {
-      auto argListRange = SourceRange(newStart, attr->getRange().End);
-      diagnose(attr->getLocation(),
-               diag::attr_objc_implementation_fixit_remove_category_name)
-        .fixItRemove(argListRange);
+    auto CD = dyn_cast<ClassDecl>(ED->getExtendedNominal());
+    if (!CD) {
+      diagnoseAndRemoveAttr(attr,
+                            diag::attr_objc_implementation_must_extend_class,
+                            ED->getExtendedNominal());
+      ED->getExtendedNominal()->diagnose(diag::decl_declared_here,
+                                         ED->getExtendedNominal());
+      return;
     }
 
-    attr->setCategoryNameInvalid();
+    if (!CD->hasClangNode()) {
+      diagnoseAndRemoveAttr(attr, diag::attr_objc_implementation_must_be_imported,
+                            CD);
+      CD->diagnose(diag::decl_declared_here, CD);
+      return;
+    }
 
-    return;
+    if (!CD->hasSuperclass()) {
+      diagnoseAndRemoveAttr(attr, diag::attr_objc_implementation_must_have_super,
+                            CD);
+      CD->diagnose(diag::decl_declared_here, CD);
+      return;
+    }
+
+    if (CD->isTypeErasedGenericClass()) {
+      diagnoseAndRemoveAttr(attr, diag::objc_implementation_cannot_have_generics,
+                            CD);
+      CD->diagnose(diag::decl_declared_here, CD);
+    }
+
+    if (!attr->isCategoryNameInvalid() && !ED->getImplementedObjCDecl()) {
+      diagnose(attr->getLocation(),
+               diag::attr_objc_implementation_category_not_found,
+               attr->CategoryName, CD);
+
+      // attr->getRange() covers the attr name and argument list; adjust it to
+      // exclude the first token.
+      auto newStart = Lexer::getLocForEndOfToken(Ctx.SourceMgr,
+                                                 attr->getRange().Start);
+      if (attr->getRange().contains(newStart)) {
+        auto argListRange = SourceRange(newStart, attr->getRange().End);
+        diagnose(attr->getLocation(),
+                 diag::attr_objc_implementation_fixit_remove_category_name)
+            .fixItRemove(argListRange);
+      }
+
+      attr->setCategoryNameInvalid();
+
+      return;
+    }
+  }
+  else if (auto AFD = dyn_cast<AbstractFunctionDecl>(D)) {
+    if (!attr->CategoryName.empty()) {
+      auto diagnostic =
+          diagnose(attr->getLocation(),
+                   diag::attr_objc_implementation_no_category_for_func, AFD);
+
+      // attr->getRange() covers the attr name and argument list; adjust it to
+      // exclude the first token.
+      auto newStart = Lexer::getLocForEndOfToken(Ctx.SourceMgr,
+                                                 attr->getRange().Start);
+      if (attr->getRange().contains(newStart)) {
+        auto argListRange = SourceRange(newStart, attr->getRange().End);
+        diagnostic.fixItRemove(argListRange);
+      }
+
+      attr->setCategoryNameInvalid();
+    }
+
+    // FIXME: if (AFD->getCDeclName().empty())
+
+    if (!AFD->getImplementedObjCDecl()) {
+      diagnose(attr->getLocation(),
+               diag::attr_objc_implementation_func_not_found,
+               AFD->getCDeclName(), AFD);
+    }
   }
 }
 
@@ -2100,7 +2127,7 @@ void AttributeChecker::visitExposeAttr(ExposeAttr *attr) {
   case ExposureKind::Cxx: {
     auto *VD = cast<ValueDecl>(D);
     // Expose cannot be mixed with '@_cdecl' declarations.
-    if (VD->getAttrs().hasAttribute<CDeclAttr>())
+    if (!VD->getCDeclName().empty())
       diagnose(attr->getLocation(), diag::expose_only_non_other_attr, "@_cdecl");
 
     // Nested exposed declarations are expected to be inside
@@ -6831,14 +6858,11 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
   auto dc = D->getDeclContext();
 
   if (auto var = dyn_cast<VarDecl>(D)) {
-    const bool isUnsafe =
-        attr->isUnsafe() && Ctx.LangOpts.hasFeature(Feature::GlobalConcurrency);
-
     // stored properties have limitations as to when they can be nonisolated.
     if (var->hasStorage()) {
       // 'nonisolated' can not be applied to mutable stored properties unless
       // qualified as 'unsafe'.
-      if (var->supportsMutation() && !isUnsafe) {
+      if (var->supportsMutation() && !attr->isUnsafe()) {
         diagnoseAndRemoveAttr(attr, diag::nonisolated_mutable_storage);
         return;
       }
@@ -6883,7 +6907,7 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
 
     // nonisolated can not be applied to local properties unless qualified as
     // 'unsafe'.
-    if (dc->isLocalContext() && !isUnsafe) {
+    if (dc->isLocalContext() && !attr->isUnsafe()) {
       diagnoseAndRemoveAttr(attr, diag::nonisolated_local_var);
       return;
     }
@@ -7264,14 +7288,14 @@ void AttributeChecker::visitRawLayoutAttr(RawLayoutAttr *attr) {
 }
 
 void AttributeChecker::visitNonEscapableAttr(NonEscapableAttr *attr) {
-  if (!Ctx.LangOpts.hasFeature(Feature::NonEscapableTypes)) {
+  if (!Ctx.LangOpts.hasFeature(Feature::NonescapableTypes)) {
     diagnoseAndRemoveAttr(attr, diag::nonescapable_types_attr_disabled);
   }
 }
 
 void AttributeChecker::visitUnsafeNonEscapableResultAttr(
   UnsafeNonEscapableResultAttr *attr) {
-  if (!Ctx.LangOpts.hasFeature(Feature::NonEscapableTypes)) {
+  if (!Ctx.LangOpts.hasFeature(Feature::NonescapableTypes)) {
     diagnoseAndRemoveAttr(attr, diag::nonescapable_types_attr_disabled);
   }
 }

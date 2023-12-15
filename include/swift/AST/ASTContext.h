@@ -916,6 +916,9 @@ public:
   /// Get the runtime availability of support for concurrency.
   AvailabilityContext getConcurrencyAvailability();
 
+  /// Get the runtime availability of task executors.
+  AvailabilityContext getTaskExecutorAvailability();
+
   /// Get the runtime availability of the `DiscardingTaskGroup`,
   /// and supporting runtime functions function
   AvailabilityContext getConcurrencyDiscardingTaskGroupAvailability();
@@ -946,9 +949,9 @@ public:
   /// for extended existential types.
   AvailabilityContext getParameterizedExistentialRuntimeAvailability();
 
-  /// Get the runtime availability of immortal ref-count symbols, which are
-  /// needed to place array buffers into constant data sections.
-  AvailabilityContext getImmortalRefCountSymbolsAvailability();
+  /// Get the runtime availability of array buffers placed in constant data
+  /// sections.
+  AvailabilityContext getStaticReadOnlyArraysAvailability();
 
   /// Get the runtime availability of runtime functions for
   /// variadic generic types.

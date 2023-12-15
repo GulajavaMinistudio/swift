@@ -64,8 +64,6 @@ struct ResolvedLoc {
   /// The range of the call's base name.
   swift::CharSourceRange range;
 
-  // FIXME: (NameMatcher) We should agree on whether `labelRanges` contains the
-  // colon or not
   /// The range of the labels.
   ///
   /// What the label range contains depends on the `labelRangeType`:
@@ -75,6 +73,9 @@ struct ResolvedLoc {
   ///   the trivia on their sides
   /// - For function arguments that don't have a label, this is an empty range
   ///   that points to the start of the argument (exculding trivia).
+  ///
+  /// See documentation on `DeclNameLocation.Argument` in swift-syntax for more
+  /// background.
   std::vector<swift::CharSourceRange> labelRanges;
 
   /// The in index in `labelRanges` that belongs to the first trailing closure
@@ -158,25 +159,5 @@ public:
   SWIFT_IMPORT_UNSAFE
   void *getOpaqueValue() const;
 };
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/// Entry point to run the NameMatcher written in swift-syntax.
-/// 
-/// - Parameters:
-///   - sourceFilePtr: A pointer to an `ExportedSourceFile`, used to access the
-///     syntax tree
-///   - locations: Pointer to a buffer of `BridgedSourceLoc` that should be
-///     resolved by the name matcher.
-///   - locationsCount: Number of elements in `locations`.
-/// - Returns: The opaque value of a `BridgedResolvedLocVector`.
-void *swift_SwiftIDEUtilsBridging_runNameMatcher(const void *sourceFilePtr,
-                                                 BridgedSourceLoc *locations,
-                                                 size_t locationsCount);
-#ifdef __cplusplus
-}
-#endif
 
 #endif

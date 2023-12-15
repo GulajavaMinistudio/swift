@@ -1862,7 +1862,8 @@ Parser::parseStmtConditionElement(SmallVectorImpl<StmtConditionElement> &result,
                                 ErrorExpr(ThePattern.get()->getEndLoc()));
   }
 
-  result.push_back({IntroducerLoc, ThePattern.get(), Init.get()});
+  result.push_back(ConditionalPatternBindingInfo::create(
+      Context, IntroducerLoc, ThePattern.get(), Init.get()));
   return Status;
 }
 
@@ -2255,8 +2256,8 @@ ParserResult<Stmt> Parser::parseStmtDo(LabeledStmtInfo labelInfo,
     }
 
     return makeParserResult(status,
-      DoCatchStmt::create(Context, labelInfo, doLoc, throwsLoc, thrownType,
-                          body.get(), allClauses));
+      DoCatchStmt::create(CurDeclContext, labelInfo, doLoc, throwsLoc,
+                          thrownType, body.get(), allClauses));
   }
 
   if (throwsLoc.isValid()) {

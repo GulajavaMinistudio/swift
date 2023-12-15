@@ -452,16 +452,18 @@ Expr *ForEachStmt::getTypeCheckedSequence() const {
   return iteratorVar ? iteratorVar->getInit(/*index=*/0) : nullptr;
 }
 
-DoCatchStmt *DoCatchStmt::create(ASTContext &ctx, LabeledStmtInfo labelInfo,
+DoCatchStmt *DoCatchStmt::create(DeclContext *dc,
+                                 LabeledStmtInfo labelInfo,
                                  SourceLoc doLoc,
                                  SourceLoc throwsLoc, TypeLoc thrownType,
                                  Stmt *body,
                                  ArrayRef<CaseStmt *> catches,
                                  llvm::Optional<bool> implicit) {
+  ASTContext &ctx = dc->getASTContext();
   void *mem = ctx.Allocate(totalSizeToAlloc<CaseStmt *>(catches.size()),
                            alignof(DoCatchStmt));
-  return ::new (mem) DoCatchStmt(labelInfo, doLoc, throwsLoc, thrownType, body,
-                                 catches, implicit);
+  return ::new (mem) DoCatchStmt(dc, labelInfo, doLoc, throwsLoc, thrownType,
+                                 body, catches, implicit);
 }
 
 bool CaseLabelItem::isSyntacticallyExhaustive() const {
@@ -478,15 +480,14 @@ bool DoCatchStmt::isSyntacticallyExhaustive() const {
   return false;
 }
 
-Type DoCatchStmt::getExplicitlyThrownType(DeclContext *dc) const {
-  ASTContext &ctx = dc->getASTContext();
-  DoCatchExplicitThrownTypeRequest request{dc, const_cast<DoCatchStmt *>(this)};
-  return evaluateOrDefault(ctx.evaluator, request, Type());
+Type DoCatchStmt::getExplicitCaughtType() const {
+  ASTContext &ctx = DC->getASTContext();
+  return CatchNode(const_cast<DoCatchStmt *>(this)).getExplicitCaughtType(ctx);
 }
 
-Type DoCatchStmt::getCaughtErrorType(DeclContext *dc) const {
+Type DoCatchStmt::getCaughtErrorType() const {
   // Check for an explicitly-specified error type.
-  if (Type explicitError = getExplicitlyThrownType(dc))
+  if (Type explicitError = getExplicitCaughtType())
     return explicitError;
 
   auto firstPattern = getCatches()
@@ -571,6 +572,21 @@ bool StmtConditionElement::rebindsSelf(ASTContext &Ctx,
   return false;
 }
 
+SourceRange ConditionalPatternBindingInfo::getSourceRange() const {
+  SourceLoc Start;
+  if (IntroducerLoc.isValid())
+    Start = IntroducerLoc;
+  else
+    Start = ThePattern->getStartLoc();
+
+  SourceLoc End = Initializer->getEndLoc();
+  if (Start.isValid() && End.isValid()) {
+    return SourceRange(Start, End);
+  } else {
+    return SourceRange();
+  }
+}
+
 PoundAvailableInfo *
 PoundAvailableInfo::create(ASTContext &ctx, SourceLoc PoundLoc,
                            SourceLoc LParenLoc,
@@ -603,18 +619,7 @@ SourceRange StmtConditionElement::getSourceRange() const {
   case StmtConditionElement::CK_HasSymbol:
     return getHasSymbolInfo()->getSourceRange();
   case StmtConditionElement::CK_PatternBinding:
-    SourceLoc Start;
-    if (IntroducerLoc.isValid())
-      Start = IntroducerLoc;
-    else
-      Start = getPattern()->getStartLoc();
-    
-    SourceLoc End = getInitializer()->getEndLoc();
-    if (Start.isValid() && End.isValid()) {
-      return SourceRange(Start, End);
-    } else {
-      return SourceRange();
-    }
+    return getPatternBinding()->getSourceRange();
   }
 
   llvm_unreachable("Unhandled StmtConditionElement in switch.");
@@ -636,7 +641,7 @@ SourceLoc StmtConditionElement::getStartLoc() const {
   case StmtConditionElement::CK_Availability:
     return getAvailability()->getStartLoc();
   case StmtConditionElement::CK_PatternBinding:
-    return getSourceRange().Start;
+    return getPatternBinding()->getStartLoc();
   case StmtConditionElement::CK_HasSymbol:
     return getHasSymbolInfo()->getStartLoc();
   }
@@ -651,7 +656,7 @@ SourceLoc StmtConditionElement::getEndLoc() const {
   case StmtConditionElement::CK_Availability:
     return getAvailability()->getEndLoc();
   case StmtConditionElement::CK_PatternBinding:
-    return getSourceRange().End;
+    return getPatternBinding()->getEndLoc();
   case StmtConditionElement::CK_HasSymbol:
     return getHasSymbolInfo()->getEndLoc();
   }
