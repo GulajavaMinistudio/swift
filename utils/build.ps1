@@ -585,7 +585,12 @@ function Build-CMakeProject {
     TryAdd-KeyValue $Defines CMAKE_MT "mt"
 
     $CFlags = @("/GS-", "/Gw", "/Gy", "/Oi", "/Oy", "/Zc:inline")
-    if ($DebugInfo) { $CFlags += if ($EnableCaching) { "/Z7" } else { "/Zi" } }
+    if ($DebugInfo) {
+      $CFlags += if ($EnableCaching) { "/Z7" } else { "/Zi" }
+      # Add additional linker flags for generating the debug info.
+      Append-FlagsDefine $Defines CMAKE_SHARED_LINKER_FLAGS "/debug"
+      Append-FlagsDefine $Defines CMAKE_EXE_LINKER_FLAGS "/debug"
+    }
     $CXXFlags = $CFlags.Clone() + "/Zc:__cplusplus"
 
     if ($EnableCaching) {
@@ -888,18 +893,36 @@ function Build-BuildTools($Arch) {
     }
 }
 
-function Build-Compilers($Arch, [switch]$Test = $false) {
+function Build-Compilers() {
+  [CmdletBinding(PositionalBinding = $false)]
+  param
+  (
+    [Parameter(Position = 0, Mandatory = $true)]
+    [hashtable]$Arch,
+    [switch]$TestClang = $false,
+    [switch]$TestLLD = $false,
+    [switch]$TestLLDB = $false,
+    [switch]$TestLLVM = $false,
+    [switch]$TestSwift = $false
+  )
+
   Isolate-EnvVars {
-    if ($Test) {
+    if ($TestClang -or $TestLLD -or $TestLLDB -or $TestLLVM -or $TestSwift) {
       $LibdispatchBinDir = "$BinaryCache\1\tools\swift\libdispatch-windows-$($Arch.LLVMName)-prefix\bin"
-      $env:Path = "$LibdispatchBinDir;$BinaryCache\1\bin;$env:Path;$UnixToolsBinDir"
-      $Targets = @("check-swift")
+      $env:Path = "$LibdispatchBinDir;$BinaryCache\1\bin;$env:Path;$VSInstallRoot\DIA SDK\bin\$($HostArch.VSName);$UnixToolsBinDir"
+      $Targets = @()
       $TestingDefines = @{
         SWIFT_BUILD_DYNAMIC_SDK_OVERLAY = "YES";
         SWIFT_BUILD_DYNAMIC_STDLIB = "YES";
         SWIFT_BUILD_REMOTE_MIRROR = "YES";
         SWIFT_NATIVE_SWIFT_TOOLS_PATH = "";
       }
+
+      if ($TestClang) { $Targets += @("check-clang") }
+      if ($TestLLD) { $Targets += @("check-lld") }
+      if ($TestLLDB) { $Targets += @("check-lldb") }
+      if ($TestLLVM) { $Targets += @("check-llvm") }
+      if ($TestSwift) { $Targets += @("check-swift") }
     } else {
       $Targets = @("distribution", "install-distribution")
       $TestingDefines = @{
@@ -1801,7 +1824,17 @@ if ($Stage) {
   Stage-BuildArtifacts $HostArch
 }
 
-if ($Test -contains "swift") { Build-Compilers $HostArch -Test }
+if ($Test -ne $null -and (Compare-Object $Test @("clang", "lld", "lldb", "llvm", "swift") -PassThru -IncludeEqual -ExcludeDifferent) -ne $null) {
+  $Tests = @{
+    "-TestClang" = $Test -contains "clang";
+    "-TestLLD" = $Test -contains "lld";
+    "-TestLLDB" = $Test -contains "lldb";
+    "-TestLLVM" = $Test -contains "llvm";
+    "-TestSwift" = $Test -contains "swift";
+  }
+  Build-Compilers $HostArch @Tests
+}
+
 if ($Test -contains "dispatch") { Build-Dispatch $HostArch -Test }
 if ($Test -contains "foundation") { Build-Foundation $HostArch -Test }
 if ($Test -contains "xctest") { Build-XCTest $HostArch -Test }
