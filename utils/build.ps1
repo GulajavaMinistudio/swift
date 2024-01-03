@@ -56,9 +56,6 @@ If set, does not run the build phase.
 .PARAMETER SkipPackaging
 If set, skips building the msi's and installer
 
-.PARAMETER DefaultsLLD
-If false, use `link.exe` as the default linker with the SDK (with SPM)
-
 .PARAMETER DebugInfo
 If set, debug information will be generated for the builds.
 
@@ -101,7 +98,6 @@ param(
   [switch] $SkipBuild = $false,
   [switch] $SkipRedistInstall = $false,
   [switch] $SkipPackaging = $false,
-  [bool] $DefaultsLLD = $true,
   [string[]] $Test = @(),
   [string] $Stage = "",
   [string] $BuildTo = "",
@@ -861,21 +857,22 @@ function Build-BuildTools($Arch) {
       LLVM_ENABLE_LIBEDIT = "NO";
       LLVM_ENABLE_LIBXML2 = "NO";
       LLVM_ENABLE_PROJECTS = "clang;clang-tools-extra;lldb";
-      LLVM_EXTERNAL_PROJECTS = "cmark;swift";
-      LLVM_EXTERNAL_CMARK_SOURCE_DIR = "$SourceCache\cmark";
+      LLVM_EXTERNAL_PROJECTS = "swift";
       LLVM_EXTERNAL_SWIFT_SOURCE_DIR = "$SourceCache\swift";
       SWIFT_BUILD_DYNAMIC_SDK_OVERLAY = "NO";
       SWIFT_BUILD_DYNAMIC_STDLIB = "NO";
+      SWIFT_BUILD_HOST_DISPATCH = "NO";
       SWIFT_BUILD_LIBEXEC = "NO";
+      SWIFT_BUILD_REGEX_PARSER_IN_COMPILER = "NO";
       SWIFT_BUILD_REMOTE_MIRROR = "NO";
       SWIFT_BUILD_SOURCEKIT = "NO";
       SWIFT_BUILD_STATIC_SDK_OVERLAY = "NO";
       SWIFT_BUILD_STATIC_STDLIB = "NO";
+      SWIFT_BUILD_SWIFT_SYNTAX = "NO";
+      SWIFT_ENABLE_DISPATCH = "NO";
       SWIFT_INCLUDE_APINOTES = "NO";
       SWIFT_INCLUDE_DOCS = "NO";
       SWIFT_INCLUDE_TESTS = "NO";
-      SWIFT_PATH_TO_LIBDISPATCH_SOURCE = "$SourceCache\swift-corelibs-libdispatch";
-      SWIFT_PATH_TO_SWIFT_SYNTAX_SOURCE = "$SourceCache\swift-syntax";
     }
 }
 
@@ -1274,13 +1271,8 @@ function Build-XCTest($Arch, [switch]$Test = $false) {
         Foundation_DIR = "$FoundationBinaryCache\cmake\modules";
       } + $TestingDefines)
 
-    if ($DefaultsLLD) {
-      Invoke-Program $python -c "import plistlib; print(str(plistlib.dumps({ 'DefaultProperties': { 'XCTEST_VERSION': 'development', 'SWIFTC_FLAGS': ['-use-ld=lld'] } }), encoding='utf-8'))" `
-        -OutFile "$($Arch.PlatformInstallRoot)\Info.plist"
-    } else {
-      Invoke-Program $python -c "import plistlib; print(str(plistlib.dumps({ 'DefaultProperties': { 'XCTEST_VERSION': 'development' } }), encoding='utf-8'))" `
-        -OutFile "$($Arch.PlatformInstallRoot)\Info.plist"
-    }
+    Invoke-Program $python -c "import plistlib; print(str(plistlib.dumps({ 'DefaultProperties': { 'XCTEST_VERSION': 'development', 'SWIFTC_FLAGS': ['-use-ld=lld'] } }), encoding='utf-8'))" `
+      -OutFile "$($Arch.PlatformInstallRoot)\Info.plist"
   }
 }
 
