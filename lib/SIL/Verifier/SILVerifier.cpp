@@ -3338,6 +3338,8 @@ public:
   }
 
   void checkTupleAddrConstructorInst(TupleAddrConstructorInst *taci) {
+    require(F.getModule().useLoweredAddresses(),
+            "tuple_addr_constructor is invalid in opaque values");
     require(taci->getNumElements() > 0,
             "Cannot be applied to tuples that do not contain any real "
             "elements. E.x.: ((), ())");
@@ -6270,7 +6272,7 @@ public:
   }
 
   void checkAllocPackMetadataInst(AllocPackMetadataInst *apmi) {
-    require(apmi->getIntroducer()->mayRequirePackMetadata(),
+    require(apmi->getIntroducer()->mayRequirePackMetadata(*apmi->getFunction()),
             "Introduces instruction of kind which cannot emit on-stack pack "
             "metadata");
     require(F.getModule().getStage() == SILStage::Lowered,

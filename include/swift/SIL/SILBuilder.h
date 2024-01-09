@@ -1672,6 +1672,7 @@ public:
   createTupleAddrConstructor(SILLocation Loc, SILValue DestAddr,
                              ArrayRef<SILValue> Elements,
                              IsInitialization_t IsInitOfDest) {
+    assert(getFunction().getModule().useLoweredAddresses());
     return insert(TupleAddrConstructorInst::create(getSILDebugLocation(Loc),
                                                    DestAddr, Elements,
                                                    IsInitOfDest, getModule()));
@@ -2284,15 +2285,18 @@ public:
                                                        SILValue value);
 
   MarkDependenceInst *createMarkDependence(SILLocation Loc, SILValue value,
-                                           SILValue base) {
-    return createMarkDependence(Loc, value, base, value->getOwnershipKind());
+                                           SILValue base, bool isNonEscaping) {
+    return createMarkDependence(Loc, value, base, value->getOwnershipKind(),
+                                isNonEscaping);
   }
 
   MarkDependenceInst *
   createMarkDependence(SILLocation Loc, SILValue value, SILValue base,
-                       ValueOwnershipKind forwardingOwnershipKind) {
+                       ValueOwnershipKind forwardingOwnershipKind,
+                       bool isNonEscaping) {
     return insert(new (getModule()) MarkDependenceInst(
-        getSILDebugLocation(Loc), value, base, forwardingOwnershipKind));
+                    getSILDebugLocation(Loc), value, base,
+                    forwardingOwnershipKind, isNonEscaping));
   }
 
   IsUniqueInst *createIsUnique(SILLocation Loc, SILValue operand) {

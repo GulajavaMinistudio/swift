@@ -787,13 +787,13 @@ def continue_building_after_errors : Flag<["-"], "continue-building-after-errors
 
 def warn_swift3_objc_inference_complete :
   Flag<["-"], "warn-swift3-objc-inference-complete">,
-  Flags<[FrontendOption, DoesNotAffectIncrementalBuild]>,
-  HelpText<"Warn about deprecated @objc inference in Swift 3 for every declaration that will no longer be inferred as @objc in Swift 4">;
+  Flags<[FrontendOption, HelpHidden, DoesNotAffectIncrementalBuild]>,
+  HelpText<"Deprecated">;
 
 def warn_swift3_objc_inference_minimal :
   Flag<["-"], "warn-swift3-objc-inference-minimal">,
-  Flags<[FrontendOption, DoesNotAffectIncrementalBuild]>,
-  HelpText<"Warn about deprecated @objc inference in Swift 3 based on direct uses of the Objective-C entrypoint">;
+  Flags<[FrontendOption, HelpHidden, DoesNotAffectIncrementalBuild]>,
+  HelpText<"Deprecated">;
 
 def enable_actor_data_race_checks :
   Flag<["-"], "enable-actor-data-race-checks">,
@@ -975,6 +975,11 @@ def Oplayground : Flag<["-"], "Oplayground">, Group<O_Group>,
 def EnbaleDefaultCMO : Flag<["-"], "enable-default-cmo">,
   Flags<[HelpHidden, FrontendOption]>,
   HelpText<"Perform conservative cross-module optimization">;
+
+def EnbaleCMOEverything : Flag<["-"], "enable-cmo-everything">,
+  Flags<[HelpHidden, FrontendOption]>,
+  HelpText<"Perform cross-module optimization on everything (all APIs). "
+           "This is the same level of serialization as Embedded Swift.">;
 
 def CrossModuleOptimization : Flag<["-"], "cross-module-optimization">,
   Flags<[HelpHidden, FrontendOption]>,

@@ -664,14 +664,6 @@ def disable_availability_checking : Flag<["-"],
   "disable-availability-checking">,
   HelpText<"Disable checking for potentially unavailable APIs">;
 
-def enable_conformance_availability_errors : Flag<["-"],
-  "enable-conformance-availability-errors">,
-  HelpText<"Diagnose conformance availability violations as errors">;
-
-def disable_conformance_availability_errors : Flag<["-"],
-  "disable-conformance-availability-errors">,
-  HelpText<"Diagnose conformance availability violations as warnings">;
-
 def warn_on_potentially_unavailable_enum_case : Flag<["-"],
   "warn-on-potentially-unavailable-enum-case">,
   HelpText<"Deprecated, will be removed in future versions">;
@@ -685,12 +677,12 @@ def report_errors_to_debugger : Flag<["-"], "report-errors-to-debugger">,
 
 def enable_swift3_objc_inference : Flag<["-"], "enable-swift3-objc-inference">,
   Flags<[FrontendOption, HelpHidden]>,
-HelpText<"Enable Swift 3's @objc inference rules for NSObject-derived classes and 'dynamic' members (emulates Swift 3 behavior)">;
+HelpText<"Deprecated">;
 
 def disable_swift3_objc_inference :
   Flag<["-"], "disable-swift3-objc-inference">,
   Flags<[FrontendOption, HelpHidden]>,
-  HelpText<"Disable Swift 3's @objc inference rules for NSObject-derived classes and 'dynamic' members (emulates Swift 4 behavior)">;
+  HelpText<"Deprecated">;
 
 def enable_implicit_dynamic : Flag<["-"], "enable-implicit-dynamic">,
   Flags<[FrontendOption, NoInteractiveOption, HelpHidden]>,

@@ -119,8 +119,8 @@ public class Instruction : CustomStringConvertible, Hashable {
     return bridged.mayLoadWeakOrUnowned()
   }
 
-  public final var maySynchronizeNotConsideringSideEffects: Bool {
-    return bridged.maySynchronizeNotConsideringSideEffects()
+  public final var maySynchronize: Bool {
+    return bridged.maySynchronize()
   }
 
   public final var mayBeDeinitBarrierNotConsideringSideEffects: Bool {
@@ -824,13 +824,13 @@ class GetAsyncContinuationInst : SingleValueInstruction {}
 final public
 class GetAsyncContinuationAddrInst : SingleValueInstruction, UnaryInstruction {}
 
-
 final public
 class MarkDependenceInst : SingleValueInstruction, ForwardingInstruction {
   public var valueOperand: Operand { operands[0] }
   public var baseOperand: Operand { operands[1] }
   public var value: Value { return valueOperand.value }
   public var base: Value { return baseOperand.value }
+  public var isNonEscaping: Bool { bridged.MarkDependenceInst_isNonEscaping() }
 }
 
 final public class RefToBridgeObjectInst : SingleValueInstruction, ForwardingInstruction {
