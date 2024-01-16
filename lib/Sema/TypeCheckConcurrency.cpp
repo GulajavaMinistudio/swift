@@ -165,6 +165,9 @@ bool IsActorRequest::evaluate(
   if (auto protocol = dyn_cast<ProtocolDecl>(nominal)) {
     auto &ctx = protocol->getASTContext();
     auto *actorProtocol = ctx.getProtocol(KnownProtocolKind::Actor);
+    if (!actorProtocol)
+      return false;
+
     return (protocol == actorProtocol ||
             protocol->inheritsFrom(actorProtocol));
   }
@@ -698,7 +701,7 @@ bool swift::isSendableType(ModuleDecl *module, Type type) {
     return false;
 
   // Look for missing Sendable conformances.
-  return !conformance.forEachMissingConformance(module,
+  return !conformance.forEachMissingConformance(
       [](BuiltinProtocolConformance *missing) {
         return missing->getProtocol()->isSpecificProtocol(
             KnownProtocolKind::Sendable);
@@ -1079,7 +1082,7 @@ bool swift::diagnoseNonSendableTypes(
 
   // Walk the conformance, diagnosing any missing Sendable conformances.
   bool anyMissing = false;
-  conformance.forEachMissingConformance(module,
+  conformance.forEachMissingConformance(
       [&](BuiltinProtocolConformance *missing) {
         if (diagnoseSingleNonSendableType(
                 missing->getType(), fromContext,
@@ -1278,7 +1281,7 @@ namespace {
           return true;
 
         // Look for missing Sendable conformances.
-        return conformance.forEachMissingConformance(module,
+        return conformance.forEachMissingConformance(
             [&](BuiltinProtocolConformance *missing) {
               // For anything other than Sendable, fail.
               if (missing->getProtocol() != sendableProto)
@@ -1566,6 +1569,41 @@ void swift::tryDiagnoseExecutorConformance(ASTContext &C,
       return;
     }
   }
+}
+
+bool swift::shouldIgnoreDeprecationOfConcurrencyDecl(const Decl *decl,
+                                                     DeclContext *declContext) {
+  auto &ctx = decl->getASTContext();
+  auto concurrencyModule = ctx.getLoadedModule(ctx.Id_Concurrency);
+
+  // Only suppress these diagnostics in the implementation of _Concurrency.
+  if (declContext->getParentModule() != concurrencyModule)
+    return false;
+
+  // Only suppress deprecation diagnostics for decls defined in _Concurrency.
+  if (decl->getDeclContext()->getParentModule() != concurrencyModule)
+    return false;
+
+  auto *legacyJobDecl = ctx.getJobDecl();
+  auto *unownedJobDecl = ctx.getUnownedJobDecl();
+
+  if (decl == legacyJobDecl)
+    return true;
+
+  if (auto *funcDecl = dyn_cast<FuncDecl>(decl)) {
+    auto enqueueDeclName =
+        DeclName(ctx, DeclBaseName(ctx.Id_enqueue), {Identifier()});
+
+    if (funcDecl->getName() == enqueueDeclName &&
+        funcDecl->getParameters()->size() == 1) {
+      auto paramTy = funcDecl->getParameters()->front()->getInterfaceType();
+      if (paramTy->isEqual(legacyJobDecl->getDeclaredInterfaceType()) ||
+          paramTy->isEqual(unownedJobDecl->getDeclaredInterfaceType()))
+        return true;
+    }
+  }
+
+  return false;
 }
 
 /// Determine whether this is the main actor type.
@@ -3289,12 +3327,17 @@ namespace {
               KnownProtocolKind::Actor);
         }
 
-        unsatisfiedIsolation =
-            ActorIsolation::forActorInstanceParameter(nominal, paramIdx);
+        // FIXME: Also allow 'Optional.none'
+        if (dyn_cast<NilLiteralExpr>(arg->findOriginalValue())) {
+          mayExitToNonisolated = true;
+        } else {
+          unsatisfiedIsolation =
+              ActorIsolation::forActorInstanceParameter(nominal, paramIdx);
+          mayExitToNonisolated = false;
+        }
 
         if (!fnType->getExtInfo().isAsync())
           callOptions |= ActorReferenceResult::Flags::AsyncPromotion;
-        mayExitToNonisolated = false;
 
         break;
       }
@@ -4613,7 +4656,13 @@ ActorIsolation ActorIsolationRequest::evaluate(
       }
     }
 
-    if (auto actor = paramType->getAnyActor())
+    Type actorType;
+    if (auto wrapped = paramType->getOptionalObjectType()) {
+      actorType = wrapped;
+    } else {
+      actorType = paramType;
+    }
+    if (auto actor = actorType->getAnyActor())
       return ActorIsolation::forActorInstanceParameter(actor, *paramIdx);
   }
 

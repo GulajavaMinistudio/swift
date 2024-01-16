@@ -3051,6 +3051,7 @@ void LoadableByAddress::run() {
                 builtinInstrs.insert(instr);
                 break;
               }
+              case SILInstructionKind::StructInst:
               case SILInstructionKind::DebugValueInst:
                 break;
               default:
@@ -3164,7 +3165,8 @@ void LoadableByAddress::run() {
     } else if (auto *globalAddr = dyn_cast<GlobalAddrInst>(inst)) {
       SILBuilderWithScope builder(inst);
       auto *newInst = builder.createGlobalAddr(
-          globalAddr->getLoc(), globalAddr->getReferencedGlobal());
+          globalAddr->getLoc(), globalAddr->getReferencedGlobal(),
+          globalAddr->getDependencyToken());
       globalAddr->replaceAllUsesWith(newInst);
       globalAddr->eraseFromParent();
     } else if (auto *globalVal = dyn_cast<GlobalValueInst>(inst)) {

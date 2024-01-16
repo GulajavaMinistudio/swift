@@ -922,6 +922,9 @@ public:
   /// Determines whether this type is an actor type.
   bool isActorType();
 
+  /// Determines whether this type is an any actor type.
+  bool isAnyActorType();
+
   /// Returns true if this type is a Sendable type.
   bool isSendableType(DeclContext *declContext);
 
@@ -5873,6 +5876,7 @@ class ProtocolCompositionType final : public TypeBase,
     private llvm::TrailingObjects<ProtocolCompositionType, Type> {
   friend TrailingObjects;
 
+  // The inverse constraints `& ~IP` that are part of this composition.
   InvertibleProtocolSet Inverses;
   
 public:

@@ -321,6 +321,10 @@ function(_add_target_variant_swift_compile_flags
     list(APPEND result "-D" "SWIFT_ENABLE_EXPERIMENTAL_OBSERVATION")
   endif()
 
+  if(SWIFT_ENABLE_SYNCHRONIZATION)
+    list(APPEND result "-D" "SWIFT_ENABLE_SYNCHRONIZATION")
+  endif()
+
   if(SWIFT_STDLIB_OS_VERSIONING)
     list(APPEND result "-D" "SWIFT_RUNTIME_OS_VERSIONING")
   endif()
@@ -595,10 +599,6 @@ function(_compile_swift_files
     list(APPEND swift_flags "-Xfrontend" "-disable-standard-substitutions-in-reflection-mangling")
   endif()
 
-  if (SWIFTFILE_IS_STDLIB_CORE OR SWIFTFILE_IS_SDK_OVERLAY)
-    list(APPEND swift_flags "-warn-swift3-objc-inference-complete")
-  endif()
-
   if(NOT SWIFT_STDLIB_ENABLE_OBJC_INTEROP)
     list(APPEND swift_flags "-Xfrontend" "-disable-objc-interop")
   endif()
@@ -609,6 +609,7 @@ function(_compile_swift_files
 
   if(SWIFT_STDLIB_EXPERIMENTAL_NONCOPYABLE_GENERICS)
     list(APPEND swift_flags "-enable-experimental-feature" "NoncopyableGenerics")
+    list(APPEND swift_flags "-Xfrontend" "-disable-round-trip-debug-types") # NOTE: temporary until we fix mangling!
   endif()
 
   if (SWIFT_STDLIB_USE_RELATIVE_PROTOCOL_WITNESS_TABLES)

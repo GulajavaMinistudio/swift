@@ -2646,6 +2646,9 @@ void TypeChecker::diagnoseIfDeprecated(SourceRange ReferenceRange,
     }
   }
 
+  if (shouldIgnoreDeprecationOfConcurrencyDecl(DeprecatedDecl, ReferenceDC))
+    return;
+
   StringRef Platform = Attr->prettyPlatformString();
   llvm::VersionTuple DeprecatedVersion;
   if (Attr->Deprecated)
@@ -2822,6 +2825,10 @@ bool swift::diagnoseExplicitUnavailability(SourceLoc loc,
   // enclosing code in the same situations it wouldn't be able to
   // call this code.
   if (isInsideCompatibleUnavailableDeclaration(ext, where, attr))
+    return false;
+
+  // Invertible protocols are never unavailable.
+  if (rootConf->getProtocol()->getInvertibleProtocolKind())
     return false;
 
   ASTContext &ctx = ext->getASTContext();
