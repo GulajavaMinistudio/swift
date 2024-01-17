@@ -445,6 +445,7 @@ static unsigned getDumpString(unsigned value) {
 static size_t getDumpString(size_t value) {
   return value;
 }
+static void *getDumpString(void *value) { return value; }
 
 //===----------------------------------------------------------------------===//
 //  Decl printing.
@@ -3144,6 +3145,15 @@ public:
         printRec(path, "parsed_path");
       }
     }
+    printFoot();
+  }
+
+  void visitCurrentContextIsolationExpr(
+      CurrentContextIsolationExpr *E, StringRef label) {
+    printCommon(E, "current_context_isolation_expr", label);
+    if (auto actor = E->getActor())
+      printRec(actor);
+
     printFoot();
   }
 
