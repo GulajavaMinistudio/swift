@@ -3250,6 +3250,33 @@ TypeResolver::resolveAttributedType(TypeAttributes &attrs, TypeRepr *repr,
     attrs.clearAttribute(TAK_unchecked);
   }
 
+  if (attrs.has(TAK_preconcurrency)) {
+    auto &ctx = getASTContext();
+    if (ctx.LangOpts.hasFeature(Feature::PreconcurrencyConformances)) {
+      ty = resolveType(repr, options);
+      if (!ty || ty->hasError())
+        return ty;
+
+      if (!options.is(TypeResolverContext::Inherited) ||
+          getDeclContext()->getSelfProtocolDecl()) {
+        diagnoseInvalid(repr, attrs.getLoc(TAK_preconcurrency),
+                        diag::preconcurrency_not_inheritance_clause);
+        ty = ErrorType::get(getASTContext());
+      } else if (!ty->isConstraintType()) {
+        diagnoseInvalid(repr, attrs.getLoc(TAK_preconcurrency),
+                        diag::preconcurrency_not_existential, ty);
+        ty = ErrorType::get(getASTContext());
+      }
+
+      // Nothing to record in the type. Just clear the attribute.
+      attrs.clearAttribute(TAK_preconcurrency);
+    } else {
+      diagnoseInvalid(repr, attrs.getLoc(TAK_preconcurrency),
+                      diag::preconcurrency_attr_disabled);
+      ty = ErrorType::get(getASTContext());
+    }
+  }
+
   if (attrs.has(TAK_retroactive)) {
     ty = resolveType(repr, options);
     if (!ty || ty->hasError()) return ty;
@@ -4479,22 +4506,27 @@ TypeResolver::resolveIsolatedTypeRepr(IsolatedTypeRepr *repr,
     return ErrorType::get(getASTContext());
   }
 
+  // Keep the `type` to be returned, while we unwrap and inspect the inner
+  // type for whether it can be isolated on.
   Type type = resolveType(repr->getBase(), options);
+  Type unwrappedType = type;
 
-  if (auto ty = dyn_cast<DynamicSelfType>(type)) {
-    type = ty->getSelfType();
+  // Optional actor types are fine - `nil` represents `nonisolated`.
+  auto allowOptional = getASTContext().LangOpts
+                           .hasFeature(Feature::OptionalIsolatedParameters);
+  if (allowOptional) {
+    if (auto wrappedOptionalType = unwrappedType->getOptionalObjectType()) {
+      unwrappedType = wrappedOptionalType;
+    }
+  }
+  if (auto dynamicSelfType = dyn_cast<DynamicSelfType>(unwrappedType)) {
+    unwrappedType = dynamicSelfType->getSelfType();
   }
 
   // isolated parameters must be of actor type
-  if (!type->hasTypeParameter() && !type->isAnyActorType() && !type->hasError()) {
-    // Optional actor types are fine - `nil` represents `nonisolated`.
-    auto wrapped = type->getOptionalObjectType();
-    auto allowOptional = getASTContext().LangOpts
-        .hasFeature(Feature::OptionalIsolatedParameters);
-    if (allowOptional && wrapped && wrapped->isAnyActorType()) {
-      return type;
-    }
-
+  if (!unwrappedType->isTypeParameter() &&
+      !unwrappedType->isAnyActorType() &&
+      !unwrappedType->hasError()) {
     diagnoseInvalid(
         repr, repr->getSpecifierLoc(), diag::isolated_parameter_not_actor, type);
     return ErrorType::get(type);

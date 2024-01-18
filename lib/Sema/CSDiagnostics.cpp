@@ -3455,7 +3455,8 @@ bool ContextualFailure::tryProtocolConformanceFixIt(
     for (auto protocol : missingProtocols) {
       auto conformance = NormalProtocolConformance(
           nominal->getDeclaredType(), protocol, SourceLoc(), nominal,
-          ProtocolConformanceState::Incomplete, /*isUnchecked=*/false);
+          ProtocolConformanceState::Incomplete, /*isUnchecked=*/false,
+          /*isPreconcurrency=*/false);
       ConformanceChecker checker(getASTContext(), &conformance,
                                  missingWitnesses);
       // Type witnesses must be resolved first.
@@ -4324,7 +4325,7 @@ bool MissingMemberFailure::diagnoseAsError() {
       correction->addFixits(diagnostic);
     } else if ((instanceTy->getAnyNominal() ||
                 instanceTy->is<ExistentialType>()) &&
-               getName().getBaseName() == DeclBaseName::createConstructor()) {
+               getName().getBaseName().isConstructor()) {
       auto &cs = getConstraintSystem();
 
       auto result = cs.performMemberLookup(

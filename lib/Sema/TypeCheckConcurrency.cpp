@@ -683,31 +683,6 @@ static bool isSendableClosure(
   return false;
 }
 
-/// Determine whether the given type is suitable as a concurrent value type.
-bool swift::isSendableType(ModuleDecl *module, Type type) {
-  auto proto = module->getASTContext().getProtocol(KnownProtocolKind::Sendable);
-  if (!proto)
-    return true;
-
-  // First check if we have a function type. If we do, check if it is
-  // Sendable. We do this since functions cannot conform to protocols.
-  if (auto *fas = type->getAs<SILFunctionType>())
-    return fas->isSendable();
-  if (auto *fas = type->getAs<AnyFunctionType>())
-    return fas->isSendable();
-
-  auto conformance = module->checkConformance(type, proto);
-  if (conformance.isInvalid())
-    return false;
-
-  // Look for missing Sendable conformances.
-  return !conformance.forEachMissingConformance(
-      [](BuiltinProtocolConformance *missing) {
-        return missing->getProtocol()->isSpecificProtocol(
-            KnownProtocolKind::Sendable);
-      });
-}
-
 /// Add Fix-It text for the given nominal type to adopt Sendable.
 static void addSendableFixIt(
     const NominalTypeDecl *nominal, InFlightDiagnostic &diag, bool unchecked) {
@@ -4741,8 +4716,7 @@ ActorIsolation ActorIsolationRequest::evaluate(
           diagVar = originalVar;
         }
         if (var->isLet()) {
-          if (!isSendableType(var->getModuleContext(),
-                              var->getInterfaceType())) {
+          if (!var->getInterfaceType()->isSendableType()) {
             diagVar->diagnose(diag::shared_immutable_state_decl, diagVar)
                 .warnUntilSwiftVersion(6);
           }
@@ -5149,7 +5123,8 @@ DefaultInitializerIsolation::evaluate(Evaluator &evaluator,
     if (enclosingIsolation != requiredIsolation) {
       var->diagnose(
           diag::isolated_default_argument_context,
-          requiredIsolation, enclosingIsolation);
+          requiredIsolation, enclosingIsolation)
+        .warnUntilSwiftVersionIf(!isa<ParamDecl>(var), 6);
       return ActorIsolation::forUnspecified();
     }
   }
@@ -5615,7 +5590,8 @@ ProtocolConformance *swift::deriveImplicitSendableConformance(
       // FIXME: This is a hack--we should give conformances real availability.
       auto inherits = ctx.AllocateCopy(makeArrayRef(
           InheritedEntry(TypeLoc::withoutLoc(proto->getDeclaredInterfaceType()),
-                         /*isUnchecked*/true, /*isRetroactive=*/false)));
+                         /*isUnchecked*/ true, /*isRetroactive=*/false,
+                         /*isPreconcurrency=*/false)));
       // If you change the use of AtLoc in the ExtensionDecl, make sure you
       // update isNonSendableExtension() in ASTPrinter.
       auto extension = ExtensionDecl::create(ctx, attrMakingUnavailable->AtLoc,
@@ -5641,7 +5617,8 @@ ProtocolConformance *swift::deriveImplicitSendableConformance(
     auto conformance = ctx.getNormalConformance(
         nominal->getDeclaredInterfaceType(), proto, nominal->getLoc(),
         conformanceDC, ProtocolConformanceState::Complete,
-        /*isUnchecked=*/attrMakingUnavailable != nullptr);
+        /*isUnchecked=*/attrMakingUnavailable != nullptr,
+        /*isPreconcurrency=*/false);
     conformance->setSourceKindAndImplyingConformance(
         ConformanceEntryKind::Synthesized, nullptr);
 
@@ -6356,7 +6333,7 @@ ActorReferenceResult ActorReferenceResult::forReference(
         (!actorInstance || actorInstance->isSelf())) {
       auto type =
           fromDC->mapTypeIntoContext(declRef.getDecl()->getInterfaceType());
-      if (!isSendableType(fromDC->getParentModule(), type)) {
+      if (!type->isSendableType()) {
         // Treat the decl isolation as 'preconcurrency' to downgrade violations
         // to warnings, because violating Sendable here is accepted by the
         // Swift 5.9 compiler.
