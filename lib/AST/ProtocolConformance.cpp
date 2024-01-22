@@ -338,11 +338,6 @@ bool NormalProtocolConformance::isResilient() const {
   return getDeclContext()->getParentModule()->isResilient();
 }
 
-bool NormalProtocolConformance::isPreconcurrency() const {
-  // The conformance is explicitly marked as `@preconcurrency`.
-  return ContextAndBits.getInt() & PreconcurrencyFlag;
-}
-
 llvm::Optional<ArrayRef<Requirement>>
 ProtocolConformance::getConditionalRequirementsIfAvailable() const {
   CONFORMANCE_SUBCLASS_DISPATCH(getConditionalRequirementsIfAvailable, ());
@@ -486,12 +481,6 @@ NormalProtocolConformance::getTypeWitnessAndDecl(AssociatedTypeDecl *assocType,
   // we didn't find anything, fail.
   if (getState() == ProtocolConformanceState::CheckingTypeWitnesses) {
     return { Type(), nullptr };
-  }
-
-  // If the conditional requirements aren't known, we can't properly run
-  // inference.
-  if (!getConditionalRequirementsIfAvailable()) {
-    return TypeWitnessAndDecl();
   }
 
   return evaluateOrDefault(
@@ -1494,11 +1483,11 @@ ProtocolConformance *ProtocolConformance::getCanonicalConformance() {
 }
 
 BuiltinProtocolConformance::BuiltinProtocolConformance(
-    Type conformingType, ProtocolDecl *protocol,
-    BuiltinConformanceKind kind
-) : RootProtocolConformance(ProtocolConformanceKind::Builtin, conformingType),
-    protocol(protocol), builtinConformanceKind(static_cast<unsigned>(kind))
-{}
+    Type conformingType, ProtocolDecl *protocol, BuiltinConformanceKind kind)
+    : RootProtocolConformance(ProtocolConformanceKind::Builtin, conformingType),
+      protocol(protocol) {
+  Bits.BuiltinProtocolConformance.Kind = unsigned(kind);
+}
 
 // See swift/Basic/Statistic.h for declaration: this enables tracing
 // ProtocolConformances, is defined here to avoid too much layering violation /

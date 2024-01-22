@@ -1599,21 +1599,27 @@ public:
 
 /// An entry in the "inherited" list of a type or extension.
 struct InheritedEntry : public TypeLoc {
+private:
   /// Whether there was an @unchecked attribute.
-  bool isUnchecked = false;
+  bool IsUnchecked : 1;
 
   /// Whether there was an @retroactive attribute.
-  bool isRetroactive = false;
+  bool IsRetroactive : 1;
 
   /// Whether there was an @preconcurrency attribute.
-  bool isPreconcurrency = false;
+  bool IsPreconcurrency : 1;
 
+public:
   InheritedEntry(const TypeLoc &typeLoc);
 
   InheritedEntry(const TypeLoc &typeLoc, bool isUnchecked, bool isRetroactive,
                  bool isPreconcurrency)
-      : TypeLoc(typeLoc), isUnchecked(isUnchecked),
-        isRetroactive(isRetroactive), isPreconcurrency(isPreconcurrency) {}
+      : TypeLoc(typeLoc), IsUnchecked(isUnchecked),
+        IsRetroactive(isRetroactive), IsPreconcurrency(isPreconcurrency) {}
+
+  bool isUnchecked() const { return IsUnchecked; }
+  bool isRetroactive() const { return IsRetroactive; }
+  bool isPreconcurrency() const { return IsPreconcurrency; }
 };
 
 /// A wrapper for the collection of inherited types for either a `TypeDecl` or
@@ -2488,16 +2494,13 @@ public:
 /// SerializedTopLevelCodeDeclContext - This represents what was originally a
 /// TopLevelCodeDecl during serialization. It is preserved only to maintain the
 /// correct AST structure and remangling after deserialization.
-class SerializedTopLevelCodeDeclContext : public SerializedLocalDeclContext {
+class SerializedTopLevelCodeDeclContext : public DeclContext {
 public:
   SerializedTopLevelCodeDeclContext(DeclContext *Parent)
-    : SerializedLocalDeclContext(LocalDeclContextKind::TopLevelCodeDecl,
-                                 Parent) {}
+    : DeclContext(DeclContextKind::SerializedTopLevelCodeDecl, Parent) {}
+
   static bool classof(const DeclContext *DC) {
-    if (auto LDC = dyn_cast<SerializedLocalDeclContext>(DC))
-      return LDC->getLocalDeclContextKind() ==
-        LocalDeclContextKind::TopLevelCodeDecl;
-    return false;
+    return DC->getContextKind() == DeclContextKind::SerializedTopLevelCodeDecl;
   }
 };
 
@@ -6727,6 +6730,7 @@ public:
       return true;
     case Specifier::Consuming:
     case Specifier::InOut:
+    case Specifier::Transferring:
       return false;
     }
     llvm_unreachable("unhandled specifier");
@@ -6744,6 +6748,7 @@ public:
     case ParamSpecifier::LegacyShared:
       return ValueOwnership::Shared;
     case ParamSpecifier::Consuming:
+    case ParamSpecifier::Transferring:
     case ParamSpecifier::LegacyOwned:
       return ValueOwnership::Owned;
     case ParamSpecifier::Default:

@@ -206,6 +206,7 @@ public:
   void visitNonMutatingAttr(NonMutatingAttr *attr) { visitMutationAttr(attr); }
   void visitBorrowingAttr(BorrowingAttr *attr) { visitMutationAttr(attr); }
   void visitConsumingAttr(ConsumingAttr *attr) { visitMutationAttr(attr); }
+  void visitTransferringAttr(TransferringAttr *attr) {}
   void visitLegacyConsumingAttr(LegacyConsumingAttr *attr) { visitMutationAttr(attr); }
   void visitResultDependsOnSelfAttr(ResultDependsOnSelfAttr *attr) {
     FuncDecl *FD = cast<FuncDecl>(D);
@@ -3100,13 +3101,18 @@ SerializeAttrGenericSignatureRequest::evaluate(Evaluator &evaluator,
 
   if (Ctx.LangOpts.hasFeature(Feature::LayoutPrespecialization)) {
     llvm::SmallVector<Type, 4> typeErasedParams;
-    for (const auto &pair : llvm::zip(attr->getTrailingWhereClause()->getRequirements(), specializedSig.getRequirements())) {
-      auto &reqRepr = std::get<0>(pair);
-      auto &req = std::get<1>(pair);
+    for (const auto &reqRepr :
+         attr->getTrailingWhereClause()->getRequirements()) {
       if (reqRepr.getKind() == RequirementReprKind::LayoutConstraint) {
         if (auto *attributedTy = dyn_cast<AttributedTypeRepr>(reqRepr.getSubjectRepr())) {
           if (attributedTy->getAttrs().has(TAK__noMetadata)) {
-            typeErasedParams.push_back(req.getFirstType());
+            const auto resolution = TypeResolution::forInterface(
+                FD->getDeclContext(), genericSig, llvm::None,
+                /*unboundTyOpener*/ nullptr,
+                /*placeholderHandler*/ nullptr,
+                /*packElementOpener*/ nullptr);
+            const auto ty = resolution.resolveType(attributedTy);
+            typeErasedParams.push_back(ty);
           }
         }
       }
@@ -3980,7 +3986,13 @@ void AttributeChecker::visitCustomAttr(CustomAttr *attr) {
 
   if (nominal->isMainActor() && Ctx.LangOpts.isConcurrencyModelTaskToThread() &&
       !AvailableAttr::isUnavailable(D)) {
-    Ctx.Diags.diagnose(attr->getLocation(),
+    SourceLoc loc;
+    if (attr->isImplicit()) {
+      loc = D->getStartLoc();
+    } else {
+      loc = attr->getLocation();
+    }
+    Ctx.Diags.diagnose(loc,
                        diag::concurrency_task_to_thread_model_main_actor,
                        "task-to-thread concurrency model");
     return;
