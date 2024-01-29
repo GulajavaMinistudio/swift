@@ -2539,10 +2539,22 @@ namespace {
                 : 0));
       }();
 
-      // For a non-async function type, add the global actor if present.
-      if (!extInfo.isAsync()) {
-        extInfo = extInfo.withGlobalActor(getExplicitGlobalActor(closure));
-      }
+      // Determine the isolation of the closure.
+      auto isolation = [&] {
+        // Priority goes to an explicit isolated parameter.
+        if (hasIsolatedParameter(closureParams))
+          return FunctionTypeIsolation::forParameter();
+
+        // Honor an explicit global actor.  This is suppressed if the
+        // closure is async (but should it be?).
+        if (!extInfo.isAsync()) {
+          if (auto actorType = getExplicitGlobalActor(closure))
+            return FunctionTypeIsolation::forGlobalActor(actorType);
+        }
+
+        return FunctionTypeIsolation::forNonIsolated();
+      }();
+      extInfo = extInfo.withIsolation(isolation);
 
       auto *fnTy = FunctionType::get(closureParams, resultTy, extInfo);
       return CS.replaceInferableTypesWithTypeVars(
@@ -4592,14 +4604,26 @@ generateForEachStmtConstraints(ConstraintSystem &cs, DeclContext *dc,
   // Now, result type of `.makeIterator()` is used to form a call to
   // `.next()`. `next()` is called on each iteration of the loop.
   {
+    FuncDecl *nextFn = 
+        TypeChecker::getForEachIteratorNextFunction(dc, stmt->getForLoc(), isAsync);
+    Identifier nextId = nextFn ? nextFn->getName().getBaseIdentifier()
+                               : ctx.Id_next;
     auto *nextRef = UnresolvedDotExpr::createImplicit(
         ctx,
         new (ctx) DeclRefExpr(makeIteratorVar, DeclNameLoc(stmt->getForLoc()),
                               /*Implicit=*/true),
-        ctx.Id_next, /*labels=*/ArrayRef<Identifier>());
+        nextId, /*labels=*/ArrayRef<Identifier>());
     nextRef->setFunctionRefKind(FunctionRefKind::SingleApply);
 
-    Expr *nextCall = CallExpr::createImplicitEmpty(ctx, nextRef);
+    ArgumentList *nextArgs;
+    if (nextFn && nextFn->getParameters()->size() == 1) {
+      auto isolationArg =
+        new (ctx) CurrentContextIsolationExpr(stmt->getForLoc(), Type());
+      nextArgs = ArgumentList::forImplicitUnlabeled(ctx, { isolationArg });
+    } else {
+      nextArgs = ArgumentList::createImplicit(ctx, {});
+    }
+    Expr *nextCall = CallExpr::createImplicit(ctx, nextRef, nextArgs);
 
     // `next` is always async but witness might not be throwing
     if (isAsync) {
@@ -4917,6 +4941,12 @@ bool ConstraintSystem::generateConstraints(
   }
 
   case SyntacticElementTarget::Kind::forEachStmt: {
+
+    // Cache the outer generic environment, if it exists.
+    if (target.getPackElementEnv()) {
+      PackElementGenericEnvironments.push_back(target.getPackElementEnv());
+    }
+
     // For a for-each statement, generate constraints for the pattern, where
     // clause, and sequence traversal.
     auto resultTarget = generateForEachStmtConstraints(*this, target);

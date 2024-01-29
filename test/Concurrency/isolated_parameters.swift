@@ -14,7 +14,7 @@ extension Actor {
   func g() { }
 }
 
-@MainActor func mainActorFn() {}
+@MainActor func mainActorFn() {} // expected-note {{calls to global function 'mainActorFn()' from outside of its actor context are implicitly asynchronous}}
 
 @available(SwiftStdlib 5.1, *)
 func testA<T: Actor>(
@@ -232,7 +232,7 @@ func checkIsolatedAndGlobalClosures(_ a: A) {
   let _: @MainActor (isolated A) -> Void // expected-warning {{function type cannot have global actor and 'isolated' parameter; this is an error in Swift 6}}
       = {
     $0.f()
-    mainActorFn()
+    mainActorFn() // expected-error {{call to main actor-isolated global function 'mainActorFn()' in a synchronous actor-isolated context}}
   }
 
   let _: @MainActor (isolated A) -> Void // expected-warning {{function type cannot have global actor and 'isolated' parameter; this is an error in Swift 6}}
@@ -393,7 +393,7 @@ nonisolated func callFromNonisolated(ns: NotSendable) async {
   let myActor = A()
 
   await optionalIsolated(ns, to: myActor)
-  // expected-complete-warning@-1 {{passing argument of non-sendable type 'NotSendable' outside of main actor-isolated context may introduce data races}}
+  // expected-complete-warning@-1 {{passing argument of non-sendable type 'NotSendable' into actor-isolated context may introduce data races}}
 
   optionalIsolatedSync(ns, to: myActor)
   // expected-error@-1 {{expression is 'async' but is not marked with 'await'}}
@@ -439,6 +439,10 @@ func testNonSendableCaptures(ns: NotSendable, a: isolated MyActor) {
 
 func sync(isolatedTo actor: isolated (any Actor)?) {}
 
+func pass(value: NotSendable, isolation: isolated (any Actor)?) async -> NotSendable {
+  value
+}
+
 func preciseIsolated(a: isolated MyActor) async {
   sync(isolatedTo: a)
   sync(isolatedTo: nil) // okay from anywhere
@@ -460,4 +464,12 @@ func preciseIsolated(a: isolated MyActor) async {
     sync(isolatedTo: nil) // okay from anywhere
     sync(isolatedTo: #isolation)
   }
+}
+
+@MainActor func fromMain(ns: NotSendable) async -> NotSendable {
+  await pass(value: ns, isolation: MainActor.shared)
+}
+
+nonisolated func fromNonisolated(ns: NotSendable) async -> NotSendable {
+  await pass(value: ns, isolation: nil)
 }

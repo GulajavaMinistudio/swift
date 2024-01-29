@@ -287,6 +287,10 @@ struct ASTContext::Implementation {
   /// The declaration of 'AsyncIteratorProtocol.next()'.
   FuncDecl *AsyncIteratorNext = nullptr;
 
+  /// The declaration of 'AsyncIteratorProtocol.next(_:)' that takes
+  /// an actor isolation.
+  FuncDecl *AsyncIteratorNextIsolated = nullptr;
+
   /// The declaration of Swift.Optional<T>.Some.
   EnumElementDecl *OptionalSomeDecl = nullptr;
 
@@ -948,21 +952,63 @@ FuncDecl *ASTContext::getIteratorNext() const {
   return nullptr;
 }
 
+static std::pair<FuncDecl *, FuncDecl *>
+getAsyncIteratorNextRequirements(const ASTContext &ctx) {
+  auto proto = ctx.getProtocol(KnownProtocolKind::AsyncIteratorProtocol);
+  if (!proto)
+    return { nullptr, nullptr };
+
+  FuncDecl *next = nullptr;
+  FuncDecl *nextThrowing = nullptr;
+  for (auto result : proto->lookupDirect(ctx.Id_next)) {
+    if (result->getDeclContext() != proto)
+      continue;
+
+    if (auto func = dyn_cast<FuncDecl>(result)) {
+      switch (func->getParameters()->size()) {
+      case 0: next = func; break;
+      case 1: nextThrowing = func; break;
+      default: break;
+      }
+    }
+  }
+
+  return { next, nextThrowing };
+}
+
 FuncDecl *ASTContext::getAsyncIteratorNext() const {
   if (getImpl().AsyncIteratorNext) {
     return getImpl().AsyncIteratorNext;
   }
 
-  auto proto = getProtocol(KnownProtocolKind::AsyncIteratorProtocol);
-  if (!proto)
-    return nullptr;
+  auto next = getAsyncIteratorNextRequirements(*this).first;
+  getImpl().AsyncIteratorNext = next;
+  return next;
+}
 
-  if (auto *func = lookupRequirement(proto, Id_next)) {
-    getImpl().AsyncIteratorNext = func;
-    return func;
+FuncDecl *ASTContext::getAsyncIteratorNextIsolated() const {
+  if (getImpl().AsyncIteratorNextIsolated) {
+    return getImpl().AsyncIteratorNextIsolated;
   }
 
+  auto nextThrowing = getAsyncIteratorNextRequirements(*this).second;
+  getImpl().AsyncIteratorNextIsolated = nextThrowing;
+  return nextThrowing;
+}
+
+namespace {
+
+template<typename DeclClass>
+DeclClass *synthesizeBuiltinDecl(const ASTContext &ctx, StringRef name) {
+  if (name == "Never") {
+    auto never = new (ctx) EnumDecl(SourceLoc(), ctx.getIdentifier(name),
+                                    SourceLoc(), { }, nullptr,
+                                    ctx.MainModule);
+    return (DeclClass *)never;
+  }
   return nullptr;
+}
+
 }
 
 #define KNOWN_STDLIB_TYPE_DECL(NAME, DECL_CLASS, NUM_GENERIC_PARAMS) \
@@ -980,7 +1026,8 @@ DECL_CLASS *ASTContext::get##NAME##Decl() const { \
       } \
     } \
   } \
-  return nullptr; \
+  getImpl().NAME##Decl = synthesizeBuiltinDecl<DECL_CLASS>(*this, #NAME); \
+  return getImpl().NAME##Decl; \
 } \
 \
 Type ASTContext::get##NAME##Type() const { \
@@ -4263,6 +4310,14 @@ FunctionType *FunctionType::get(ArrayRef<AnyFunctionType::Param> params,
   return funcTy;
 }
 
+#ifndef NDEBUG
+static bool isConsistentAboutIsolation(const llvm::Optional<ASTExtInfo> &info,
+                                       ArrayRef<AnyFunctionType::Param> params) {
+  return (hasIsolatedParameter(params)
+            == (info && info->getIsolation().isParameter()));
+}
+#endif
+
 // If the input and result types are canonical, then so is the result.
 FunctionType::FunctionType(ArrayRef<AnyFunctionType::Param> params, Type output,
                            llvm::Optional<ExtInfo> info, const ASTContext *ctx,
@@ -4271,6 +4326,7 @@ FunctionType::FunctionType(ArrayRef<AnyFunctionType::Param> params, Type output,
                       params.size(), info) {
   std::uninitialized_copy(params.begin(), params.end(),
                           getTrailingObjects<AnyFunctionType::Param>());
+  assert(isConsistentAboutIsolation(info, params));
   if (info.has_value()) {
     auto clangTypeInfo = info.value().getClangTypeInfo();
     if (!clangTypeInfo.empty())
@@ -4389,6 +4445,7 @@ GenericFunctionType::GenericFunctionType(
       Signature(sig) {
   std::uninitialized_copy(params.begin(), params.end(),
                           getTrailingObjects<AnyFunctionType::Param>());
+  assert(isConsistentAboutIsolation(info, params));
   if (info) {
     unsigned thrownErrorIndex = 0;
     if (Type globalActor = info->getGlobalActor()) {

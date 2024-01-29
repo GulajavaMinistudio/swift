@@ -1000,6 +1000,8 @@ public:
 
   StmtChecker(DeclContext *DC) : Ctx(DC->getASTContext()), DC(DC) { }
 
+  llvm::SmallVector<GenericEnvironment *, 4> genericSigStack;
+
   //===--------------------------------------------------------------------===//
   // Helper Functions.
   //===--------------------------------------------------------------------===//
@@ -1434,7 +1436,10 @@ public:
   }
   
   Stmt *visitForEachStmt(ForEachStmt *S) {
-    if (TypeChecker::typeCheckForEachBinding(DC, S))
+    GenericEnvironment *genericSignature =
+        genericSigStack.empty() ? nullptr : genericSigStack.back();
+
+    if (TypeChecker::typeCheckForEachBinding(DC, S, genericSignature))
       return nullptr;
 
     // Type-check the body of the loop.
@@ -1442,9 +1447,17 @@ public:
     checkLabeledStmtShadowing(getASTContext(), sourceFile, S);
 
     BraceStmt *Body = S->getBody();
+
+    if (auto packExpansion =
+            dyn_cast<PackExpansionExpr>(S->getParsedSequence()))
+      genericSigStack.push_back(packExpansion->getGenericEnvironment());
+
     typeCheckStmt(Body);
     S->setBody(Body);
-    
+
+    if (isa<PackExpansionExpr>(S->getParsedSequence()))
+      genericSigStack.pop_back();
+
     return S;
   }
 
@@ -3226,4 +3239,33 @@ void swift::bindSwitchCasePatternVars(DeclContext *dc, CaseStmt *caseStmt) {
   for (auto bodyVar : caseStmt->getCaseBodyVariablesOrEmptyArray()) {
     recordVar(nullptr, bodyVar);
   }
+}
+
+FuncDecl *TypeChecker::getForEachIteratorNextFunction(
+    DeclContext *dc, SourceLoc loc, bool isAsync
+) {
+  ASTContext &ctx = dc->getASTContext();
+
+  // A synchronous for..in loop uses IteratorProtocol.next().
+  if (!isAsync)
+    return ctx.getIteratorNext();
+
+  // If AsyncIteratorProtocol.next(_:) isn't available at all,
+  // we're stuck using AsyncIteratorProtocol.next().
+  auto nextElement = ctx.getAsyncIteratorNextIsolated();
+  if (!nextElement)
+    return ctx.getAsyncIteratorNext();
+
+  // If availability checking is disabled, use next(_:).
+  if (ctx.LangOpts.DisableAvailabilityChecking || loc.isInvalid())
+    return nextElement;
+
+  // We can only call next(_:) if we are in an availability context
+  // that supports typed throws.
+  auto availability = overApproximateAvailabilityAtLocation(loc, dc);
+  if (availability.isContainedIn(ctx.getTypedThrowsAvailability()))
+    return nextElement;
+
+  // Fall back to AsyncIteratorProtocol.next().
+  return ctx.getAsyncIteratorNext();
 }

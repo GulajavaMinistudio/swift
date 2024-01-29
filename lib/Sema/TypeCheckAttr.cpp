@@ -165,7 +165,6 @@ public:
   IGNORED_ATTR(BackDeployed)
   IGNORED_ATTR(Documentation)
   IGNORED_ATTR(LexicalLifetimes)
-  IGNORED_ATTR(ResultDependsOn)
 #undef IGNORED_ATTR
 
   void visitAlignmentAttr(AlignmentAttr *attr) {
@@ -206,7 +205,6 @@ public:
   void visitNonMutatingAttr(NonMutatingAttr *attr) { visitMutationAttr(attr); }
   void visitBorrowingAttr(BorrowingAttr *attr) { visitMutationAttr(attr); }
   void visitConsumingAttr(ConsumingAttr *attr) { visitMutationAttr(attr); }
-  void visitTransferringAttr(TransferringAttr *attr) {}
   void visitLegacyConsumingAttr(LegacyConsumingAttr *attr) { visitMutationAttr(attr); }
   void visitResultDependsOnSelfAttr(ResultDependsOnSelfAttr *attr) {
     FuncDecl *FD = cast<FuncDecl>(D);
@@ -2751,49 +2749,36 @@ SynthesizeMainFunctionRequest::evaluate(Evaluator &evaluator,
                       ConstraintSystemFlags::IgnoreAsyncSyncMismatch);
   ConstraintLocator *locator =
       CS.getConstraintLocator({}, ConstraintLocator::Member);
+  auto throwsTypeVar = CS.createTypeVariable(locator, 0);
+
   // Allowed main function types
-  // `() -> Void`
-  // `() async -> Void`
-  // `() throws -> Void`
-  // `() async throws -> Void`
-  // `@MainActor () -> Void`
-  // `@MainActor () async -> Void`
-  // `@MainActor () throws -> Void`
-  // `@MainActor () async throws -> Void`
+  // `() throws(E) -> Void`
+  // `() async throws(E) -> Void`
+  // `@MainActor () throws(E) -> Void`
+  // `@MainActor () async throws(E) -> Void`
   {
-    llvm::SmallVector<Type, 8> mainTypes = {
-
+    llvm::SmallVector<Type, 4> mainTypes = {
         FunctionType::get(/*params*/ {}, context.TheEmptyTupleType,
-                          ASTExtInfo()),
-        FunctionType::get(
-            /*params*/ {}, context.TheEmptyTupleType,
-            ASTExtInfoBuilder().withAsync().build()),
-
-        FunctionType::get(/*params*/ {}, context.TheEmptyTupleType,
-                          ASTExtInfoBuilder().withThrows().build()),
+                          ASTExtInfoBuilder().withThrows(
+                            true, throwsTypeVar
+                          ).build()),
 
         FunctionType::get(
             /*params*/ {}, context.TheEmptyTupleType,
-            ASTExtInfoBuilder().withAsync().withThrows().build())};
+            ASTExtInfoBuilder().withAsync()
+                .withThrows(true, throwsTypeVar).build())};
 
     Type mainActor = context.getMainActorType();
     if (mainActor) {
+      auto extInfo = ASTExtInfoBuilder().withIsolation(
+          FunctionTypeIsolation::forGlobalActor(mainActor))
+        .withThrows(true, throwsTypeVar);
       mainTypes.push_back(FunctionType::get(
           /*params*/ {}, context.TheEmptyTupleType,
-          ASTExtInfoBuilder().withGlobalActor(mainActor).build()));
+          extInfo.build()));
       mainTypes.push_back(FunctionType::get(
           /*params*/ {}, context.TheEmptyTupleType,
-          ASTExtInfoBuilder().withAsync().withGlobalActor(mainActor).build()));
-      mainTypes.push_back(FunctionType::get(
-          /*params*/ {}, context.TheEmptyTupleType,
-          ASTExtInfoBuilder().withThrows().withGlobalActor(mainActor).build()));
-      mainTypes.push_back(FunctionType::get(/*params*/ {},
-                                            context.TheEmptyTupleType,
-                                            ASTExtInfoBuilder()
-                                                .withAsync()
-                                                .withThrows()
-                                                .withGlobalActor(mainActor)
-                                                .build()));
+          extInfo.withAsync().build()));
     }
     TypeVariableType *mainType =
         CS.createTypeVariable(locator, /*options=*/0);
@@ -3104,7 +3089,7 @@ SerializeAttrGenericSignatureRequest::evaluate(Evaluator &evaluator,
          attr->getTrailingWhereClause()->getRequirements()) {
       if (reqRepr.getKind() == RequirementReprKind::LayoutConstraint) {
         if (auto *attributedTy = dyn_cast<AttributedTypeRepr>(reqRepr.getSubjectRepr())) {
-          if (attributedTy->getAttrs().has(TAK__noMetadata)) {
+          if (attributedTy->has(TAK__noMetadata)) {
             const auto resolution = TypeResolution::forInterface(
                 FD->getDeclContext(), genericSig, llvm::None,
                 /*unboundTyOpener*/ nullptr,
@@ -6881,6 +6866,17 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
         diagnoseAndRemoveAttr(attr, diag::nonisolated_mutable_storage)
             .fixItInsertAfter(attr->getRange().End, "(unsafe)");
         var->diagnose(diag::nonisolated_mutable_storage_note, var);
+        return;
+      }
+
+      // 'nonisolated' without '(unsafe)' is not allowed on non-Sendable variables.
+      auto type = var->getTypeInContext();
+      if (!attr->isUnsafe() && !type->hasError() &&
+          !type->isSendableType()) {
+        Ctx.Diags.diagnose(attr->getLocation(),
+                           diag::nonisolated_non_sendable,
+                           type)
+          .warnUntilSwiftVersion(6);
         return;
       }
 

@@ -661,6 +661,7 @@ public:
   bool ShouldUseSwiftError;
 
   llvm::Type *VoidTy;                  /// void (usually {})
+  llvm::Type *PtrTy;                   /// ptr
   llvm::IntegerType *Int1Ty;           /// i1
   llvm::IntegerType *Int8Ty;           /// i8
   llvm::IntegerType *Int16Ty;          /// i16
@@ -1108,7 +1109,8 @@ public:
       StringRef Str, bool willBeRelativelyAddressed = false,
       StringRef sectionName = "", StringRef name = "");
   llvm::Constant *getAddrOfGlobalString(StringRef utf8,
-                                        bool willBeRelativelyAddressed = false);
+                                        bool willBeRelativelyAddressed = false,
+                                        bool useOSLogSection = false);
   llvm::Constant *getAddrOfGlobalUTF16String(StringRef utf8);
   llvm::Constant *getAddrOfObjCSelectorRef(StringRef selector);
   llvm::Constant *getAddrOfObjCSelectorRef(SILDeclRef method);
@@ -1194,6 +1196,11 @@ public:
                               SILType objectType, const TypeInfo &objectTI,
                               const OutliningMetadataCollector &collector);
 
+  llvm::Constant *getOrCreateOutlinedEnumTagStoreFunction(
+    SILType T, const TypeInfo &ti, EnumElementDecl *theCase, unsigned caseIdx);
+  llvm::Constant *getOrCreateOutlinedDestructiveProjectDataForLoad(
+    SILType T, const TypeInfo &ti, EnumElementDecl *theCase, unsigned caseIdx);
+
   llvm::Constant *getAddrOfClangGlobalDecl(clang::GlobalDecl global,
                                            ForDefinition_t forDefinition);
 
@@ -1218,6 +1225,8 @@ private:
   llvm::DenseSet<const clang::Decl *> GlobalClangDecls;
   llvm::StringMap<std::pair<llvm::GlobalVariable*, llvm::Constant*>>
     GlobalStrings;
+  llvm::StringMap<std::pair<llvm::GlobalVariable*, llvm::Constant*>>
+    GlobalOSLogStrings;
   llvm::StringMap<llvm::Constant*> GlobalUTF16Strings;
   llvm::StringMap<std::pair<llvm::GlobalVariable*, llvm::Constant*>>
     StringsForTypeRef;

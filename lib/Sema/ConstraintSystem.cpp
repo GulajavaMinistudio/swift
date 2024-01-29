@@ -792,9 +792,11 @@ ConstraintSystem::getPackElementEnvironment(ConstraintLocator *locator,
       shapeClass->mapTypeOutOfContext()->getCanonicalType());
 
   auto &ctx = getASTContext();
+  auto *contextEnv = PackElementGenericEnvironments.empty()
+                         ? DC->getGenericEnvironmentOfContext()
+                         : PackElementGenericEnvironments.back();
   auto elementSig = ctx.getOpenedElementSignature(
-      DC->getGenericSignatureOfContext().getCanonicalSignature(), shapeParam);
-  auto *contextEnv = DC->getGenericEnvironmentOfContext();
+      contextEnv->getGenericSignature().getCanonicalSignature(), shapeParam);
   auto contextSubs = contextEnv->getForwardingSubstitutionMap();
   return GenericEnvironment::forOpenedElement(elementSig, uuidAndShape.first,
                                               shapeParam, contextSubs);
@@ -2817,6 +2819,11 @@ ConstraintSystem::getTypeOfMemberReference(
       info = info.withConcurrent();
     }
 
+    // We'll do other adjustment later, but we need to handle parameter
+    // isolation to avoid assertions.
+    if (fullFunctionType->getIsolation().isParameter())
+      info = info.withIsolation(FunctionTypeIsolation::forParameter());
+
     openedType =
         FunctionType::get(fullFunctionType->getParams(), functionType, info);
   }
@@ -4408,6 +4415,7 @@ size_t Solution::getTotalMemory() const {
          OpenedPackExpansionTypes.getMemorySize() +
          PackExpansionEnvironments.getMemorySize() +
          size_in_bytes(PackEnvironments) +
+         PackElementGenericEnvironments.size() +
          (DefaultedConstraints.size() * sizeof(void *)) +
          ImplicitCallAsFunctionRoots.getMemorySize() +
          nodeTypes.getMemorySize() +

@@ -3411,7 +3411,8 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
       return getTypeMatchFailure(locator);
 
     for (auto pair : matcher.pairs) {
-      auto result = matchTypes(pair.lhs, pair.rhs, subKind, subflags,
+      // Compare the parameter types, taking contravariance into account.
+      auto result = matchTypes(pair.rhs, pair.lhs, subKind, subflags,
                                (func1Params.size() == 1
                                 ? argumentLocator
                                 : argumentLocator.withPathElement(
@@ -10704,15 +10705,16 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyMemberConstraint(
 
       // Handle `next` reference.
       if (getContextualTypePurpose(baseExpr) == CTP_ForEachSequence &&
-          isRefTo(memberRef, ctx.Id_next, /*labels=*/{})) {
+          (isRefTo(memberRef, ctx.Id_next, /*labels=*/{}) ||
+           isRefTo(memberRef, ctx.Id_next, /*labels=*/{StringRef()}))) {
         auto *iteratorProto = cast<ProtocolDecl>(
             getContextualType(baseExpr, /*forConstraint=*/false)
                 ->getAnyNominal());
         bool isAsync = iteratorProto->getKnownProtocolKind() ==
                        KnownProtocolKind::AsyncIteratorProtocol;
 
-        auto *next =
-            isAsync ? ctx.getAsyncIteratorNext() : ctx.getIteratorNext();
+        auto loc = locator->getAnchor().getStartLoc();
+        auto *next = TypeChecker::getForEachIteratorNextFunction(DC, loc, isAsync);
 
         return simplifyValueWitnessConstraint(
             ConstraintKind::ValueWitness, baseTy, next, memberTy, useDC,
@@ -10930,7 +10932,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyMemberConstraint(
             if (auto *base = dyn_cast<DeclRefExpr>(UDE->getBase())) {
               if (auto var = dyn_cast_or_null<VarDecl>(base->getDecl())) {
                 if (var->getNameStr().contains("$generator") &&
-                    UDE->getName().getBaseIdentifier() == Context.Id_next)
+                    (UDE->getName().getBaseIdentifier() == Context.Id_next))
                   return success();
               }
             }
@@ -11586,6 +11588,7 @@ bool ConstraintSystem::resolveClosure(TypeVariableType *typeVar,
 
   auto *paramList = closure->getParameters();
   SmallVector<AnyFunctionType::Param, 4> parameters;
+  bool hasIsolatedParam = false;
   for (unsigned i = 0, n = paramList->size(); i != n; ++i) {
     auto param = inferredClosureType->getParams()[i];
     auto *paramDecl = paramList->get(i);
@@ -11719,6 +11722,8 @@ bool ConstraintSystem::resolveClosure(TypeVariableType *typeVar,
       }
     }
 
+    hasIsolatedParam |= param.isIsolated();
+
     setType(paramDecl, internalType);
     parameters.push_back(param);
   }
@@ -11728,6 +11733,12 @@ bool ConstraintSystem::resolveClosure(TypeVariableType *typeVar,
   if (auto contextualFnType = contextualType->getAs<FunctionType>()) {
     if (contextualFnType->isSendable())
       closureExtInfo = closureExtInfo.withConcurrent();
+  }
+
+  // Isolated parameters override any other kind of isolation we might infer.
+  if (hasIsolatedParam) {
+    closureExtInfo = closureExtInfo.withIsolation(
+      FunctionTypeIsolation::forParameter());
   }
 
   auto closureType =
