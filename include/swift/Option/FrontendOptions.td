@@ -1070,6 +1070,12 @@ def force_struct_type_layouts : Flag<["-"], "force-struct-type-layouts">,
 def enable_layout_string_value_witnesses : Flag<["-"], "enable-layout-string-value-witnesses">,
   HelpText<"Enable layout string based value witnesses">;
 
+def enable_large_loadable_types_reg2mem : Flag<["-"], "enable-large-loadable-types-reg2mem">,
+  HelpText<"Enable large loadable types register to memory pass">;
+
+def disable_large_loadable_types_reg2mem : Flag<["-"], "disable-large-loadable-types-reg2mem">,
+  HelpText<"Disable large loadable types register to memory pass">;
+
 let Flags = [FrontendOption, NoDriverOption, HelpHidden, ModuleInterfaceOptionIgnorable] in {
   def enable_pack_metadata_stack_promotion :
     Joined<["-"], "enable-pack-metadata-stack-promotion=">,
@@ -1273,9 +1279,6 @@ def always_compile_output_files :
   HelpText<"Always compile output files even it might not change the results">;
 
 // CAS/Caching related options.
-def allow_unstable_cache_key_for_testing: Flag<["-"], "allow-unstable-cache-key-for-testing">,
-  HelpText<"Allow compilation caching with unstable inputs for testing purpose">;
-
 def input_file_key : Separate<["-"], "input-file-key">,
   HelpText<"Cache Key for input file">;
 def bridging_header_pch_key : Separate<["-"], "bridging-header-pch-key">,

@@ -59,6 +59,12 @@
   Having been [gated](https://github.com/apple/swift/pull/28171) behind a
   compiler warning since at least Swift 5.2, this syntax is now rejected.
 
+* [#71075][]:
+
+  \_SwiftConcurrencyShims used to declare the `exit` function, even though it
+  might not be available. The declaration has been removed, and must be imported
+  from the appropriate C library module (e.g. Darwin or SwiftGlibc)
+
 ## Swift 5.10
 
 * Swift 5.10 closes all known static data-race safey holes in complete strict
@@ -10088,4 +10094,5 @@ using the `.dynamicType` member to retrieve the type of an expression should mig
 [#57225]: <https://github.com/apple/swift/issues/57225>
 [#56139]: <https://github.com/apple/swift/issues/56139>
 [#70065]: <https://github.com/apple/swift/pull/70065>
+[#71075]: <https://github.com/apple/swift/pull/71075>
 [swift-syntax]: https://github.com/apple/swift-syntax
