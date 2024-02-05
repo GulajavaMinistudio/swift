@@ -2464,9 +2464,11 @@ public:
   void visitOpenPackElementInst(OpenPackElementInst *OPEI) {
     auto env = OPEI->getOpenedGenericEnvironment();
     auto subs = env->getPackElementContextSubstitutions();
-    *this << Ctx.getID(OPEI->getIndexOperand())
-          << " of " << subs.getGenericSignature()
-          << " at ";
+    *this << Ctx.getID(OPEI->getIndexOperand()) << " of ";
+    PrintOptions Opts;
+    Opts.PrintInverseRequirements = true;
+    subs.getGenericSignature().print(PrintState.OS, Opts);
+    *this << " at ";
     printSubstitutions(subs);
     // The shape class in the opened environment is a canonical interface
     // type, which won't resolve in the generic signature we just printed.
@@ -2845,7 +2847,9 @@ public:
     auto pattern = KPI->getPattern();
     
     if (pattern->getGenericSignature()) {
-      pattern->getGenericSignature()->print(PrintState.OS);
+      PrintOptions Opts;
+      Opts.PrintInverseRequirements = true;
+      pattern->getGenericSignature()->print(PrintState.OS, Opts);
       *this << ' ';
     }
     
@@ -3777,7 +3781,6 @@ static void printFileIDMap(SILPrintContext &Ctx, const FileIDMap map) {
 }
 
 void SILProperty::print(SILPrintContext &Ctx) const {
-  PrintOptions Options = PrintOptions::printSIL(&Ctx);
 
   auto &OS = Ctx.OS();
   OS << "sil_property ";
@@ -3788,6 +3791,8 @@ void SILProperty::print(SILPrintContext &Ctx) const {
   printValueDecl(getDecl(), OS);
   if (auto sig = getDecl()->getInnermostDeclContext()
                           ->getGenericSignatureOfContext()) {
+    PrintOptions Options = PrintOptions::printSIL(&Ctx);
+    Options.PrintInverseRequirements = true;
     sig.getCanonicalSignature()->print(OS, Options);
   }
   OS << " (";

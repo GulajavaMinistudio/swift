@@ -177,6 +177,10 @@ class ImportResolver final : public DeclVisitor<ImportResolver> {
   /// much, much smaller than \c crossImportableModules.
   SmallVector<AttributedImport<ImportedModule>, 16> crossImportDeclaringModules;
 
+  /// The underlying clang module of the source file's parent module, if
+  /// imported.
+  ModuleDecl *underlyingClangModule = nullptr;
+
   /// The index of the next module in \c visibleModules that should be
   /// cross-imported.
   size_t nextModuleToCrossImport = 0;
@@ -192,6 +196,10 @@ public:
   ArrayRef<AttributedImport<ImportedModule>> getFinishedImports() const {
     return boundImports;
   }
+
+  /// Retrieve the underlying clang module which will be cached if it was loaded
+  /// when resolving imports.
+  ModuleDecl *getUnderlyingClangModule() const { return underlyingClangModule; }
 
 private:
   // We only need to visit import decls.
@@ -287,6 +295,7 @@ void swift::performImportResolution(SourceFile &SF) {
     resolver.visit(D);
 
   SF.setImports(resolver.getFinishedImports());
+  SF.setImportedUnderlyingModule(resolver.getUnderlyingClangModule());
 
   SF.ASTStage = SourceFile::ImportsResolved;
   verify(SF);
@@ -396,8 +405,10 @@ ImportResolver::getModule(ImportPath::Module modulePath) {
   // for clang overlays as well.
   if (ctx.getRealModuleName(moduleID.Item) == loadingModule->getName() &&
       modulePath.size() == 1) {
-    if (auto importer = ctx.getClangModuleLoader())
-      return importer->loadModule(moduleID.Loc, modulePath);
+    if (auto importer = ctx.getClangModuleLoader()) {
+      underlyingClangModule = importer->loadModule(moduleID.Loc, modulePath);
+      return underlyingClangModule;
+    }
     return nullptr;
   }
 
@@ -650,7 +661,7 @@ void UnboundImport::validatePrivate(ModuleDecl *topLevelModule) {
   if (topLevelModule->arePrivateImportsEnabled())
     return;
 
-  diagnoseInvalidAttr(DAK_PrivateImport, ctx.Diags,
+  diagnoseInvalidAttr(DeclAttrKind::PrivateImport, ctx.Diags,
                       diag::module_not_compiled_for_private_import);
   import.sourceFileArg = StringRef();
 }
@@ -674,8 +685,9 @@ void UnboundImport::validateRestrictedImport(ASTContext &ctx) {
   for (auto iter = conflicts.begin(); iter != std::prev(conflicts.end()); iter ++)
     import.options -= *iter;
 
-  DeclAttrKind attrToRemove = conflicts[0] == ImportFlags::ImplementationOnly?
-                                      DAK_Exported : DAK_ImplementationOnly;
+  DeclAttrKind attrToRemove = conflicts[0] == ImportFlags::ImplementationOnly
+                                  ? DeclAttrKind::Exported
+                                  : DeclAttrKind::ImplementationOnly;
 
   // More dense enum with some cases of ImportFlags,
   // used by import_restriction_conflict.
@@ -723,7 +735,8 @@ void UnboundImport::validateTestable(ModuleDecl *topLevelModule) {
       !ctx.LangOpts.EnableTestableAttrRequiresTestableModule)
     return;
 
-  diagnoseInvalidAttr(DAK_Testable, ctx.Diags, diag::module_not_testable);
+  diagnoseInvalidAttr(DeclAttrKind::Testable, ctx.Diags,
+                      diag::module_not_testable);
 }
 
 void UnboundImport::validateAllowableClient(ModuleDecl *importee,

@@ -307,7 +307,7 @@ ValueDecl *RequirementFailure::getDeclRef() const {
     // is a declarer of a contextual "result" type e.g. member of a
     // type, local function etc.
     if (contextualPurpose == CTP_ReturnStmt ||
-        contextualPurpose == CTP_ReturnSingleExpr) {
+        contextualPurpose == CTP_ImpliedReturnStmt) {
       return cast<ValueDecl>(getDC()->getAsDecl());
     }
 
@@ -772,7 +772,7 @@ GenericArgumentsMismatchFailure::getDiagnosticFor(
   case CTP_AssignSource:
     return diag::cannot_convert_assign;
   case CTP_ReturnStmt:
-  case CTP_ReturnSingleExpr:
+  case CTP_ImpliedReturnStmt:
     return diag::cannot_convert_to_return_type;
   case CTP_DefaultParameter:
   case CTP_AutoclosureDefaultParameter:
@@ -1180,7 +1180,7 @@ bool AttributedFuncToTypeConversionFailure::
 
   TypeAttribute *autoclosureAttr = nullptr;
   if (auto attrRepr = dyn_cast<AttributedTypeRepr>(argRepr)) {
-    autoclosureAttr = attrRepr->get(TAK_autoclosure);
+    autoclosureAttr = attrRepr->get(TypeAttrKind::Autoclosure);
   }
 
   if (autoclosureAttr) {
@@ -1275,7 +1275,7 @@ bool AttributedFuncToTypeConversionFailure::diagnoseParameterUse() const {
   } else {
     SourceLoc autoclosureEndLoc;
     if (auto *attrRepr = dyn_cast<AttributedTypeRepr>(repr)) {
-      if (auto *attr = attrRepr->get(TAK_autoclosure))
+      if (auto *attr = attrRepr->get(TypeAttrKind::Autoclosure))
         autoclosureEndLoc = attr->getEndLoc();
     }
     if (autoclosureEndLoc.isValid()) {
@@ -2007,7 +2007,7 @@ bool TrailingClosureAmbiguityFailure::diagnoseAsNote() {
     const ParameterList *paramList = callee->getParameters();
     const ParamDecl *param = paramList->getArray().back();
 
-    // Sanity-check that the trailing closure corresponds to this parameter.
+    // Soundness-check that the trailing closure corresponds to this parameter.
     if (!param->hasInterfaceType() ||
         !param->getInterfaceType()->is<AnyFunctionType>())
       return false;
@@ -2483,7 +2483,7 @@ bool ContextualFailure::diagnoseAsError() {
   auto anchor = getAnchor();
   auto path = getLocator()->getPath();
 
-  if (CTP == CTP_ReturnSingleExpr || CTP == CTP_ReturnStmt) {
+  if (CTP == CTP_ImpliedReturnStmt || CTP == CTP_ReturnStmt) {
     // Special case the "conversion to void".
     if (getToType()->isVoid()) {
       emitDiagnostic(diag::cannot_return_value_from_void_func)
@@ -2497,9 +2497,13 @@ bool ContextualFailure::diagnoseAsError() {
 
   if (path.empty()) {
     if (auto *KPE = getAsExpr<KeyPathExpr>(anchor)) {
-      emitDiagnosticAt(KPE->getLoc(),
-                       diag::expr_keypath_type_covert_to_contextual_type,
-                       getFromType(), getToType());
+      Diag<Type, Type> diag;
+      if (auto ctxDiag = getDiagnosticFor(CTP, getToType())) {
+        diag = *ctxDiag;
+      } else {
+        diag = diag::expr_keypath_type_mismatch;
+      }
+      emitDiagnosticAt(KPE->getLoc(), diag, getFromType(), getToType());
       return true;
     }
 
@@ -2750,9 +2754,14 @@ bool ContextualFailure::diagnoseAsError() {
     break;
   }
 
+  case ConstraintLocator::FunctionResult:
   case ConstraintLocator::KeyPathValue: {
-    diagnostic = diag::expr_keypath_value_covert_to_contextual_type;
-    break;
+    if (auto *KPE = getAsExpr<KeyPathExpr>(anchor)) {
+      diagnostic = diag::expr_keypath_value_covert_to_contextual_type;
+      break;
+    } else {
+      return false;
+    }
   }
 
   default:
@@ -2815,7 +2824,7 @@ getContextualNilDiagnostic(ContextualTypePurpose CTP) {
   case CTP_Initialization:
     return diag::cannot_convert_initializer_value_nil;
 
-  case CTP_ReturnSingleExpr:
+  case CTP_ImpliedReturnStmt:
   case CTP_ReturnStmt:
     return diag::cannot_convert_to_return_type_nil;
 
@@ -3454,19 +3463,24 @@ bool ContextualFailure::tryProtocolConformanceFixIt(
     llvm::raw_svector_ostream SS(Text);
     llvm::SmallVector<NormalProtocolConformance *, 2> fakeConformances;
     for (auto protocol : missingProtocols) {
+      // Create a fake conformance for this type to the given protocol.
       auto conformance = getASTContext().getNormalConformance(
           nominal->getSelfInterfaceType(), protocol, SourceLoc(), nominal,
           ProtocolConformanceState::Incomplete, /*isUnchecked=*/false,
           /*isPreconcurrency=*/false);
-      // Type witnesses must be resolved first.
+
+      // Resolve the conformance to generate fixits.
       evaluateOrDefault(getASTContext().evaluator,
                         ResolveTypeWitnessesRequest{conformance},
                         evaluator::SideEffect());
-      ConformanceChecker checker(getASTContext(), conformance);
-      checker.resolveValueWitnesses();
+      evaluateOrDefault(getASTContext().evaluator,
+                        ResolveValueWitnessesRequest{conformance},
+                        evaluator::SideEffect());
+
       fakeConformances.push_back(conformance);
     }
 
+    // Collect all of the fixits generated above.
     for (auto conformance : fakeConformances) {
       auto missingWitnesses = getASTContext().takeDelayedMissingWitnesses(conformance);
       for (auto decl : missingWitnesses) {
@@ -3555,7 +3569,7 @@ ContextualFailure::getDiagnosticFor(ContextualTypePurpose context,
                        : diag::cannot_convert_initializer_value;
   }
   case CTP_ReturnStmt:
-  case CTP_ReturnSingleExpr: {
+  case CTP_ImpliedReturnStmt: {
     if (contextualType->isAnyObject())
       return diag::cannot_convert_return_type_to_anyobject;
 
@@ -8267,13 +8281,24 @@ bool CoercionAsForceCastFailure::diagnoseAsError() {
 
 bool KeyPathRootTypeMismatchFailure::diagnoseAsError() {
   auto locator = getLocator();
+  auto anchor = locator->getAnchor();
   assert(locator->isKeyPathRoot() && "Expected a key path root");
-  
-  auto baseType = getFromType();
-  auto rootType = getToType();
 
-  emitDiagnostic(diag::expr_keypath_root_type_mismatch,
-                 rootType, baseType);
+
+
+  if (isExpr<KeyPathApplicationExpr>(anchor) || isExpr<SubscriptExpr>(anchor)) {
+    auto baseType = getFromType();
+    auto rootType = getToType();
+
+    emitDiagnostic(diag::expr_keypath_application_root_type_mismatch,
+                   rootType, baseType);
+  } else {
+    auto rootType = getFromType();
+    auto expectedType = getToType();
+
+    emitDiagnostic(diag::expr_keypath_root_type_mismatch, rootType,
+                   expectedType);
+  }
   return true;
 }
 

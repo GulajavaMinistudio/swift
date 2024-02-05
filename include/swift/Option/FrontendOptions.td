@@ -425,9 +425,6 @@ def disable_requirement_machine_reuse : Flag<["-"], "disable-requirement-machine
 def enable_requirement_machine_opaque_archetypes : Flag<["-"], "enable-requirement-machine-opaque-archetypes">,
   HelpText<"Enable more correct opaque archetype support, which is off by default because it might fail to produce a convergent rewrite system">;
 
-def warn_redundant_requirements : Flag<["-"], "warn-redundant-requirements">,
-  HelpText<"Emit warnings for redundant requirements in generic signatures">;
-
 def dump_type_witness_systems : Flag<["-"], "dump-type-witness-systems">,
   HelpText<"Enables dumping type witness systems from associated type inference">;
 
@@ -439,6 +436,9 @@ def disable_round_trip_debug_types : Flag<["-"], "disable-round-trip-debug-types
 
 def debug_generic_signatures : Flag<["-"], "debug-generic-signatures">,
   HelpText<"Debug generic signatures">;
+
+def debug_inverse_requirements : Flag<["-"], "debug-inverse-requirements">,
+  HelpText<"Print real requirements in -debug_generic_signatures output">;
 
 def debug_forbid_typecheck_prefix : Separate<["-"], "debug-forbid-typecheck-prefix">,
   HelpText<"Triggers llvm fatal_error if typechecker tries to typecheck a decl "
@@ -659,6 +659,14 @@ def enable_experimental_associated_type_inference :
 def disable_experimental_associated_type_inference :
   Flag<["-"], "disable-experimental-associated-type-inference">,
   HelpText<"Disable experimental associated type inference improvements">;
+
+def enable_experimental_lifetime_dependence_inference :
+  Flag<["-"], "enable-experimental-lifetime-dependence-inference">,
+  HelpText<"Enable experimental lifetime dependence inference">;
+
+def disable_experimental_lifetime_dependence_inference :
+  Flag<["-"], "disable-experimental-lifetime-dependence-inference">,
+  HelpText<"Disable experimental lifetime dependence inference">;
 
 def disable_availability_checking : Flag<["-"],
   "disable-availability-checking">,

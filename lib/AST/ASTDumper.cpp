@@ -440,6 +440,9 @@ static StringRef getDumpString(RequirementKind kind) {
 
   llvm_unreachable("Unhandled RequirementKind in switch.");
 }
+static StringRef getDumpString(StringRef s) {
+  return s;
+}
 static unsigned getDumpString(unsigned value) {
   return value;
 }
@@ -1015,7 +1018,8 @@ namespace {
       printFoot();
     }
     void visitBindingPattern(BindingPattern *P, StringRef label) {
-      printCommon(P, P->isLet() ? "pattern_let" : "pattern_var", label);
+      printCommon(P, "pattern_binding", label);
+      printField(P->getIntroducerStringRef(), "kind");
       printRec(P->getSubPattern());
       printFoot();
     }
@@ -1188,9 +1192,13 @@ namespace {
       printCommon(PD, "protocol", label);
 
       if (PD->isRequirementSignatureComputed()) {
-        auto requirements = PD->getRequirementSignatureAsGenericSignature();
-        std::string reqSigStr = requirements->getAsString();
-        printFieldQuoted(reqSigStr, "requirement_signature");
+        auto reqSig = PD->getRequirementSignature();
+
+        std::string reqSigStr;
+        llvm::raw_string_ostream out(reqSigStr);
+        reqSig.print(PD, out);
+
+        printFieldQuoted(out.str(), "requirement_signature");
       } else {
         printFlag("uncomputed_requirement_signature");
       }
@@ -1531,17 +1539,6 @@ namespace {
             printFieldQuoted(fec->getResultType(), "resulttype");
           printFoot();
         });
-      }
-
-      if (D->hasSingleExpressionBody()) {
-        // There won't be an expression if this is an initializer that was
-        // originally spelled "init?(...) { nil }", because "nil" is modeled
-        // via FailStmt in this context.
-        if (auto *Body = D->getSingleExpressionBody()) {
-          printRec(Body);
-
-          return;
-        }
       }
 
       if (auto Body = D->getBody(/*canSynthesize=*/false)) {
@@ -2664,6 +2661,11 @@ public:
     printRec(E->getSubExpr());
     printFoot();
   }
+  void visitUnreachableExpr(UnreachableExpr *E, StringRef label) {
+    printCommon(E, "unreachable", label);
+    printRec(E->getSubExpr());
+    printFoot();
+  }
   void visitDifferentiableFunctionExpr(DifferentiableFunctionExpr *E, StringRef label) {
     printCommon(E, "differentiable_function", label);
     printRec(E->getSubExpr());
@@ -2689,6 +2691,13 @@ public:
   void visitLinearToDifferentiableFunctionExpr(
       LinearToDifferentiableFunctionExpr *E, StringRef label) {
     printCommon(E, "linear_to_differentiable_function", label);
+    printRec(E->getSubExpr());
+    printFoot();
+  }
+
+  void visitActorIsolationErasureExpr(ActorIsolationErasureExpr *E,
+                                      StringRef label) {
+    printCommon(E, "actor_isolation_erasure_expr", label);
     printRec(E->getSubExpr());
     printFoot();
   }

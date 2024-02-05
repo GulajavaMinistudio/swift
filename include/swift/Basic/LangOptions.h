@@ -174,6 +174,9 @@ namespace swift {
     /// User-overridable language version to compile for.
     version::Version EffectiveLanguageVersion = version::Version::getCurrentLanguageVersion();
 
+    /// Swift runtime version to compile for.
+    version::Version RuntimeVersion = version::Version::getCurrentLanguageVersion();
+
     /// PackageDescription version to compile for.
     version::Version PackageDescriptionVersion;
 
@@ -550,11 +553,11 @@ namespace swift {
     /// rewrite system.
     bool EnableRequirementMachineOpaqueArchetypes = false;
 
-    /// Enable warnings for redundant requirements in generic signatures.
-    bool WarnRedundantRequirements = false;
-
     /// Enable experimental associated type inference improvements.
     bool EnableExperimentalAssociatedTypeInference = false;
+
+    /// Enable implicit lifetime dependence for ~Escapable return types.
+    bool EnableExperimentalLifetimeDependenceInference = false;
 
     /// Enables dumping type witness systems from associated type inference.
     bool DumpTypeWitnessSystems = false;
@@ -789,6 +792,10 @@ namespace swift {
 
     /// Debug the generic signatures computed by the generic signature builder.
     bool DebugGenericSignatures = false;
+
+    /// If this is set, we skip the inverse transform and print explicit
+    /// Copyable/Escapable requirements in the above.
+    bool DebugInverseRequirements = false;
 
     /// Whether we are debugging the constraint solver.
     ///

@@ -30,6 +30,7 @@
 #include "swift/AST/Expr.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/GenericSignature.h"
+#include "swift/AST/ImportCache.h"
 #include "swift/AST/Initializer.h"
 #include "swift/AST/InverseMarking.h"
 #include "swift/AST/LazyResolver.h"
@@ -1010,46 +1011,6 @@ AbstractFunctionDecl::getEffectiveThrownErrorType() const {
   return llvm::None;
 }
 
-Expr *AbstractFunctionDecl::getSingleExpressionBody() const {
-  assert(hasSingleExpressionBody() && "Not a single-expression body");
-  auto braceStmt = getBody();
-  assert(braceStmt != nullptr && "No body currently available.");
-  auto body = getBody()->getLastElement();
-  if (auto *stmt = body.dyn_cast<Stmt *>()) {
-    if (auto *returnStmt = dyn_cast<ReturnStmt>(stmt)) {
-      return returnStmt->getResult();
-    } else if (isa<FailStmt>(stmt)) {
-      // We can only get to this point if we're a type-checked ConstructorDecl
-      // which was originally spelled init?(...) { nil }.  
-      //
-      // There no longer is a single-expression to return, so ignore null.
-      return nullptr;
-    }
-  }
-  return body.get<Expr *>();
-}
-
-void AbstractFunctionDecl::setSingleExpressionBody(Expr *NewBody) {
-  assert(hasSingleExpressionBody() && "Not a single-expression body");
-  auto body = getBody(/*canSynthesize=*/false)->getLastElement();
-  if (auto *stmt = body.dyn_cast<Stmt *>()) {
-    if (auto *returnStmt = dyn_cast<ReturnStmt>(stmt)) {
-      returnStmt->setResult(NewBody);
-      return;
-    } else if (isa<FailStmt>(stmt)) {
-      // We can only get to this point if we're a type-checked ConstructorDecl
-      // which was originally spelled init?(...) { nil }.  
-      //
-      // We can no longer write the single-expression which is being set on us 
-      // into anything because a FailStmt does not have such a child.  As a
-      // result we need to demand that the NewBody is null.
-      assert(NewBody == nullptr);
-      return;
-    }
-  }
-  getBody()->setLastElement(NewBody);
-}
-
 bool AbstractStorageDecl::isCompileTimeConst() const {
   return getAttrs().hasAttribute<CompileTimeConstAttr>();
 }
@@ -1593,9 +1554,10 @@ InheritedEntry::InheritedEntry(const TypeLoc &typeLoc)
     : InheritedEntry(typeLoc, /*isUnchecked=*/false, /*isRetroactive=*/false,
                      /*isPreconcurrency=*/false) {
   if (auto typeRepr = typeLoc.getTypeRepr()) {
-    IsUnchecked = typeRepr->findAttrLoc(TAK_unchecked).isValid();
-    IsRetroactive = typeRepr->findAttrLoc(TAK_retroactive).isValid();
-    IsPreconcurrency = typeRepr->findAttrLoc(TAK_preconcurrency).isValid();
+    IsUnchecked = typeRepr->findAttrLoc(TypeAttrKind::Unchecked).isValid();
+    IsRetroactive = typeRepr->findAttrLoc(TypeAttrKind::Retroactive).isValid();
+    IsPreconcurrency =
+        typeRepr->findAttrLoc(TypeAttrKind::Preconcurrency).isValid();
   }
 }
 
@@ -3829,6 +3791,37 @@ ValueDecl::getSatisfiedProtocolRequirements(bool Sorted) const {
   return NTD->getSatisfiedProtocolRequirementsForMember(this, Sorted);
 }
 
+llvm::Optional<AttributedImport<ImportedModule>>
+ValueDecl::findImport(const DeclContext *fromDC) {
+  // If the type is from the current module, there's no import.
+  auto module = getModuleContext();
+  if (module == fromDC->getParentModule())
+    return llvm::None;
+
+  auto fromSourceFile = fromDC->getParentSourceFile();
+  if (!fromSourceFile)
+    return llvm::None;
+
+  // Look to see if the owning module was directly imported.
+  for (const auto &import : fromSourceFile->getImports()) {
+    if (import.module.importedModule == module)
+      return import;
+  }
+
+  // Now look for transitive imports.
+  auto &importCache = getASTContext().getImportCache();
+  for (const auto &import : fromSourceFile->getImports()) {
+    auto &importSet = importCache.getImportSet(import.module.importedModule);
+    for (const auto &transitive : importSet.getTransitiveImports()) {
+      if (transitive.importedModule == module) {
+        return import;
+      }
+    }
+  }
+
+  return llvm::None;
+}
+
 bool ValueDecl::isProtocolRequirement() const {
   assert(isa<ProtocolDecl>(getDeclContext()));
 
@@ -4586,7 +4579,8 @@ void ValueDecl::copyFormalAccessFrom(const ValueDecl *source,
   if (source->getAttrs().hasAttribute<UsableFromInlineAttr>() &&
       !getAttrs().hasAttribute<UsableFromInlineAttr>() &&
       !getAttrs().hasAttribute<InlinableAttr>() &&
-      DeclAttribute::canAttributeAppearOnDecl(DAK_UsableFromInline, this)) {
+      DeclAttribute::canAttributeAppearOnDecl(DeclAttrKind::UsableFromInline,
+                                              this)) {
     auto &ctx = getASTContext();
     auto *clonedAttr = new (ctx) UsableFromInlineAttr(/*implicit=*/true);
     getAttrs().add(clonedAttr);
@@ -4937,7 +4931,7 @@ InverseMarking TypeDecl::getMarking(InvertibleProtocolKind ip) const {
 static TypeDecl::CanBeInvertible::Result
 conformanceExists(TypeDecl const *decl, InvertibleProtocolKind ip) {
   auto *proto = decl->getASTContext().getProtocol(getKnownProtocolKind(ip));
-  assert(proto);
+  assert(proto && "missing Copyable/Escapable from stdlib!");
 
   // Handle protocols specially, without building a GenericSignature.
   if (auto *protoDecl = dyn_cast<ProtocolDecl>(decl))
@@ -6630,34 +6624,35 @@ bool ProtocolDecl::inheritsFrom(const ProtocolDecl *super) const {
 }
 
 bool ProtocolDecl::requiresInvertible(InvertibleProtocolKind ip) const {
-  // Specially handle when asking if an invertible protocol requires another.
+  // Protocols don't inherit from themselves.
   if (auto thisIP = getInvertibleProtocolKind()) {
-    if (SWIFT_ENABLE_EXPERIMENTAL_NONCOPYABLE_GENERICS) {
-      // Hardcode that the invertible protocols do not require themselves.
-      // Otherwise, defer to what the stdlib says by walking the protocol.
-      if (thisIP == ip)
-        return false;
-    } else {
-      // The stdlib was NOT built with noncopyable generics, so claim that
-      // this invertible protocol require no others.
-      // FIXME: this configuration will eventually go away.
+    if (thisIP == ip)
       return false;
-    }
   }
 
   auto kp = ::getKnownProtocolKind(ip);
+
+  // Otherwise, check for inverses on all of the inherited protocols. If there
+  // is one protocol missing an inverse for this `super` protocol, then it is
+  // implicitly inherited.
   return walkInheritedProtocols([kp, ip](ProtocolDecl *proto) {
     if (proto->isSpecificProtocol(kp))
-      return TypeWalker::Action::Stop; // it is required.
+      return TypeWalker::Action::Stop; // It is explicitly inherited.
 
+    // There is no implicit inheritance of an invertible protocol requirement
+    // on an invertible protocol itself.
+    if (proto->getInvertibleProtocolKind())
+      return TypeWalker::Action::Continue;
+
+    // Otherwise, check to see if there's an inverse on this protocol.
     switch (proto->getMarking(ip).getInverse().getKind()) {
     case InverseMarking::Kind::None:
-      return TypeWalker::Action::Stop; // it is required.
+      return TypeWalker::Action::Stop; // No inverse, so implicitly inherited.
 
     case InverseMarking::Kind::LegacyExplicit:
     case InverseMarking::Kind::Explicit:
     case InverseMarking::Kind::Inferred:
-      // the implicit requirement was suppressed on this protocol, keep looking.
+      // The implicit requirement was suppressed on this protocol, keep looking.
       return TypeWalker::Action::Continue;
     }
   });
@@ -6738,12 +6733,6 @@ RequirementSignature ProtocolDecl::getRequirementSignature() const {
                RequirementSignature());
 }
 
-GenericSignature ProtocolDecl::getRequirementSignatureAsGenericSignature() const {
-  return GenericSignature::get(
-      {getSelfInterfaceType()->castTo<GenericTypeParamType>()},
-      getRequirementSignature().getRequirements());
-}
-
 bool ProtocolDecl::isComputingRequirementSignature() const {
   return getASTContext().evaluator.hasActiveRequest(
                  RequirementSignatureRequest{const_cast<ProtocolDecl*>(this)});
@@ -6796,6 +6785,7 @@ ProtocolDecl::setLazyPrimaryAssociatedTypeMembers(
 void ProtocolDecl::computeKnownProtocolKind() const {
   auto module = getModuleContext();
   if (module != module->getASTContext().getStdlibModule() &&
+      module != module->getASTContext().TheBuiltinModule &&
       !module->getName().is("Foundation") &&
       !module->getName().is("_Differentiation") &&
       !module->getName().is("_Concurrency") &&
@@ -7758,7 +7748,8 @@ bool VarDecl::isLet() const {
   if (auto *PD = dyn_cast<ParamDecl>(this)) {
     return PD->isImmutableInFunctionBody();
   }
-  return getIntroducer() == Introducer::Let;
+  return getIntroducer() == Introducer::Let
+    || getIntroducer() == Introducer::Borrowing;
 }
 
 bool VarDecl::isAsyncLet() const {
@@ -10019,6 +10010,10 @@ void AbstractFunctionDecl::addDerivativeFunctionConfiguration(
 void FuncDecl::setResultInterfaceType(Type type) {
   getASTContext().evaluator.cacheOutput(ResultTypeRequest{this},
                                         std::move(type));
+}
+
+void FuncDecl::setDeserializedResultTypeLoc(TypeLoc ResultTyR) {
+  FnRetType = ResultTyR;
 }
 
 FuncDecl *FuncDecl::createImpl(ASTContext &Context,

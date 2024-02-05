@@ -55,7 +55,7 @@ namespace swift {
   enum class ReferenceOwnership : uint8_t;
   enum class StaticSpellingKind : uint8_t;
   enum class DescriptiveDeclKind : uint8_t;
-  enum DeclAttrKind : unsigned;
+  enum class DeclAttrKind : unsigned;
   enum class StmtKind;
 
   /// Enumeration describing all of possible diagnostics.
@@ -574,6 +574,25 @@ namespace swift {
       }
       return limitBehavior(limit);
     }
+
+    /// Conditionally limit the diagnostic behavior if the given \c limit
+    /// is not \c None.
+    InFlightDiagnostic &limitBehaviorIf(
+        llvm::Optional<DiagnosticBehavior> limit) {
+      if (!limit) {
+        return *this;
+      }
+
+      return limitBehavior(*limit);
+    }
+
+    /// Limit the diagnostic behavior to \c limit until the specified
+    /// version.
+    ///
+    /// This helps stage in fixes for stricter diagnostics as warnings
+    /// until the next major language version.
+    InFlightDiagnostic &limitBehaviorUntilSwiftVersion(
+        DiagnosticBehavior limit, unsigned majorVersion);
 
     /// Limit the diagnostic behavior to warning until the specified version.
     ///

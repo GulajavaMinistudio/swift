@@ -2808,7 +2808,7 @@ namespace {
       // If this module is declared as a C++ module, try to synthesize
       // conformances to Swift protocols from the Cxx module.
       auto clangModule = Impl.getClangOwningModule(result->getClangNode());
-      if (clangModule && requiresCPlusPlus(clangModule)) {
+      if (!clangModule || requiresCPlusPlus(clangModule)) {
         if (auto nominalDecl = dyn_cast<NominalTypeDecl>(result)) {
           conformToCxxIteratorIfNeeded(Impl, nominalDecl, decl);
           conformToCxxSequenceIfNeeded(Impl, nominalDecl, decl);
@@ -3380,13 +3380,6 @@ namespace {
             return d->getName() == "strstr" || d->getName() == "sin" ||
                    d->getName() == "cos" || d->getName() == "exit";
           return false;
-        };
-        auto topLevelModuleEq =
-            [](const clang::FunctionDecl *d, StringRef n) -> bool {
-          return d->getOwningModule() &&
-                 d->getOwningModule()
-                    ->getTopLevelModule()
-                    ->getFullModuleName() == n;
         };
         
         if (clang::Module *owningModule = decl->getOwningModule();
@@ -8053,11 +8046,14 @@ ClangImporter::Implementation::importSwiftAttrAttributes(Decl *MappedDecl) {
       parser.consumeTokenWithoutFeedingReceiver();
 
       bool hadError = false;
-      SourceLoc atLoc;
-      if (parser.consumeIf(tok::at_sign, atLoc)) {
-        hadError = parser.parseDeclAttribute(
-            MappedDecl->getAttrs(), atLoc, initContext,
-            /*isFromClangAttribute=*/true).isError();
+      if (parser.Tok.is(tok::at_sign)) {
+        SourceLoc atEndLoc = parser.Tok.getRange().getEnd();
+        SourceLoc atLoc = parser.consumeToken(tok::at_sign);
+        hadError = parser
+                       .parseDeclAttribute(MappedDecl->getAttrs(), atLoc,
+                                           atEndLoc, initContext,
+                                           /*isFromClangAttribute=*/true)
+                       .isError();
       } else {
         SourceLoc staticLoc;
         StaticSpellingKind staticSpelling;
@@ -9340,7 +9336,7 @@ static void loadMembersOfBaseImportedFromClang(ExtensionDecl *ext) {
     return;
   base->loadAllMembers();
 
-  // Sanity check: make sure we don't jump over to a category /while/
+  // Soundness check: make sure we don't jump over to a category /while/
   // loading the original class's members. Right now we only check if this
   // happens on the first member.
   if (auto *clangContainer = dyn_cast<clang::ObjCContainerDecl>(clangBase))

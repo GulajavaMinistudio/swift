@@ -840,15 +840,6 @@ void StmtEmitter::visitYieldStmt(YieldStmt *S) {
 void StmtEmitter::visitThenStmt(ThenStmt *S) {
   auto *E = S->getResult();
 
-  // If we have an uninhabited type, we may not be able to use it for
-  // initialization, since we allow the conversion of Never to any other type.
-  // Instead, emit an ignored expression with an unreachable.
-  if (E->getType()->isUninhabited()) {
-    SGF.emitIgnoredExpr(E);
-    SGF.B.createUnreachable(E);
-    return;
-  }
-
   // Retrieve the initialization for the parent SingleValueStmtExpr. If we don't
   // have an init, we don't care about the result, emit an ignored expr. This is
   // the case if e.g the result is being converted to Void.
@@ -1253,8 +1244,8 @@ void StmtEmitter::visitForEachStmt(ForEachStmt *S) {
         PackType::get(SGF.getASTContext(), expansion->getType())
             ->getCanonicalType());
 
-    JumpDest loopDest = createJumpDest(S->getBody());
-    JumpDest endDest = createJumpDest(S->getBody());
+    JumpDest continueDest = createJumpDest(S->getBody());
+    JumpDest breakDest = createJumpDest(S->getBody());
 
     SGF.emitDynamicPackLoop(
         SILLocation(expansion), formalPackType, 0,
@@ -1263,20 +1254,20 @@ void StmtEmitter::visitForEachStmt(ForEachStmt *S) {
             SILValue packIndex) {
           Scope innerForScope(SGF.Cleanups, CleanupLocation(S->getBody()));
           auto letValueInit =
-              SGF.emitPatternBindingInitialization(S->getPattern(), loopDest);
+              SGF.emitPatternBindingInitialization(S->getPattern(), continueDest);
 
           SGF.emitExprInto(expansion->getPatternExpr(), letValueInit.get());
 
           // Set the destinations for 'break' and 'continue'.
-          SGF.BreakContinueDestStack.push_back({S, endDest, loopDest});
+          SGF.BreakContinueDestStack.push_back({S, breakDest, continueDest});
           visit(S->getBody());
           SGF.BreakContinueDestStack.pop_back();
 
           return;
         },
-        loopDest.getBlock());
+        continueDest.getBlock());
 
-    emitOrDeleteBlock(SGF, endDest, S);
+    emitOrDeleteBlock(SGF, breakDest, S);
 
     return;
   }

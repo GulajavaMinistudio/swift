@@ -58,7 +58,7 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 844; // remove IsolatedAttr
+const uint16_t SWIFTMODULE_VERSION_MINOR = 847; // add LifetimeDependence
 
 /// A standard hash seed used for all string hashes in a serialized module.
 ///
@@ -369,6 +369,7 @@ enum class VarDeclIntroducer : uint8_t {
   Let = 0,
   Var = 1,
   InOut = 2,
+  Borrowing = 3,
 };
 using VarDeclIntroducerField = BCFixed<2>;
 
@@ -1897,7 +1898,7 @@ namespace decls_block {
 
   using BindingPatternLayout = BCRecordLayout<
     VAR_PATTERN,
-    BCFixed<1>  // isLet?
+    BCFixed<2>  // introducer (var, let, etc.)
     // The sub-pattern trails the record.
   >;
 
@@ -2173,6 +2174,14 @@ namespace decls_block {
     BCFixed<1>   // completion handler error flag polarity
   >;
 
+  using LifetimeDependenceLayout =
+      BCRecordLayout<LIFETIME_DEPENDENCE,
+                     BCFixed<1>,         // hasInheritLifetimeParamIndices
+                     BCFixed<1>,         // hasBorrowLifetimeParamIndices
+                     BCFixed<1>,         // hasMutateLifetimeParamIndices
+                     BCArray<BCFixed<1>> // concatenated param indices
+                     >;
+
   using AbstractClosureExprLayout = BCRecordLayout<
     ABSTRACT_CLOSURE_EXPR_CONTEXT,
     TypeIDField, // type
@@ -2333,7 +2342,7 @@ namespace decls_block {
     CLASS##_DECL_ATTR, \
     BCFixed<1> /* implicit flag */ \
   >;
-#include "swift/AST/Attr.def"
+#include "swift/AST/DeclAttr.def"
 
   using DynamicReplacementDeclAttrLayout = BCRecordLayout<
     DynamicReplacement_DECL_ATTR,

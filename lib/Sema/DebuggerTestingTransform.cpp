@@ -58,7 +58,7 @@ unsigned DiscriminatorFinder::getNextDiscriminator() {
 
 namespace {
 
-/// Instrument decls with sanity-checks which the debugger can evaluate.
+/// Instrument decls with soundness-checks which the debugger can evaluate.
 class DebuggerTestingTransform : public ASTWalker {
   ASTContext &Ctx;
   DiscriminatorFinder &DF;
@@ -279,7 +279,7 @@ private:
     ASTNode ClosureElements[] = {OriginalExpr, CheckExpectExpr};
     auto *ClosureBody = BraceStmt::create(Ctx, SourceLoc(), ClosureElements,
                                           SourceLoc(), /*Implicit=*/true);
-    Closure->setBody(ClosureBody, /*isSingleExpression=*/false);
+    Closure->setBody(ClosureBody);
 
     // Call the closure.
     auto *ClosureCall = CallExpr::createImplicitEmpty(Ctx, Closure);
@@ -309,7 +309,7 @@ void swift::performDebuggerTestingTransform(SourceFile &SF) {
   for (Decl *D : SF.getTopLevelDecls())
     D->walk(DF);
 
-  // Instrument the decls with checkExpect() sanity-checks.
+  // Instrument the decls with checkExpect() soundness-checks.
   for (Decl *D : SF.getTopLevelDecls()) {
     DebuggerTestingTransform Transform{D->getASTContext(), DF};
     D->walk(Transform);

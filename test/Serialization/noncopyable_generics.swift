@@ -15,11 +15,13 @@
 // RUN:    -I %t -source-filename=%s                                           \
 // RUN:    | %FileCheck -check-prefix=CHECK-PRINT %s
 
+// REQUIRES: noncopyable_generics
+
 // CHECK-NOT: UnknownCode
 
 // CHECK-PRINT-DAG: protocol Generator<Value> {
 // CHECK-PRINT-DAG: enum Maybe<Wrapped> where Wrapped : ~Copyable {
-// CHECK-PRINT-DAG: extension Maybe : Copyable where Wrapped : Copyable {
+// CHECK-PRINT-DAG: extension Maybe : Copyable {
 // CHECK-PRINT-DAG: func ncIdentity<T>(_ t: consuming T) -> T where T : ~Copyable
 // CHECK-PRINT-DAG: protocol Either<Left, Right> : ~Copyable {
 // CHECK-PRINT-DAG:   associatedtype Left : ~Copyable
@@ -36,7 +38,7 @@ struct NC: ~Copyable {}
 struct RegularStruct {}
 
 func isItCopyable<T: Copyable>(_ t: T) {}
-// expected-note@-1 2{{generic parameter 'T' has an implicit Copyable requirement}}
+// expected-note@-1 {{generic parameter 'T' has an implicit Copyable requirement}}
 
 func check() {
     var tr = TestRequirements()
@@ -44,9 +46,12 @@ func check() {
 
     isItCopyable(TestRequirements())
     isItCopyable(RegularStruct())
-    isItCopyable(NC()) // expected-error 2{{noncopyable type 'NC' cannot be substituted for copyable generic parameter 'T' in 'isItCopyable'}}
+    isItCopyable(NC()) // expected-error {{noncopyable type 'NC' cannot be substituted for copyable generic parameter 'T' in 'isItCopyable'}}
 
-    let x: Maybe<NC> = .none // expected-error {{noncopyable type 'NC' cannot be used with generic type 'Maybe<Wrapped>' yet}}
+    let x: Maybe<NC> = .none
 }
 
-
+struct Witness: Either {
+    typealias Left = Maybe<RegularStruct>
+    typealias Right = Maybe<NC>
+}

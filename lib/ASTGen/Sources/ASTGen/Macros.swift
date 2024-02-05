@@ -359,6 +359,10 @@ func checkMacroDefinition(
       replacementsPtr.pointee = replacementBuffer.baseAddress
       numReplacementsPtr.pointee = replacements.count
       return Int(BridgedMacroDefinitionKind.expandedMacro.rawValue)
+#if RESILIENT_SWIFT_SYNTAX
+    @unknown default:
+      fatalError()
+#endif
     }
   } catch let errDiags as DiagnosticsError {
     let srcMgr = SourceManager(cxxDiagnosticEngine: diagEnginePtr)
@@ -393,7 +397,7 @@ func makeExpansionOutputResult(
   expandedSource: String?,
   outputPointer: UnsafeMutablePointer<BridgedStringRef>
 ) -> Int {
-  guard var expandedSource = expandedSource else {
+  guard let expandedSource = expandedSource else {
     outputPointer.pointee = BridgedStringRef()
     return -1
   }
@@ -501,6 +505,9 @@ func expandFreestandingMacroIPC(
   case .expression: pluginMacroRole = .expression
   case .declaration: pluginMacroRole = .declaration
   case .codeItem: pluginMacroRole = .codeItem
+#if RESILIENT_SWIFT_SYNTAX
+  @unknown default: fatalError()
+#endif
   }
 
   // Send the message.
@@ -567,7 +574,7 @@ func expandFreestandingMacroInProcess(
     discriminator: discriminator
   )
 
-  let macroName = expansionSyntax.macro.text
+  let macroName = expansionSyntax.macroName.text
 
   // Make sure we emit all of the diagnostics from the context.
   defer {
@@ -790,6 +797,11 @@ func expandAttachedMacroIPC(
     .declaration,
     .codeItem:
     preconditionFailure("unhandled macro role for attached macro")
+
+#if RESILIENT_SWIFT_SYNTAX
+  @unknown default:
+    fatalError()
+#endif
   }
 
   // Prepare syntax nodes to transfer.
@@ -990,6 +1002,10 @@ fileprivate extension SyntaxProtocol {
       formatted = self.formatted()
     case .disabled:
       formatted = Syntax(self)
+#if RESILIENT_SWIFT_SYNTAX
+    @unknown default:
+      fatalError()
+#endif
     }
     return formatted.trimmedDescription(matching: { $0.isWhitespace })
   }

@@ -107,6 +107,7 @@ param(
   [switch] $Clean,
   [switch] $DebugInfo,
   [switch] $EnableCaching,
+  [switch] $Summary,
   [switch] $ToBatch
 )
 
@@ -203,6 +204,8 @@ $HostArch = switch ($NativeProcessorArchName) {
   "ARM64" { $ArchARM64 }
   default { throw "Unsupported processor architecture" }
 }
+
+$TimingData = New-Object System.Collections.Generic.List[System.Object]
 
 function Get-InstallDir($Arch) {
   if ($Arch -eq $HostArch) {
@@ -578,9 +581,11 @@ function Build-CMakeProject {
 
     $CFlags = @("/GS-", "/Gw", "/Gy", "/Oi", "/Oy", "/Zc:inline")
     if ($UseMSVCCompilers.Contains("C") -Or $UseMSVCCompilers.Contains("CXX") -Or
+        $UseBuiltCompilers.Contains("C") -Or $UseBuiltCompilers.Contains("CXX") -Or
         $UsePinnedCompilers.Contains("C") -Or $UsePinnedCompilers.Contains("CXX")) {
       if ($DebugInfo) {
-        $CFlags += if ($EnableCaching) { "/Z7" } else { "/Zi" }
+        Append-FlagsDefine $Defines CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded
+        Append-FlagsDefine $Defines CMAKE_POLICY_CMP0141 NEW
         # Add additional linker flags for generating the debug info.
         Append-FlagsDefine $Defines CMAKE_SHARED_LINKER_FLAGS "/debug"
         Append-FlagsDefine $Defines CMAKE_EXE_LINKER_FLAGS "/debug"
@@ -758,6 +763,15 @@ function Build-CMakeProject {
     Write-Host -ForegroundColor Cyan "[$([DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss"))] Finished building '$Src' to '$Bin' for arch '$($Arch.ShortName)' in $($Stopwatch.Elapsed)"
     Write-Host ""
   }
+
+  if ($Summary) {
+    $TimingData.Add([PSCustomObject]@{
+      Arch = $Arch.ShortName
+      Checkout = $Src
+      BuildID = Split-Path -Path $Bin -Leaf
+      "Elapsed Time" = $Stopwatch.Elapsed.ToString()
+    })
+  }
 }
 
 function Build-SPMProject {
@@ -766,6 +780,7 @@ function Build-SPMProject {
     [string] $Src,
     [string] $Bin,
     [hashtable] $Arch,
+    [switch] $Test = $false,
     [Parameter(ValueFromRemainingArguments)]
     [string[]] $AdditionalArguments
   )
@@ -802,12 +817,22 @@ function Build-SPMProject {
       $Arguments += @("-debug-info-format", "none")
     }
 
-    Invoke-Program "$ToolchainInstallRoot\usr\bin\swift.exe" "build" @Arguments @AdditionalArguments
+    $Action = if ($Test) { "test" } else { "build" }
+    Invoke-Program "$ToolchainInstallRoot\usr\bin\swift.exe" $Action @Arguments @AdditionalArguments
   }
 
   if (-not $ToBatch) {
     Write-Host -ForegroundColor Cyan "[$([DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss"))] Finished building '$Src' to '$Bin' for arch '$($Arch.ShortName)' in $($Stopwatch.Elapsed)"
     Write-Host ""
+  }
+
+  if ($Summary) {
+    $TimingData.Add([PSCustomObject]@{
+      Arch = $Arch.ShortName
+      Checkout = $Src
+      BuildID = Split-Path -Path $Bin -Leaf
+      "Elapsed Time" = $Stopwatch.Elapsed.ToString()
+    })
   }
 }
 
@@ -902,7 +927,7 @@ function Build-BuildTools($Arch) {
       SWIFT_INCLUDE_APINOTES = "NO";
       SWIFT_INCLUDE_DOCS = "NO";
       SWIFT_INCLUDE_TESTS = "NO";
-      "cmark-gfm_DIR" = "$($HostArch.BinaryCache)\cmark-gfm-0.29.0.gfm.13";
+      "cmark-gfm_DIR" = "$($Arch.ToolchainInstallRoot)\usr\lib\cmake";
     }
 }
 
@@ -982,7 +1007,7 @@ function Build-Compilers() {
         SWIFT_PATH_TO_SWIFT_SYNTAX_SOURCE = "$SourceCache\swift-syntax";
         SWIFT_PATH_TO_STRING_PROCESSING_SOURCE = "$SourceCache\swift-experimental-string-processing";
         SWIFT_PATH_TO_SWIFT_SDK = (Get-PinnedToolchainSDK);
-        "cmark-gfm_DIR" = "$($HostArch.BinaryCache)\cmark-gfm-0.29.0.gfm.13";
+        "cmark-gfm_DIR" = "$($Arch.ToolchainInstallRoot)\usr\lib\cmake";
       })
   }
 }
@@ -1578,14 +1603,14 @@ function Build-Certificates($Arch) {
 }
 
 function Build-PackageManager($Arch) {
-  $SrcPath = "$SourceCache\swift-package-manager"
-  if (-not (Test-Path -PathType Container $SrcPath)) {
-    # The Apple CI clones this repo as "swiftpm"
-    $SrcPath = "$SourceCache\swiftpm"
+  $SrcDir = if (Test-Path -Path "$SourceCache\swift-package-manager" -PathType Container) {
+    "$SourceCache\swift-package-manager"
+  } else {
+    "$SourceCache\swiftpm"
   }
 
   Build-CMakeProject `
-    -Src $SrcPath `
+    -Src $SrcDir `
     -Bin $BinaryCache\12 `
     -InstallTo "$($Arch.ToolchainInstallRoot)\usr" `
     -Arch $Arch `
@@ -1621,7 +1646,7 @@ function Build-Markdown($Arch) {
     -Defines @{
       BUILD_SHARED_LIBS = "NO";
       ArgumentParser_DIR = "$BinaryCache\6\cmake\modules";
-      "cmark-gfm_DIR" = "$($Arch.BinaryCache)\cmark-gfm-0.29.0.gfm.13";
+      "cmark-gfm_DIR" = "$($Arch.ToolchainInstallRoot)\usr\lib\cmake";
     }
 }
 
@@ -1639,7 +1664,7 @@ function Build-Format($Arch) {
       BUILD_SHARED_LIBS = "YES";
       ArgumentParser_DIR = "$BinaryCache\6\cmake\modules";
       SwiftSyntax_DIR = "$BinaryCache\1\cmake\modules";
-      "cmark-gfm_DIR" = "$($Arch.BinaryCache)\cmark-gfm-0.29.0.gfm.13";
+      "cmark-gfm_DIR" = "$($Arch.ToolchainInstallRoot)\usr\lib\cmake";
       SwiftMarkdown_DIR = "$BinaryCache\13\cmake\modules";
     }
 }
@@ -1726,13 +1751,30 @@ function Build-DocC() {
   }
 }
 
+function Test-PackageManager() {
+  $OutDir = Join-Path -Path $HostArch.BinaryCache -ChildPath swift-package-manager
+  $SrcDir = if (Test-Path -Path "$SourceCache\swift-package-manager" -PathType Container) {
+    "$SourceCache\swift-package-manager"
+  } else {
+    "$SourceCache\swiftpm"
+  }
+
+  Isolate-EnvVars {
+    $env:SWIFTCI_USE_LOCAL_DEPS=1
+    Build-SPMProject `
+      -Test `
+      -Src $SrcDir `
+      -Bin $OutDir `
+      -Arch $HostArch `
+      -Xcc -Xclang -Xcc -fno-split-cold-code -Xcc "-I$LibraryRoot\sqlite-3.43.2\usr\include" -Xlinker "-L$LibraryRoot\sqlite-3.43.2\usr\lib"
+  }
+}
+
 function Build-Installer($Arch) {
   $Properties = @{
     BundleFlavor = "offline";
     DEVTOOLS_ROOT = "$($Arch.ToolchainInstallRoot)\";
     TOOLCHAIN_ROOT = "$($Arch.ToolchainInstallRoot)\";
-    INCLUDE_SWIFT_FORMAT = "true";
-    SWIFT_FORMAT_BUILD = "$($Arch.BinaryCache)\swift-format\release";
     INCLUDE_SWIFT_INSPECT = "true";
     SWIFT_INSPECT_BUILD = "$($Arch.BinaryCache)\swift-inspect\release";
     INCLUDE_SWIFT_DOCC = "true";
@@ -1860,6 +1902,10 @@ if ($Stage) {
   Stage-BuildArtifacts $HostArch
 }
 
+if ($Summary) {
+  $TimingData | Select Arch,Checkout,BuildID,"Elapsed Time" | Sort -Descending -Property "Elapsed Time" | Format-Table -AutoSize
+}
+
 if ($Test -ne $null -and (Compare-Object $Test @("clang", "lld", "lldb", "llvm", "swift") -PassThru -IncludeEqual -ExcludeDifferent) -ne $null) {
   $Tests = @{
     "-TestClang" = $Test -contains "clang";
@@ -1875,6 +1921,7 @@ if ($Test -contains "dispatch") { Build-Dispatch $HostArch -Test }
 if ($Test -contains "foundation") { Build-Foundation $HostArch -Test }
 if ($Test -contains "xctest") { Build-XCTest $HostArch -Test }
 if ($Test -contains "llbuild") { Build-LLBuild $HostArch -Test }
+if ($Test -contains "swiftpm") { Test-PackageManager $HostArch }
 
 # Custom exception printing for more detailed exception information
 } catch {

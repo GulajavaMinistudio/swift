@@ -342,6 +342,8 @@ public:
 
   // Expressions that wrap lvalues
   
+  LValue visitLoadExpr(LoadExpr *e, SGFAccessKind accessKind,
+                        LValueOptions options);
   LValue visitInOutExpr(InOutExpr *e, SGFAccessKind accessKind,
                         LValueOptions options);
   LValue visitDotSyntaxBaseIgnoredExpr(DotSyntaxBaseIgnoredExpr *e,
@@ -2321,40 +2323,35 @@ namespace {
       auto keyPathValue = KeyPath;
 
       GenericSignature sig;
-      TypeSubstitutionMap map;
+      SmallVector<Type, 2> replacementTypes;
 
       if (TypeKind == KPTK_AnyKeyPath) {
         projectFn = SGF.getASTContext().getGetAtAnyKeyPath();
+        sig = projectFn->getGenericSignature();
+        replacementTypes.push_back(BaseFormalType);
       } else if (TypeKind == KPTK_PartialKeyPath) {
         projectFn = SGF.getASTContext().getGetAtPartialKeyPath();
+        sig = projectFn->getGenericSignature();
+        replacementTypes.push_back(BaseFormalType);
       } else if (TypeKind == KPTK_KeyPath ||
                  TypeKind == KPTK_WritableKeyPath ||
                  TypeKind == KPTK_ReferenceWritableKeyPath) {
         projectFn = SGF.getASTContext().getGetAtKeyPath();
         sig = projectFn->getGenericSignature();
-        auto genericParams = sig.getGenericParams();
 
         auto keyPathTy = keyPathValue.getType().castTo<BoundGenericType>();
         assert(keyPathTy->getGenericArgs().size() == 2);
         assert(keyPathTy->getGenericArgs()[0]->getCanonicalType() ==
                BaseFormalType->getCanonicalType());
-        assert(genericParams.size() == 2);
-        auto secondGenParam = genericParams[1]->getCanonicalType()
-                                              ->castTo<SubstitutableType>();
-        map[secondGenParam] = keyPathTy->getGenericArgs()[1];
+        replacementTypes.push_back(keyPathTy->getGenericArgs()[0]);
+        replacementTypes.push_back(keyPathTy->getGenericArgs()[1]);
 
         keyPathValue = emitUpcastToKeyPath(SGF, loc, TypeKind, keyPathValue);
       } else {
         llvm_unreachable("bad key path kind for this component");
       }
 
-      sig = projectFn->getGenericSignature();
-      auto firstGenParam = sig.getGenericParams()[0]->getCanonicalType()
-                                                  ->castTo<SubstitutableType>();
-      map[firstGenParam] = BaseFormalType;
-
-      auto subs = SubstitutionMap::get(sig,
-                  QueryTypeSubstitutionMap{map},
+      auto subs = SubstitutionMap::get(sig, replacementTypes,
                   LookUpConformanceInModule{SGF.getModule().getSwiftModule()});
 
       base = makeBaseConsumableMaterializedRValue(SGF, loc, base);
@@ -2380,9 +2377,9 @@ namespace {
       }
 
       auto keyPathTy = keyPathValue.getType().castTo<BoundGenericType>();
-      auto subs = SubstitutionMap::get(setFn->getGenericSignature(),
-                                       keyPathTy->getGenericArgs(),
-                                       ArrayRef<ProtocolConformanceRef>());
+      auto subs = keyPathTy->getContextSubstitutionMap(
+          keyPathTy->getDecl()->getParentModule(),
+          keyPathTy->getDecl());
 
       auto origType = AbstractionPattern::getOpaque();
       auto loweredTy = SGF.getLoweredType(origType, value.getSubstRValueType());
@@ -2456,9 +2453,9 @@ namespace {
       auto projectFnType = projectFn->getLoweredFunctionType();
 
       auto keyPathTy = keyPathValue.getType().castTo<BoundGenericType>();
-      auto subs = SubstitutionMap::get(
-                                 projectFnType->getInvocationGenericSignature(),
-                                 keyPathTy->getGenericArgs(), {});
+      auto subs = keyPathTy->getContextSubstitutionMap(
+          keyPathTy->getDecl()->getParentModule(),
+          keyPathTy->getDecl());
 
       auto substFnType = projectFnType->substGenericArgs(
           SGF.SGM.M, subs, SGF.getTypeExpansionContext());
@@ -4259,7 +4256,7 @@ LValue SILGenLValue::visitOpenExistentialExpr(OpenExistentialExpr *e,
   // Visit the subexpression.
   LValue lv = visitRec(e->getSubExpr(), accessKind, options);
 
-  // Sanity check that we did see the OpaqueValueExpr.
+  // Soundness check that we did see the OpaqueValueExpr.
   assert(SGF.OpaqueValueExprs.count(e->getOpaqueValue()) == 0 &&
          "opened existential not removed?");
   return lv;
@@ -4331,6 +4328,11 @@ LValue SILGenLValue::visitBindOptionalExpr(BindOptionalExpr *e,
 LValue SILGenLValue::visitInOutExpr(InOutExpr *e, SGFAccessKind accessKind,
                                     LValueOptions options) {
   return visitRec(e->getSubExpr(), accessKind, options);
+}
+
+LValue SILGenLValue::visitLoadExpr(LoadExpr *e, SGFAccessKind accessKind,
+                               LValueOptions options) {
+  return visit(e->getSubExpr(), accessKind, options);
 }
 
 LValue SILGenLValue::visitConsumeExpr(ConsumeExpr *e, SGFAccessKind accessKind,

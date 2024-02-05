@@ -2043,39 +2043,26 @@ bool TypeChecker::getDefaultGenericArgumentsString(
       return;
     }
 
-    auto contextTy = typeDecl->mapTypeIntoContext(genericParamTy);
-    if (auto archetypeTy = contextTy->getAs<ArchetypeType>()) {
-      SmallVector<Type, 2> members;
+    auto genericSig = typeDecl->getGenericSignature();
 
-      bool hasExplicitAnyObject = archetypeTy->requiresClass();
-      if (auto superclass = archetypeTy->getSuperclass()) {
-        hasExplicitAnyObject = false;
-        members.push_back(superclass);
-      }
-
-      for (auto proto : archetypeTy->getConformsTo()) {
-        members.push_back(proto->getDeclaredInterfaceType());
-        if (proto->requiresClass())
-          hasExplicitAnyObject = false;
-      }
-
-      if (hasExplicitAnyObject)
-        members.push_back(typeDecl->getASTContext().getAnyObjectConstraint());
-
-      auto type = ProtocolCompositionType::get(typeDecl->getASTContext(),
-                                               members, hasExplicitAnyObject);
-
-      if (type->isObjCExistentialType() || type->isAny()) {
-        genericParamText << type;
-        return;
-      }
-
-      genericParamText << "<#" << genericParam->getName() << ": ";
-      genericParamText << type << "#>";
+    auto concreteTy = genericSig->getConcreteType(genericParamTy);
+    if (concreteTy) {
+      genericParamText << concreteTy;
       return;
     }
 
-    genericParamText << contextTy;
+    auto upperBound = genericSig->getUpperBound(
+        genericParamTy,
+        /*forExistentialSelf=*/false,
+        /*withParameterizedProtocols=*/false);
+
+    if (upperBound->isObjCExistentialType() || upperBound->isAny()) {
+      genericParamText << upperBound;
+      return;
+    }
+
+    genericParamText << "<#" << genericParam->getName() << ": ";
+    genericParamText << upperBound << "#>";
   };
 
   llvm::interleave(typeDecl->getInnermostGenericParamTypes(),
@@ -3545,8 +3532,9 @@ VarDeclUsageChecker::~VarDeclUsageChecker() {
               foundVP = VP;
         });
 
-        if (foundVP && !foundVP->isLet())
+        if (foundVP && foundVP->getIntroducer() != VarDecl::Introducer::Let) {
           FixItLoc = foundVP->getLoc();
+        }
       }
 
       // If this is a parameter explicitly marked 'var', remove it.
@@ -3879,7 +3867,7 @@ private:
     // Allowed in returns, throws, and bindings.
     switch (ctp) {
     case CTP_ReturnStmt:
-    case CTP_ReturnSingleExpr:
+    case CTP_ImpliedReturnStmt:
     case CTP_ThrowStmt:
     case CTP_Initialization:
       markValidSingleValueStmt(E);

@@ -750,19 +750,19 @@ static void addDeclKeywords(CodeCompletionResultSink &Sink, DeclContext *DC,
       // These modifiers are invalid for decls in function body.
       if (DAK) {
         switch (*DAK) {
-        case DeclAttrKind::DAK_Lazy:
-        case DeclAttrKind::DAK_Final:
-        case DeclAttrKind::DAK_Infix:
-        case DeclAttrKind::DAK_Frozen:
-        case DeclAttrKind::DAK_Prefix:
-        case DeclAttrKind::DAK_Postfix:
-        case DeclAttrKind::DAK_Dynamic:
-        case DeclAttrKind::DAK_Override:
-        case DeclAttrKind::DAK_Optional:
-        case DeclAttrKind::DAK_Required:
-        case DeclAttrKind::DAK_Convenience:
-        case DeclAttrKind::DAK_AccessControl:
-        case DeclAttrKind::DAK_Nonisolated:
+        case DeclAttrKind::Lazy:
+        case DeclAttrKind::Final:
+        case DeclAttrKind::Infix:
+        case DeclAttrKind::Frozen:
+        case DeclAttrKind::Prefix:
+        case DeclAttrKind::Postfix:
+        case DeclAttrKind::Dynamic:
+        case DeclAttrKind::Override:
+        case DeclAttrKind::Optional:
+        case DeclAttrKind::Required:
+        case DeclAttrKind::Convenience:
+        case DeclAttrKind::AccessControl:
+        case DeclAttrKind::Nonisolated:
           return CodeCompletionFlairBit::RareKeywordAtCurrentPosition;
 
         default:
@@ -811,11 +811,11 @@ static void addDeclKeywords(CodeCompletionResultSink &Sink, DeclContext *DC,
     AddDeclKeyword(Name, CodeCompletionKeywordKind::None, Kind);
   };
 
-#define CONTEXTUAL_CASE(KW, CLASS) AddCSKeyword(#KW, DAK_##CLASS);
+#define CONTEXTUAL_CASE(KW, CLASS) AddCSKeyword(#KW, DeclAttrKind::CLASS);
 #define CONTEXTUAL_DECL_ATTR(KW, CLASS, ...) CONTEXTUAL_CASE(KW, CLASS)
 #define CONTEXTUAL_DECL_ATTR_ALIAS(KW, CLASS) CONTEXTUAL_CASE(KW, CLASS)
 #define CONTEXTUAL_SIMPLE_DECL_ATTR(KW, CLASS, ...) CONTEXTUAL_CASE(KW, CLASS)
-#include <swift/AST/Attr.def>
+#include <swift/AST/DeclAttr.def>
 #undef CONTEXTUAL_CASE
 }
 
@@ -1609,39 +1609,6 @@ void CodeCompletionCallbacksImpl::afterPoundCompletion(SourceLoc CompletionLoc,
   Consumer.handleResults(CompletionContext);
 }
 
-// Undoes the single-expression closure/function body transformation on the
-// given DeclContext and its parent contexts if they have a single expression
-// body that contains the code completion location.
-//
-// FIXME: Remove this once all expression position completions are migrated
-// to work via TypeCheckCompletionCallback.
-static void undoSingleExpressionReturn(DeclContext *DC) {
-  auto updateBody = [](BraceStmt *BS, ASTContext &Ctx) -> bool {
-    ASTNode LastElem = BS->getLastElement();
-    auto *RS = dyn_cast_or_null<ReturnStmt>(LastElem.dyn_cast<Stmt*>());
-
-    if (!RS || !RS->isImplicit())
-      return false;
-
-    BS->setLastElement(RS->getResult());
-    return true;
-  };
-
-  while (ClosureExpr *CE = dyn_cast_or_null<ClosureExpr>(DC)) {
-    if (CE->hasSingleExpressionBody()) {
-      if (updateBody(CE->getBody(), CE->getASTContext()))
-        CE->setBody(CE->getBody(), false);
-    }
-    DC = DC->getParent();
-  }
-  if (FuncDecl *FD = dyn_cast_or_null<FuncDecl>(DC)) {
-    if (FD->hasSingleExpressionBody()) {
-      if (updateBody(FD->getBody(), FD->getASTContext()))
-        FD->setHasSingleExpressionBody(false);
-    }
-  }
-}
-
 void CodeCompletionCallbacksImpl::doneParsing(SourceFile *SrcFile) {
   CompletionContext.CodeCompletionKind = Kind;
 
@@ -1699,7 +1666,6 @@ void CodeCompletionCallbacksImpl::doneParsing(SourceFile *SrcFile) {
     break;
   }
 
-  undoSingleExpressionReturn(CurDeclContext);
   if (Kind != CompletionKind::TypeSimpleWithDot) {
     // Type member completion does not need a type-checked AST.
     typeCheckContextAt(
