@@ -468,6 +468,7 @@ getActualActorIsolationKind(uint8_t raw) {
   CASE(Nonisolated)
   CASE(NonisolatedUnsafe)
   CASE(GlobalActor)
+  CASE(Erased)
 #undef CASE
   case serialization::ActorIsolation::GlobalActorUnsafe:
     return swift::ActorIsolation::GlobalActor;
@@ -3879,6 +3880,10 @@ public:
         isolation = ActorIsolation::forUnspecified();
         break;
 
+      case ActorIsolation::Erased:
+        isolation = ActorIsolation::forErased();
+        break;
+
       case ActorIsolation::GlobalActor:
         // 'unsafe' or 'preconcurrency' doesn't mean anything for isolated
         // default arguments.
@@ -5229,6 +5234,7 @@ public:
 
       // Macro replacements block.
       SmallVector<ExpandedMacroReplacement, 2> replacements;
+      SmallVector<ExpandedMacroReplacement, 2> genericReplacements;
       if (hasReplacements) {
         llvm::BitstreamEntry entry =
             MF.fatalIfUnexpected(
@@ -5253,12 +5259,26 @@ public:
               replacements.push_back(replacement);
             }
           }
+
+          ArrayRef<uint64_t> serializedGenericReplacements;
+          decls_block::ExpandedMacroReplacementsLayout::readRecord(
+              scratch, serializedGenericReplacements);
+          if (serializedGenericReplacements.size() % 3 == 0) {
+            for (unsigned i : range(0, serializedGenericReplacements.size() / 3)) {
+              ExpandedMacroReplacement genericReplacement{
+                static_cast<unsigned>(serializedGenericReplacements[3*i]),
+                static_cast<unsigned>(serializedGenericReplacements[3*i + 1]),
+                static_cast<unsigned>(serializedGenericReplacements[3*i + 2])
+              };
+              genericReplacements.push_back(genericReplacement);
+            }
+          }
         }
       }
 
       ctx.evaluator.cacheOutput(
           MacroDefinitionRequest{macro},
-          MacroDefinition::forExpanded(ctx, expansionText, replacements)
+          MacroDefinition::forExpanded(ctx, expansionText, replacements, genericReplacements)
       );
     }
 
@@ -6726,8 +6746,8 @@ detail::function_deserializer::deserialize(ModuleFile &MF,
     // do nothing
   } else if (rawIsolation == unsigned(FunctionTypeIsolation::Parameter)) {
     isolation = swift::FunctionTypeIsolation::forParameter();
-  } else if (rawIsolation == unsigned(FunctionTypeIsolation::Dynamic)) {
-    isolation = swift::FunctionTypeIsolation::forDynamic();
+  } else if (rawIsolation == unsigned(FunctionTypeIsolation::Erased)) {
+    isolation = swift::FunctionTypeIsolation::forErased();
   } else {
     TypeID globalActorTypeID =
       rawIsolation - unsigned(FunctionTypeIsolation::GlobalActorOffset);

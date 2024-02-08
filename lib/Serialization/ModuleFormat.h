@@ -58,7 +58,7 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 847; // add LifetimeDependence
+const uint16_t SWIFTMODULE_VERSION_MINOR = 849; // end_apply result
 
 /// A standard hash seed used for all string hashes in a serialized module.
 ///
@@ -548,7 +548,8 @@ enum class ActorIsolation : uint8_t {
   Nonisolated,
   NonisolatedUnsafe,
   GlobalActor,
-  GlobalActorUnsafe
+  GlobalActorUnsafe,
+  Erased,
 };
 using ActorIsolationField = BCFixed<3>;
 
@@ -688,7 +689,7 @@ using PluginSearchOptionKindField = BCFixed<3>;
 enum class FunctionTypeIsolation : uint8_t {
   NonIsolated,
   Parameter,
-  Dynamic,
+  Erased,
   GlobalActorOffset, // Add this to the global actor type ID
 };
 using FunctionTypeIsolationField = TypeIDField;

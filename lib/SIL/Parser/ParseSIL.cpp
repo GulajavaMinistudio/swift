@@ -469,9 +469,12 @@ static bool parseSILLinkage(llvm::Optional<SILLinkage> &Result, Parser &P) {
   // Then use a string switch to try and parse the identifier.
   Result = llvm::StringSwitch<llvm::Optional<SILLinkage>>(P.Tok.getText())
                .Case("non_abi", SILLinkage::PublicNonABI)
+               .Case("package_non_abi", SILLinkage::PackageNonABI)
+               .Case("package", SILLinkage::Package)
                .Case("hidden", SILLinkage::Hidden)
                .Case("shared", SILLinkage::Shared)
                .Case("public_external", SILLinkage::PublicExternal)
+               .Case("package_external", SILLinkage::PackageExternal)
                .Case("hidden_external", SILLinkage::HiddenExternal)
                .Default(llvm::None);
 
@@ -1078,7 +1081,8 @@ void SILParser::bindSILGenericParams(TypeRepr *TyR) {
         }
 
         if (auto *genericParams = fnType->getPatternGenericParams()) {
-          auto sig = handleSILGenericParams(genericParams, SF);
+          auto sig = handleSILGenericParams(genericParams, SF,
+                                            /*allowInverses=*/false);
           fnType->setPatternGenericSignature(sig);
         }
       }
@@ -2152,7 +2156,8 @@ static bool parseSILDifferentiabilityWitnessConfigAndFunction(
     witnessGenSig = buildGenericSignature(
         P.Context, origGenSig,
         /*addedGenericParams=*/{},
-        std::move(witnessRequirements));
+        std::move(witnessRequirements),
+        /*allowInverses=*/false);
   }
   auto origFnType = resultOrigFn->getLoweredFunctionType();
   auto *parameterIndices = IndexSubset::get(
@@ -2634,8 +2639,7 @@ bool SILParser::parseSpecificSILInstruction(SILBuilder &B,
     if (parseCallInstruction(InstLoc, Opcode, B, ResultVal))
       return true;
     break;
-  case SILInstructionKind::AbortApplyInst:
-  case SILInstructionKind::EndApplyInst: {
+  case SILInstructionKind::AbortApplyInst: {
     UnresolvedValueName argName;
     if (parseValueName(argName))
       return true;
@@ -2645,12 +2649,21 @@ bool SILParser::parseSpecificSILInstruction(SILBuilder &B,
 
     SILType expectedTy = SILType::getSILTokenType(P.Context);
     SILValue op = getLocalValue(argName, expectedTy, InstLoc, B);
+    ResultVal = B.createAbortApply(InstLoc, op);
+    break;
+  }
+  case SILInstructionKind::EndApplyInst: {
+    UnresolvedValueName argName;
+    SILType ResultTy;
 
-    if (Opcode == SILInstructionKind::AbortApplyInst) {
-      ResultVal = B.createAbortApply(InstLoc, op);
-    } else {
-      ResultVal = B.createEndApply(InstLoc, op);
-    }
+    if (parseValueName(argName) || parseVerbatim("as") ||
+        parseSILType(ResultTy) || parseSILDebugLocation(InstLoc, B))
+      return true;
+
+    SILType expectedTy = SILType::getSILTokenType(P.Context);
+    SILValue op = getLocalValue(argName, expectedTy, InstLoc, B);
+
+    ResultVal = B.createEndApply(InstLoc, op, ResultTy);
     break;
   }
   case SILInstructionKind::IntegerLiteralInst: {
@@ -3408,7 +3421,7 @@ bool SILParser::parseSpecificSILInstruction(SILBuilder &B,
     ResultVal = B.createDebugStep(InstLoc);
     break;
 
-  case SILInstructionKind::TestSpecificationInst: {
+  case SILInstructionKind::SpecifyTestInst: {
     // Parse the specification string.
     if (P.Tok.getKind() != tok::string_literal) {
       P.diagnose(P.Tok, diag::expected_sil_specify_test_body);
@@ -3419,7 +3432,7 @@ bool SILParser::parseSpecificSILInstruction(SILBuilder &B,
     auto ArgumentsSpecification =
       P.Tok.getText().drop_front(numQuotes).drop_back(numQuotes).trim();
     P.consumeToken(tok::string_literal);
-    auto *tsi = B.createTestSpecificationInst(InstLoc, ArgumentsSpecification);
+    auto *tsi = B.createSpecifyTestInst(InstLoc, ArgumentsSpecification);
     SmallVector<StringRef, 4> components;
     test::getTestSpecificationComponents(ArgumentsSpecification, components);
     for (auto component : components) {
@@ -7161,7 +7174,8 @@ bool SILParserState::parseDeclSIL(Parser &P) {
             auto genericSig = buildGenericSignature(P.Context,
                                                     fenv->getGenericSignature(),
                                                     /*addedGenericParams=*/{ },
-                                                    std::move(requirements));
+                                                    std::move(requirements),
+                                                    /*allowInverses=*/false);
             FunctionState.F->addSpecializeAttr(SILSpecializeAttr::create(
                 FunctionState.F->getModule(), genericSig, typeErasedParams, Attr.exported,
                 Attr.kind, Attr.target, Attr.spiGroupID, Attr.spiModule, Attr.availability));

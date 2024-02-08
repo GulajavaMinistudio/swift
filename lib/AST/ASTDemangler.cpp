@@ -454,6 +454,8 @@ Type ASTBuilder::createFunctionType(
     isolation = FunctionTypeIsolation::forParameter();
   } else if (globalActor) {
     isolation = FunctionTypeIsolation::forGlobalActor(globalActor);
+  } else if (extFlags.isIsolatedAny()) {
+    isolation = FunctionTypeIsolation::forErased();
   }
 
   auto noescape =
@@ -1093,7 +1095,8 @@ CanGenericSignature ASTBuilder::demangleGenericSignature(
   decodeRequirement<BuiltType, BuiltRequirement, BuiltLayoutConstraint,
                     ASTBuilder>(node, requirements, *this);
 
-  return buildGenericSignature(Ctx, baseGenericSig, {}, std::move(requirements))
+  return buildGenericSignature(Ctx, baseGenericSig, {}, std::move(requirements),
+                               /*allowInverses=*/true)
       .getCanonicalSignature();
 }
 

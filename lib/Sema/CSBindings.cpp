@@ -625,14 +625,11 @@ bool BindingSet::finalize(
           for (auto *constraint : *TransitiveProtocols) {
             Type protocolTy = constraint->getSecondType();
 
-            // The Copyable protocol can't have members, yet will be a
-            // constraint of basically all type variables, so don't suggest it.
-            //
-            // NOTE: worth considering for all marker protocols, but keep in
-            // mind that you're allowed to extend them with members!
+            // Compiler-known marker protocols cannot be extended with members,
+            // so do not consider them.
             if (auto p = protocolTy->getAs<ProtocolType>()) {
               if (ProtocolDecl *decl = p->getDecl())
-                if (decl->isSpecificProtocol(KnownProtocolKind::Copyable))
+                if (decl->getKnownProtocolKind() && decl->isMarkerProtocol())
                   continue;
             }
 
@@ -1072,7 +1069,7 @@ findInferableTypeVars(Type type,
 
     Action walkToTypePre(Type ty) override {
       if (ty->is<DependentMemberType>())
-        return Action::SkipChildren;
+        return Action::SkipNode;
 
       if (auto typeVar = ty->getAs<TypeVariableType>())
         typeVars.insert(typeVar);

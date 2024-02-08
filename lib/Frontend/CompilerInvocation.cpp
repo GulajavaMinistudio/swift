@@ -2198,15 +2198,6 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
     Opts.CopyPropagation = *specifiedCopyPropagationOption;
   }
 
-  llvm::Optional<bool> enableLexicalBorrowScopesFlag;
-  if (Arg *A = Args.getLastArg(OPT_enable_lexical_borrow_scopes)) {
-    enableLexicalBorrowScopesFlag =
-        llvm::StringSwitch<llvm::Optional<bool>>(A->getValue())
-            .Case("true", true)
-            .Case("false", false)
-            .Default(llvm::None);
-  }
-
   // Allow command line flags to override the default value of
   // Opts.LexicalLifetimes. If no explicit flags are passed, then
   // Opts.LexicalLifetimes retains its initial value.
@@ -2229,26 +2220,6 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
     } else {
       enableLexicalLifetimesFlag = true;
     }
-  }
-
-  if (enableLexicalLifetimesFlag.value_or(false) &&
-      !enableLexicalBorrowScopesFlag.value_or(true)) {
-    // Error if lexical lifetimes have been enabled but lexical borrow scopes--
-    // on which they are dependent--have been disabled.
-    Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
-                   "enable-lexical-lifetimes=true",
-                   "enable-lexical-borrow-scopes=false");
-    return true;
-  }
-
-  if (Args.hasArg(OPT_enable_experimental_move_only) &&
-      !enableLexicalBorrowScopesFlag.value_or(true)) {
-    // Error if move-only is enabled and lexical borrow scopes--on which it
-    // depends--has been disabled.
-    Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
-                   "enable-experimental-move-only",
-                   "enable-lexical-borrow-scopes=false");
-    return true;
   }
 
   // Unless overridden below, enabling copy propagation means enabling lexical
@@ -2275,13 +2246,6 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
       Opts.LexicalLifetimes = LexicalLifetimesOption::On;
     } else {
       Opts.LexicalLifetimes = LexicalLifetimesOption::DiagnosticMarkersOnly;
-    }
-  }
-  if (enableLexicalBorrowScopesFlag) {
-    if (*enableLexicalBorrowScopesFlag) {
-      Opts.LexicalLifetimes = LexicalLifetimesOption::DiagnosticMarkersOnly;
-    } else {
-      Opts.LexicalLifetimes = LexicalLifetimesOption::Off;
     }
   }
   if (specifiedDestroyHoistingOption)
@@ -2676,9 +2640,6 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
 
   if (Args.hasArg(OPT_no_clang_module_breadcrumbs))
     Opts.DisableClangModuleSkeletonCUs = true;
-
-  if (SWIFT_ENABLE_EXPERIMENTAL_NONCOPYABLE_GENERICS)
-    Opts.DisableRoundTripDebugTypes = true; // temporary until we fix mangling!
 
   if (auto A = Args.getLastArg(OPT_enable_round_trip_debug_types,
                                OPT_disable_round_trip_debug_types)) {

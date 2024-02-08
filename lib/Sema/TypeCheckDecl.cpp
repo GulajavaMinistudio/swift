@@ -510,14 +510,14 @@ BodyInitKindRequest::evaluate(Evaluator &evaluator,
 
     PreWalkAction walkToDeclPre(class Decl *D) override {
       // Don't walk into further nominal decls.
-      return Action::SkipChildrenIf(isa<NominalTypeDecl>(D));
+      return Action::SkipNodeIf(isa<NominalTypeDecl>(D));
     }
     
     PreWalkResult<Expr *> walkToExprPre(Expr *E) override {
       // Don't walk into closures.
       if (isa<ClosureExpr>(E))
-        return Action::SkipChildren(E);
-      
+        return Action::SkipNode(E);
+
       // Look for calls of a constructor on self or super.
       auto apply = dyn_cast<ApplyExpr>(E);
       if (!apply)
@@ -927,17 +927,12 @@ InvertibleAnnotationRequest::evaluate(Evaluator &evaluator,
 
   switch (TARGET) {
   case InvertibleProtocolKind::Copyable:
-    // Handle the legacy '@_moveOnly' attribute
-    if (auto attr = decl->getAttrs().getAttribute<MoveOnlyAttr>()) {
-      assert((isa<StructDecl, EnumDecl, ClassDecl>(decl)));
-
-      // FIXME: just never allow lexical-lifetimes to be disabled?
-      if (!ctx.supportsMoveOnlyTypes())
-        decl->diagnose(diag::moveOnly_requires_lexical_lifetimes);
-
-      return InverseMarking::forInverse(Kind::LegacyExplicit,
-                                        attr->getLocation());
-    }
+    // Handle the legacy '@_moveOnly' for types they can validly appear.
+    // TypeCheckAttr handles the illegal situations for us.
+    if (auto attr = decl->getAttrs().getAttribute<MoveOnlyAttr>())
+      if (isa<StructDecl, EnumDecl, ClassDecl>(decl))
+        return InverseMarking::forInverse(Kind::LegacyExplicit,
+                                          attr->getLocation());
     break;
 
   case InvertibleProtocolKind::Escapable:
@@ -953,10 +948,6 @@ InvertibleAnnotationRequest::evaluate(Evaluator &evaluator,
   // Legacy support stops here.
   if (!ctx.LangOpts.hasFeature(Feature::NoncopyableGenerics))
     return InverseMarking::forInverse(Kind::None);
-
-  // FIXME: just never allow lexical-lifetimes to be disabled?
-  if (!ctx.supportsMoveOnlyTypes())
-    decl->diagnose(diag::moveOnly_requires_lexical_lifetimes);
 
   /// The invertible protocol being targeted by this annotation request.
 
@@ -2567,7 +2558,8 @@ static Type validateParameterType(ParamDecl *decl) {
   }
 
   // Validate the presence of ownership for a parameter with an inverse applied.
-  if (diagnoseMissingOwnership(ctx, dc, ownership,
+  if (!Ty->hasUnboundGenericType() &&
+      diagnoseMissingOwnership(ctx, dc, ownership,
                                decl->getTypeRepr(), Ty, options)) {
     decl->setInvalid();
     return ErrorType::get(ctx);

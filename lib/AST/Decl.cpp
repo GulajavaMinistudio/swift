@@ -2492,6 +2492,7 @@ static bool deferMatchesEnclosingAccess(const FuncDecl *defer) {
 
           case ActorIsolation::ActorInstance:
           case ActorIsolation::Nonisolated:
+          case ActorIsolation::Erased: // really can't happen
             return true;
         }
       }
@@ -6271,7 +6272,7 @@ bool ClassDecl::walkSuperclasses(
     switch (fn(cls)) {
     case TypeWalker::Action::Stop:
       return true;
-    case TypeWalker::Action::SkipChildren:
+    case TypeWalker::Action::SkipNode:
       return false;
     case TypeWalker::Action::Continue:
       cls = cls->getSuperclassDecl();
@@ -6599,7 +6600,7 @@ bool ProtocolDecl::walkInheritedProtocols(
       }
       break;
 
-    case TypeWalker::Action::SkipChildren:
+    case TypeWalker::Action::SkipNode:
       break;
     }
   }
@@ -8647,11 +8648,11 @@ swift::findWrappedValuePlaceholder(Expr *init) {
 
     virtual PreWalkResult<Expr *> walkToExprPre(Expr *E) override {
       if (placeholder)
-        return Action::SkipChildren(E);
+        return Action::SkipNode(E);
 
       if (auto *value = dyn_cast<PropertyWrapperValuePlaceholderExpr>(E)) {
         placeholder = value;
-        return Action::SkipChildren(value);
+        return Action::SkipNode(value);
       }
 
       return Action::Continue(E);
@@ -9550,7 +9551,7 @@ AbstractFunctionDecl::getBodyFingerprintIncludingLocalTypeMembers() const {
 
     PreWalkAction walkToDeclPre(Decl *D) override {
       if (D->isImplicit())
-        return Action::SkipChildren();
+        return Action::SkipNode();
 
       if (auto *idc = dyn_cast<IterableDeclContext>(D)) {
         if (auto fp = idc->getBodyFingerprint())
@@ -9561,7 +9562,7 @@ AbstractFunctionDecl::getBodyFingerprintIncludingLocalTypeMembers() const {
         for (auto *d : idc->getParsedMembers())
           const_cast<Decl *>(d)->walk(*this);
 
-        return Action::SkipChildren();
+        return Action::SkipNode();
       }
 
       if (auto *afd = dyn_cast<AbstractFunctionDecl>(D)) {
@@ -10953,6 +10954,7 @@ bool VarDecl::isSelfParamCaptureIsolated() const {
       case ActorIsolation::Nonisolated:
       case ActorIsolation::NonisolatedUnsafe:
       case ActorIsolation::GlobalActor:
+      case ActorIsolation::Erased:
         return false;
 
       case ActorIsolation::ActorInstance:
@@ -11414,6 +11416,13 @@ bool ActorIsolation::isEqual(const ActorIsolation &lhs,
   case Unspecified:
     return true;
 
+  case Erased:
+    // Different functions with erased isolation have the same *kind* of
+    // isolation, but we must generally assume that they're not isolated
+    // the *same way*, which is what this function is apparently supposed
+    // to answer.
+    return false;
+
   case ActorInstance: {
     auto *lhsActor = lhs.getActorInstance();
     auto *rhsActor = rhs.getActorInstance();
@@ -11853,10 +11862,12 @@ llvm::Optional<BuiltinMacroKind> MacroDecl::getBuiltinKind() const {
 MacroDefinition MacroDefinition::forExpanded(
     ASTContext &ctx,
     StringRef expansionText,
-    ArrayRef<ExpandedMacroReplacement> replacements
+    ArrayRef<ExpandedMacroReplacement> replacements,
+    ArrayRef<ExpandedMacroReplacement> genericReplacements
 ) {
   return ExpandedMacroDefinition{ctx.AllocateCopy(expansionText),
-                                 ctx.AllocateCopy(replacements)};
+                                 ctx.AllocateCopy(replacements),
+                                 ctx.AllocateCopy(genericReplacements)};
 }
 
 MacroExpansionDecl::MacroExpansionDecl(DeclContext *dc,

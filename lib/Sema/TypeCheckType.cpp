@@ -1083,6 +1083,14 @@ Type TypeResolution::applyUnboundGenericArguments(
   if (didDiagnoseMoveOnlyGenericArgs(ctx, loc, resultType, genericArgs, dc))
     return ErrorType::get(ctx);
 
+  if (options.contains(TypeResolutionFlags::SILType)) {
+    if (auto nominal = dyn_cast<NominalTypeDecl>(decl)) {
+      if (nominal->isOptionalDecl()) {
+        skipRequirementsCheck = true;
+      }
+    }
+  }
+
   // Get the substitutions for outer generic parameters from the parent
   // type.
   if (parentTy) {
@@ -3763,8 +3771,7 @@ TypeResolver::resolveASTFunctionTypeParams(TupleTypeRepr *inputRepr,
       // @_staticExclusiveOnly types cannot be passed as 'inout' in function
       // types.
       if (auto SD = ty->getStructOrBoundGenericStruct()) {
-        if (getASTContext().LangOpts.hasFeature(Feature::StaticExclusiveOnly) &&
-            SD->getAttrs().hasAttribute<StaticExclusiveOnlyAttr>() &&
+        if (SD->getAttrs().hasAttribute<StaticExclusiveOnlyAttr>() &&
             ownership == ParamSpecifier::InOut) {
           diagnose(eltTypeRepr->getLoc(),
                    diag::attr_static_exclusive_only_let_only_param,
@@ -3841,6 +3848,8 @@ NeverNullType TypeResolver::resolveASTFunctionType(
     FunctionTypeRepr *repr, TypeResolutionOptions parentOptions,
     TypeAttrSet *attrs) {
 
+  auto isolatedAttr = claim<IsolatedTypeAttr>(attrs);
+
   AnyFunctionType::Representation representation =
     FunctionType::Representation::Swift;
   const clang::Type *parsedClangFunctionType = nullptr;
@@ -3874,6 +3883,17 @@ NeverNullType TypeResolver::resolveASTFunctionType(
           representation = FunctionType::Representation::Swift;
           parsedClangFunctionType = nullptr;
         }
+      }
+
+      // Don't allow `@isolated` to be combined with non-default
+      // conventions.
+      if (isolatedAttr &&
+          representation != FunctionType::Representation::Swift) {
+        diagnoseInvalid(repr, conventionAttr->getAtLoc(),
+                        diag::invalid_isolated_and_convention_attributes,
+                        conventionAttr->getConventionName());
+        representation = FunctionType::Representation::Swift;
+        parsedClangFunctionType = nullptr;
       }
     }
   }
@@ -3911,6 +3931,12 @@ NeverNullType TypeResolver::resolveASTFunctionType(
   // forms (and should cause conflict diagnostics).
   if (numIsolatedParams > 0) {
     isolation = FunctionTypeIsolation::forParameter();
+
+    if (isolatedAttr) {
+      diagnose(repr->getLoc(), diag::isolated_parameter_isolated_attr_type,
+               isolatedAttr->getIsolationKindName());
+      isolatedAttr->setInvalid();
+    }
   }
 
   if (attrs) {
@@ -3918,12 +3944,27 @@ NeverNullType TypeResolver::resolveASTFunctionType(
     Type globalActor = resolveGlobalActor(repr->getLoc(), parentOptions,
                                           globalActorAttr, *attrs);
     if (globalActor && !globalActor->hasError() && !globalActorAttr->isInvalid()) {
-      if (numIsolatedParams == 0) {
-        isolation = FunctionTypeIsolation::forGlobalActor(globalActor);
-      } else {
+      if (numIsolatedParams != 0) {
         diagnose(repr->getLoc(), diag::isolated_parameter_global_actor_type)
             .warnUntilSwiftVersion(6);
         globalActorAttr->setInvalid();
+      } else if (isolatedAttr) {
+        diagnose(repr->getLoc(), diag::isolated_attr_global_actor_type,
+                 isolatedAttr->getIsolationKindName());
+        globalActorAttr->setInvalid();
+      } else {
+        isolation = FunctionTypeIsolation::forGlobalActor(globalActor);
+      }
+    }
+
+    if (isolatedAttr && !isolatedAttr->isInvalid()) {
+      switch (isolatedAttr->getIsolationKind()) {
+      case IsolatedTypeAttr::IsolationKind::Dynamic:
+        if (!getASTContext().LangOpts.hasFeature(Feature::IsolatedAny)) {
+          diagnose(isolatedAttr->getAtLoc(), diag::isolated_any_experimental);
+        }
+        isolation = FunctionTypeIsolation::forErased();
+        break;
       }
     }
   }
@@ -5752,20 +5793,20 @@ public:
     reprStack.push_back(T);
 
     if (T->isInvalid())
-      return Action::SkipChildren();
+      return Action::SkipNode();
     if (auto memberTR = dyn_cast<MemberTypeRepr>(T)) {
       // Only visit the last component to check, because nested typealiases in
       // existentials are okay.
       visit(memberTR->getLastComponent());
-      return Action::SkipChildren();
+      return Action::SkipNode();
     }
     // Arbitrary protocol constraints are OK on opaque types.
     if (isa<OpaqueReturnTypeRepr>(T))
-      return Action::SkipChildren();
+      return Action::SkipNode();
 
     // Arbitrary protocol constraints are okay for 'any' types.
     if (isa<ExistentialTypeRepr>(T))
-      return Action::SkipChildren();
+      return Action::SkipNode();
 
     visit(T);
     return Action::Continue();
@@ -5782,11 +5823,11 @@ public:
       return Action::Continue(S);
     }
 
-    return Action::SkipChildren(S);
+    return Action::SkipNode(S);
   }
 
   PreWalkAction walkToDeclPre(Decl *D) override {
-    return Action::SkipChildrenIf(checkStatements);
+    return Action::SkipNodeIf(checkStatements);
   }
 
   PreWalkResult<Expr *> walkToExprPre(Expr *E) override {

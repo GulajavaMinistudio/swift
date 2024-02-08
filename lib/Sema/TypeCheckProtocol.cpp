@@ -2389,29 +2389,6 @@ checkIndividualConformance(NormalProtocolConformance *conformance) {
     }
   }
 
-  // Except in specific hardcoded cases for Foundation/Swift
-  // standard library compatibility, an _ObjectiveCBridgeable
-  // conformance must appear in the same module as the definition of
-  // the conforming type.
-  //
-  // Note that we check the module name to smooth over the difference
-  // between an imported Objective-C module and its overlay.
-  if (Proto->isSpecificProtocol(KnownProtocolKind::ObjectiveCBridgeable)) {
-    auto nominal = DC->getSelfNominalTypeDecl();
-    if (!Context.isTypeBridgedInExternalModule(nominal)) {
-      auto clangLoader = Context.getClangModuleLoader();
-      if (nominal->getParentModule() != DC->getParentModule() &&
-          !(clangLoader &&
-            clangLoader->isInOverlayModuleForImportedModule(DC, nominal))) {
-        auto nominalModule = nominal->getParentModule();
-        Context.Diags.diagnose(conformance->getLoc(),
-                               diag::nonlocal_bridged_to_objc,
-                               nominal->getName(), Proto->getName(),
-                               nominalModule->getName());
-      }
-    }
-  }
-
   // Check that T conforms to all inherited protocols.
   for (auto InheritedProto : Proto->getInheritedProtocols()) {
     auto InheritedConformance =
@@ -2493,24 +2470,18 @@ static Type getTypeForDisplay(ModuleDecl *module, ValueDecl *decl) {
   if (!decl->getDeclContext()->isTypeContext())
     return type;
 
-  GenericSignature sigWithoutReqts;
-  if (auto genericFn = type->getAs<GenericFunctionType>()) {
-    // For generic functions, build a new generic function... but strip off
-    // the requirements. They don't add value.
-    sigWithoutReqts
-      = GenericSignature::get(genericFn->getGenericParams(), {});
-  }
-
   // For functions, strip off the 'Self' parameter clause.
-  if (isa<AbstractFunctionDecl>(decl))
-    type = type->castTo<AnyFunctionType>()->getResult();
+  if (isa<AbstractFunctionDecl>(decl)) {
+    if (auto genericFn = type->getAs<GenericFunctionType>()) {
+      auto sig = genericFn->getGenericSignature();
+      auto resultFn = genericFn->getResult()->castTo<FunctionType>();
+      return GenericFunctionType::get(sig,
+                                      resultFn->getParams(),
+                                      resultFn->getResult(),
+                                      resultFn->getExtInfo());
+    }
 
-  if (sigWithoutReqts) {
-    auto resultFn = type->castTo<AnyFunctionType>();
-    return GenericFunctionType::get(sigWithoutReqts,
-                                    resultFn->getParams(),
-                                    resultFn->getResult(),
-                                    resultFn->getExtInfo());
+    return type->castTo<FunctionType>()->getResult();
   }
 
   return type;
@@ -2800,18 +2771,18 @@ diagnoseMatch(ModuleDecl *module, NormalProtocolConformance *conformance,
     break;
 
   case MatchKind::TypeConflict: {
+    auto witnessType = getTypeForDisplay(module, match.Witness);
+
     if (!isa<TypeDecl>(req) && !isa<EnumElementDecl>(match.Witness)) {
       computeFixitsForOverriddenDeclaration(match.Witness, req, [&](bool){
         return diags.diagnose(match.Witness,
                               diag::protocol_witness_type_conflict,
-                              getTypeForDisplay(module, match.Witness),
-                              withAssocTypes);
+                              witnessType, withAssocTypes);
       });
     } else {
       diags.diagnose(match.Witness,
                      diag::protocol_witness_type_conflict,
-                     getTypeForDisplay(module, match.Witness),
-                     withAssocTypes);
+                     witnessType, withAssocTypes);
     }
     break;
   }
@@ -4367,6 +4338,7 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
       // Determine the type that the requirement is expected to have.
       Type reqType = getRequirementTypeForDisplay(dc->getParentModule(),
                                                   conformance, requirement);
+
       auto &diags = dc->getASTContext().Diags;
       auto diagnosticMessage = diag::ambiguous_witnesses;
       if (ignoringNames) {
@@ -4610,7 +4582,7 @@ hasInvariantSelfRequirement(const ProtocolDecl *proto,
 
         // 'Self.A' is OK.
         if (ty->is<DependentMemberType>())
-          return Action::SkipChildren;
+          return Action::SkipNode;
 
         return Action::Continue;
       }
@@ -4889,7 +4861,7 @@ hasInvalidTypeInConformanceContext(const ValueDecl *requirement,
 
     Action walkToTypePre(Type ty) override {
       if (!ty->hasTypeParameter())
-        return Action::SkipChildren;
+        return Action::SkipNode;
 
       auto *const dmt = ty->getAs<DependentMemberType>();
       if (!dmt)
@@ -4897,11 +4869,11 @@ hasInvalidTypeInConformanceContext(const ValueDecl *requirement,
 
       // We only care about 'Self'-rooted type parameters.
       if (!dmt->getRootGenericParam()->isEqual(Proto->getSelfInterfaceType()))
-        return Action::SkipChildren;
+        return Action::SkipNode;
 
       if (ty.subst(Subs)->hasError())
         return Action::Stop;
-      return Action::SkipChildren;
+      return Action::SkipNode;
     }
   };
 

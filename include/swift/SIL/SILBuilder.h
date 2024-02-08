@@ -576,11 +576,11 @@ public:
                                                    beginApply));
   }
 
-  EndApplyInst *createEndApply(SILLocation loc, SILValue beginApply) {
+  EndApplyInst *createEndApply(SILLocation loc, SILValue beginApply, SILType ResultType) {
     return insert(new (getModule()) EndApplyInst(getSILDebugLocation(loc),
-                                                 beginApply));
+                                                 beginApply, ResultType));
   }
-
+  
   BuiltinInst *createBuiltin(SILLocation Loc, Identifier Name, SILType ResultTy,
                              SubstitutionMap Subs,
                              ArrayRef<SILValue> Args) {
@@ -1065,11 +1065,10 @@ public:
     return createDebugValue(Loc, src, Var);
   }
 
-  TestSpecificationInst *
-  createTestSpecificationInst(SILLocation Loc,
-                              StringRef ArgumentsSpecification) {
-    return insert(TestSpecificationInst::create(
-        getSILDebugLocation(Loc), ArgumentsSpecification, getModule()));
+  SpecifyTestInst *createSpecifyTestInst(SILLocation Loc,
+                                         StringRef ArgumentsSpecification) {
+    return insert(SpecifyTestInst::create(getSILDebugLocation(Loc),
+                                          ArgumentsSpecification, getModule()));
   }
 
   UnownedCopyValueInst *createUnownedCopyValue(SILLocation Loc,
