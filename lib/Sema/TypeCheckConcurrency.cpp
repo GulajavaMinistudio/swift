@@ -2460,6 +2460,7 @@ namespace {
         // which the declaration occurred, it's okay.
         auto decl = capture.getDecl();
         auto *context = localFunc.getAsDeclContext();
+        auto fnType = localFunc.getType()->getAs<AnyFunctionType>();
         if (!mayExecuteConcurrentlyWith(context, decl->getDeclContext()))
           continue;
 
@@ -2492,11 +2493,19 @@ namespace {
                                      diag::implicit_non_sendable_capture,
                                      decl->getName());
           }
+        } else if (fnType->isSendable()) {
+          diagnoseNonSendableTypes(type, getDeclContext(),
+                                   /*inDerivedConformance*/Type(),
+                                   capture.getLoc(),
+                                   diag::non_sendable_capture,
+                                   decl->getName(),
+                                   /*closure=*/closure != nullptr);
         } else {
           diagnoseNonSendableTypes(type, getDeclContext(),
                                    /*inDerivedConformance*/Type(),
                                    capture.getLoc(),
-                                   diag::non_sendable_capture, decl->getName(),
+                                   diag::non_sendable_isolated_capture,
+                                   decl->getName(),
                                    /*closure=*/closure != nullptr);
         }
       }
@@ -3512,6 +3521,12 @@ namespace {
       auto isolation = getActorIsolationOfContext(
           const_cast<DeclContext *>(getDeclContext()),
                                     getClosureActorIsolation);
+      auto *dc = const_cast<DeclContext *>(getDeclContext());
+
+      // Note that macro expansions are never implicit. They have
+      // valid source locations in their macro expansion buffer, they
+      // do not cause implicit 'self' capture diagnostics, etc.
+
       Expr *actorExpr = nullptr;
       Type optionalAnyActorType = isolationExpr->getType();
       switch (isolation) {
@@ -3533,7 +3548,7 @@ namespace {
         }
         actorExpr = new (ctx) DeclRefExpr(
             const_cast<VarDecl *>(var), DeclNameLoc(loc),
-            /*Implicit=*/true);
+            /*implicit=*/false);
 
         // For a distributed actor, we need to retrieve the local
         // actor.
@@ -3547,10 +3562,11 @@ namespace {
         // Form a <global actor type>.shared reference.
         Type globalActorType = getDeclContext()->mapTypeIntoContext(
             isolation.getGlobalActor());
-        auto typeExpr = TypeExpr::createImplicit(globalActorType, ctx);
+        auto typeExpr = TypeExpr::createForDecl(
+            DeclNameLoc(loc), globalActorType->getAnyNominal(), dc);
         actorExpr = new (ctx) UnresolvedDotExpr(
-            typeExpr, loc, DeclNameRef(ctx.Id_shared), DeclNameLoc(),
-            /*implicit=*/true);
+            typeExpr, loc, DeclNameRef(ctx.Id_shared), DeclNameLoc(loc),
+            /*implicit=*/false);
         break;
       }
 
@@ -3560,14 +3576,14 @@ namespace {
       case ActorIsolation::Unspecified:
       case ActorIsolation::Nonisolated:
       case ActorIsolation::NonisolatedUnsafe:
-        actorExpr = new (ctx) NilLiteralExpr(loc, /*implicit=*/true);
+        actorExpr = new (ctx) NilLiteralExpr(loc, /*implicit=*/false);
         break;
       }
 
 
       // Convert the actor argument to the appropriate type.
       (void)TypeChecker::typeCheckExpression(
-          actorExpr, const_cast<DeclContext *>(getDeclContext()),
+          actorExpr, dc,
           constraints::ContextualTypeInfo(
             optionalAnyActorType, CTP_CallArgument));
 
@@ -4019,15 +4035,30 @@ bool ActorIsolationChecker::mayExecuteConcurrentlyWith(
   if (useContext == defContext)
     return false;
 
-  // If both contexts are isolated to the same actor, then they will not
-  // execute concurrently.
+  bool isolatedStateMayEscape = false;
+
   auto useIsolation = getActorIsolationOfContext(
       const_cast<DeclContext *>(useContext), getClosureActorIsolation);
   if (useIsolation.isActorIsolated()) {
     auto defIsolation = getActorIsolationOfContext(
         const_cast<DeclContext *>(defContext), getClosureActorIsolation);
+    // If both contexts are isolated to the same actor, then they will not
+    // execute concurrently.
     if (useIsolation == defIsolation)
       return false;
+
+    // If the local function is not Sendable, its isolation differs
+    // from that of the context, and both contexts are actor isolated,
+    // then capturing non-Sendable values allows the closure to stash
+    // those values into actor isolated state. The original context
+    // may also stash those values into isolated state, enabling concurrent
+    // access later on.
+    auto &ctx = useContext->getASTContext();
+    bool regionIsolationEnabled =
+        ctx.LangOpts.hasFeature(Feature::RegionBasedIsolation);
+    isolatedStateMayEscape =
+        (!regionIsolationEnabled &&
+        useIsolation.isActorIsolated() && defIsolation.isActorIsolated());
   }
 
   // Walk the context chain from the use to the definition.
@@ -4036,12 +4067,18 @@ bool ActorIsolationChecker::mayExecuteConcurrentlyWith(
     if (auto closure = dyn_cast<AbstractClosureExpr>(useContext)) {
       if (isSendableClosure(closure, /*forActorIsolation=*/false))
         return true;
+
+      if (isolatedStateMayEscape)
+        return true;
     }
 
     if (auto func = dyn_cast<FuncDecl>(useContext)) {
       if (func->isLocalCapture()) {
         // If the function is @Sendable... it can be run concurrently.
         if (func->isSendable())
+          return true;
+
+        if (isolatedStateMayEscape)
           return true;
       }
     }
@@ -4759,27 +4796,8 @@ ActorIsolation ActorIsolationRequest::evaluate(
     checkDeclWithIsolatedParameter(value);
 
     ParamDecl *param = getParameterList(value)->get(*paramIdx);
-    Type paramType = param->getInterfaceType();
-    if (paramType->isTypeParameter()) {
-      paramType = param->getDeclContext()->mapTypeIntoContext(paramType);
-
-      auto &ctx = value->getASTContext();
-      auto conformsTo = [&](KnownProtocolKind kind) {
-        if (auto *proto = ctx.getProtocol(kind))
-          return value->getModuleContext()->checkConformance(paramType, proto);
-        return ProtocolConformanceRef::forInvalid();
-      };
-
-      // The type parameter must be bound by Actor or DistributedActor, as they
-      // have an unownedExecutor. AnyActor does NOT have an unownedExecutor!
-      if (!conformsTo(KnownProtocolKind::Actor)
-          && !conformsTo(KnownProtocolKind::DistributedActor)) {
-        ctx.Diags.diagnose(param->getLoc(),
-                           diag::isolated_parameter_no_actor_conformance,
-                           paramType);
-      }
-    }
-
+    Type paramType = param->getDeclContext()->mapTypeIntoContext(
+        param->getInterfaceType());
     Type actorType;
     if (auto wrapped = paramType->getOptionalObjectType()) {
       actorType = wrapped;

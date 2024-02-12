@@ -2902,13 +2902,18 @@ static void maybeEmitFallbackConformanceDiagnostic(
   if (diagnostics.HadError)
     return;
 
-  diagnostics.HadError = true;
-
   auto *proto = conformance->getProtocol();
   auto *dc = conformance->getDeclContext();
   auto *sf = dc->getParentSourceFile();
+
+  // FIXME: There should probably still be a diagnostic even without a file.
+  if (!sf)
+    return;
+
   auto *mod = sf->getParentModule();
   assert(mod->isMainModule());
+
+  diagnostics.HadError = true;
 
   // If we have at least one primary file and the conformance is declared in a
   // non-primary file, emit a fallback diagnostic.
@@ -4490,9 +4495,13 @@ GenericFunctionType *GenericFunctionType::get(GenericSignature sig,
   if (globalActor && !sig->isReducedType(globalActor))
     isCanonical = false;
 
+  bool hasLifetimeDependenceInfo =
+      info.has_value() && !info.value().getLifetimeDependenceInfo().empty();
+
   unsigned numTypes = (globalActor ? 1 : 0) + (thrownError ? 1 : 0);
-  size_t allocSize = totalSizeToAlloc<AnyFunctionType::Param, Type>(
-      params.size(), numTypes);
+  size_t allocSize =
+      totalSizeToAlloc<AnyFunctionType::Param, Type, LifetimeDependenceInfo>(
+          params.size(), numTypes, hasLifetimeDependenceInfo ? 1 : 0);
   void *mem = ctx.Allocate(allocSize, alignof(GenericFunctionType));
 
   auto properties = getGenericFunctionRecursiveProperties(params, result);
@@ -4522,6 +4531,11 @@ GenericFunctionType::GenericFunctionType(
     }
     if (Type thrownError = info->getThrownError())
       getTrailingObjects<Type>()[thrownErrorIndex] = thrownError;
+
+    auto lifetimeDependenceInfo = info->getLifetimeDependenceInfo();
+    if (!lifetimeDependenceInfo.empty()) {
+      *getTrailingObjects<LifetimeDependenceInfo>() = lifetimeDependenceInfo;
+    }
   }
 }
 
@@ -4611,29 +4625,29 @@ SILFunctionType::SILFunctionType(
       !ext.getLifetimeDependenceInfo().empty();
   Bits.SILFunctionType.CoroutineKind = unsigned(coroutineKind);
   NumParameters = params.size();
-  assert((coroutineKind == SILCoroutineKind::None && yields.empty()) ||
-         coroutineKind != SILCoroutineKind::None);
-
-  NumAnyResults = normalResults.size();
-  NumAnyIndirectFormalResults = 0;
-  NumPackResults = 0;
-  for (auto &resultInfo : normalResults) {
-    if (resultInfo.isFormalIndirect())
-      NumAnyIndirectFormalResults++;
-    if (resultInfo.isPack())
-      NumPackResults++;
-  }
-  memcpy(getMutableResults().data(), normalResults.data(),
-         normalResults.size() * sizeof(SILResultInfo));
-  if (coroutineKind != SILCoroutineKind::None) {
-    NumAnyYieldResults = yields.size();
-    NumAnyIndirectFormalYieldResults = 0;
+  if (coroutineKind == SILCoroutineKind::None) {
+    assert(yields.empty());
+    NumAnyResults = normalResults.size();
+    NumAnyIndirectFormalResults = 0;
+    NumPackResults = 0;
+    for (auto &resultInfo : normalResults) {
+      if (resultInfo.isFormalIndirect())
+        NumAnyIndirectFormalResults++;
+      if (resultInfo.isPack())
+        NumPackResults++;
+    }
+    memcpy(getMutableResults().data(), normalResults.data(),
+           normalResults.size() * sizeof(SILResultInfo));
+  } else {
+    assert(normalResults.empty());
+    NumAnyResults = yields.size();
+    NumAnyIndirectFormalResults = 0;
     NumPackResults = 0;
     for (auto &yieldInfo : yields) {
       if (yieldInfo.isFormalIndirect())
-        NumAnyIndirectFormalYieldResults++;
+        NumAnyIndirectFormalResults++;
       if (yieldInfo.isPack())
-        NumPackYieldResults++;
+        NumPackResults++;
     }
     memcpy(getMutableYields().data(), yields.data(),
            yields.size() * sizeof(SILYieldInfo));
@@ -4805,6 +4819,7 @@ CanSILFunctionType SILFunctionType::get(
     llvm::Optional<SILResultInfo> errorResult, SubstitutionMap patternSubs,
     SubstitutionMap invocationSubs, const ASTContext &ctx,
     ProtocolConformanceRef witnessMethodConformance) {
+  assert(coroutineKind == SILCoroutineKind::None || normalResults.empty());
   assert(coroutineKind != SILCoroutineKind::None || yields.empty());
   assert(!ext.isPseudogeneric() || genericSig ||
          coroutineKind != SILCoroutineKind::None);

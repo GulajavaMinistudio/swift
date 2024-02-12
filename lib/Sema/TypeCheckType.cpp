@@ -3764,6 +3764,7 @@ TypeResolver::resolveASTFunctionTypeParams(TupleTypeRepr *inputRepr,
 
     // Validate the presence of ownership for a noncopyable parameter.
     if (inStage(TypeResolutionStage::Interface)
+        && !ty->hasUnboundGenericType()
         && !options.contains(TypeResolutionFlags::SILMode)) {
       diagnoseMissingOwnership(getASTContext(), dc, ownership,
                                eltTypeRepr, ty, options);
@@ -3927,18 +3928,6 @@ NeverNullType TypeResolver::resolveASTFunctionType(
       repr->setWarned();
   }
 
-  // Use parameter isolation if we have any.  This overrides all other
-  // forms (and should cause conflict diagnostics).
-  if (numIsolatedParams > 0) {
-    isolation = FunctionTypeIsolation::forParameter();
-
-    if (isolatedAttr) {
-      diagnose(repr->getLoc(), diag::isolated_parameter_isolated_attr_type,
-               isolatedAttr->getIsolationKindName());
-      isolatedAttr->setInvalid();
-    }
-  }
-
   if (attrs) {
     CustomAttr *globalActorAttr = nullptr;
     Type globalActor = resolveGlobalActor(repr->getLoc(), parentOptions,
@@ -3995,6 +3984,18 @@ NeverNullType TypeResolver::resolveASTFunctionType(
   options |= parentOptions.withoutContext().getFlags();
   auto params =
       resolveASTFunctionTypeParams(repr->getArgsTypeRepr(), options, diffKind);
+
+  // Use parameter isolation if we have any.  This overrides all other
+  // forms (and should cause conflict diagnostics).
+  if (hasIsolatedParameter(params)) {
+    isolation = FunctionTypeIsolation::forParameter();
+
+    if (isolatedAttr) {
+      diagnose(repr->getLoc(), diag::isolated_parameter_isolated_attr_type,
+               isolatedAttr->getIsolationKindName());
+      isolatedAttr->setInvalid();
+    }
+  }
 
   auto resultOptions = options.withoutContext();
   resultOptions.setContext(TypeResolverContext::FunctionResult);
@@ -4892,13 +4893,16 @@ TypeResolver::resolveIsolatedTypeRepr(IsolatedTypeRepr *repr,
     unwrappedType = dynamicSelfType->getSelfType();
   }
 
-  // isolated parameters must be of actor type
-  if (!unwrappedType->isTypeParameter() &&
-      !unwrappedType->isAnyActorType() &&
-      !unwrappedType->hasError()) {
-    diagnoseInvalid(
-        repr, repr->getSpecifierLoc(), diag::isolated_parameter_not_actor, type);
-    return ErrorType::get(type);
+  if (inStage(TypeResolutionStage::Interface)) {
+    if (auto *env = resolution.getGenericSignature().getGenericEnvironment())
+      unwrappedType = env->mapTypeIntoContext(unwrappedType);
+
+    if (!unwrappedType->isAnyActorType() && !unwrappedType->hasError()) {
+      diagnoseInvalid(
+          repr, repr->getSpecifierLoc(),
+          diag::isolated_parameter_not_actor, type);
+      return ErrorType::get(type);
+    }
   }
 
   return type;
@@ -5337,6 +5341,7 @@ NeverNullType TypeResolver::resolveTupleType(TupleTypeRepr *repr,
     // since we should've diagnosed the inner tuple already.
     if (inStage(TypeResolutionStage::Interface)
         && !options.contains(TypeResolutionFlags::SILMode)
+        && !ty->hasUnboundGenericType()
         && isInterfaceTypeNoncopyable(ty, dc->getGenericEnvironmentOfContext())
         && !ctx.LangOpts.hasFeature(Feature::MoveOnlyTuples)
         && !moveOnlyElementIndex.has_value() && !isa<TupleTypeRepr>(tyR)) {
@@ -5399,6 +5404,46 @@ NeverNullType TypeResolver::resolveTupleType(TupleTypeRepr *repr,
   }
 
   return TupleType::get(elements, ctx);
+}
+
+/// \returns the inverse ~P that is conflicted if a protocol in \c tys
+/// requires P. For example, `Q & ~Copyable` is a conflict, if `Q` requires
+/// or is equal to `Copyable`
+static std::optional<InvertibleProtocolKind>
+hasConflictedInverse(ArrayRef<Type> tys, InvertibleProtocolSet inverses) {
+  // Fast-path: no inverses that could be conflicted!
+  if (inverses.empty())
+    return std::nullopt;
+
+  for (auto ty : tys) {
+    // Handle nested PCT's recursively since we haven't flattened them away yet.
+    if (auto pct = dyn_cast<ProtocolCompositionType>(ty)) {
+      if (auto conflict = hasConflictedInverse(pct->getMembers(), inverses))
+        return conflict;
+      continue;
+    }
+
+    // Dig out a protocol.
+    ProtocolDecl *decl = nullptr;
+    if (auto protoTy = dyn_cast<ProtocolType>(ty))
+      decl = protoTy->getDecl();
+    else if (auto paramProtoTy = dyn_cast<ParameterizedProtocolType>(ty))
+      decl = paramProtoTy->getProtocol();
+
+    if (!decl)
+      continue;
+
+    // If an inverse ~I exists for this protocol member of the PCT that
+    // requires I, then it's a conflict.
+    for (auto inverse : inverses) {
+      if (decl->isSpecificProtocol(getKnownProtocolKind(inverse))
+          || decl->requiresInvertible(inverse)) {
+        return inverse;
+      }
+    }
+  }
+
+  return std::nullopt;
 }
 
 NeverNullType
@@ -5496,6 +5541,13 @@ TypeResolver::resolveCompositionType(CompositionTypeRepr *repr,
     IsInvalid = true;
   }
 
+  // Cannot provide an inverse in the same composition requiring the protocol.
+  if (auto conflict = hasConflictedInverse(Members, Inverses)) {
+    diagnose(repr->getLoc(),
+       diag::inverse_conflicts_explicit_composition,
+       getProtocolName(getKnownProtocolKind(*conflict)));
+    IsInvalid = true;
+  }
 
   if (IsInvalid) {
     repr->setInvalid();

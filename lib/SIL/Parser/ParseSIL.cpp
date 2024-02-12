@@ -2639,7 +2639,8 @@ bool SILParser::parseSpecificSILInstruction(SILBuilder &B,
     if (parseCallInstruction(InstLoc, Opcode, B, ResultVal))
       return true;
     break;
-  case SILInstructionKind::AbortApplyInst: {
+  case SILInstructionKind::AbortApplyInst:
+  case SILInstructionKind::EndApplyInst: {
     UnresolvedValueName argName;
     if (parseValueName(argName))
       return true;
@@ -2649,21 +2650,12 @@ bool SILParser::parseSpecificSILInstruction(SILBuilder &B,
 
     SILType expectedTy = SILType::getSILTokenType(P.Context);
     SILValue op = getLocalValue(argName, expectedTy, InstLoc, B);
-    ResultVal = B.createAbortApply(InstLoc, op);
-    break;
-  }
-  case SILInstructionKind::EndApplyInst: {
-    UnresolvedValueName argName;
-    SILType ResultTy;
 
-    if (parseValueName(argName) || parseVerbatim("as") ||
-        parseSILType(ResultTy) || parseSILDebugLocation(InstLoc, B))
-      return true;
-
-    SILType expectedTy = SILType::getSILTokenType(P.Context);
-    SILValue op = getLocalValue(argName, expectedTy, InstLoc, B);
-
-    ResultVal = B.createEndApply(InstLoc, op, ResultTy);
+    if (Opcode == SILInstructionKind::AbortApplyInst) {
+      ResultVal = B.createAbortApply(InstLoc, op);
+    } else {
+      ResultVal = B.createEndApply(InstLoc, op);
+    }
     break;
   }
   case SILInstructionKind::IntegerLiteralInst: {
@@ -3780,20 +3772,30 @@ bool SILParser::parseSpecificSILInstruction(SILBuilder &B,
   }
 
   case SILInstructionKind::MarkDependenceInst: {
-    bool nonEscaping = false;
+    llvm::Optional<MarkDependenceKind> dependenceKind;
     SILValue Base;
-    if (parseSILOptional(nonEscaping, *this, "nonescaping")
+    auto parseDependenceKind = [](StringRef Str) {
+      return llvm::StringSwitch<llvm::Optional<MarkDependenceKind>>(Str)
+        .Case("unresolved", MarkDependenceKind::Unresolved)
+        .Case("nonescaping", MarkDependenceKind::NonEscaping)
+        .Default(llvm::None);
+    };
+    if (parseSILQualifier<MarkDependenceKind>(dependenceKind,
+                                              parseDependenceKind)
         || parseTypedValueRef(Val, B) || parseVerbatim("on")
-        || parseTypedValueRef(Base, B))
+        || parseTypedValueRef(Base, B)) { 
       return true;
-
+    }
+    if (!dependenceKind) {
+      dependenceKind = MarkDependenceKind::Escaping;
+    }
     ValueOwnershipKind forwardingOwnership = Val->getOwnershipKind();
     if (parseForwardingOwnershipKind(forwardingOwnership)
         || parseSILDebugLocation(InstLoc, B))
       return true;
 
     ResultVal = B.createMarkDependence(InstLoc, Val, Base, forwardingOwnership,
-                                       nonEscaping);
+                                       dependenceKind.value());
     break;
   }
 

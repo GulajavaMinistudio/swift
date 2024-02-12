@@ -2948,7 +2948,8 @@ private:
       if (valueTL.isTrivial()) {
         SILValue dependentValue =
           SGF.B.createMarkDependence(eval, value.forward(SGF),
-                                     owner.getValue(), /*isNonEscaping*/false);
+                                     owner.getValue(),
+                                     MarkDependenceKind::Escaping);
         value = SGF.emitManagedRValueWithCleanup(dependentValue, valueTL);
       }
     }
@@ -4909,8 +4910,7 @@ public:
     if (forUnwind) {
       SGF.B.createAbortApply(l, ApplyToken);
     } else {
-      SGF.B.createEndApply(l, ApplyToken,
-                           SILType::getEmptyTupleType(SGF.getASTContext()));
+      SGF.B.createEndApply(l, ApplyToken);
     }
   }
   
@@ -5960,8 +5960,7 @@ void SILGenFunction::emitEndApplyWithRethrow(SILLocation loc,
   // TODO: adjust this to handle results of TryBeginApplyInst.
   assert(token->isBeginApplyToken());
 
-  B.createEndApply(loc, token,
-                   SILType::getEmptyTupleType(getASTContext()));
+  B.createEndApply(loc, token);
 }
 
 void SILGenFunction::emitYield(SILLocation loc,
@@ -6439,7 +6438,7 @@ SILGenFunction::emitUninitializedArrayAllocation(Type ArrayTy,
   // Add a mark_dependence between the interior pointer and the array value
   auto dependentValue = B.createMarkDependence(Loc, resultElts[1].getValue(),
                                                resultElts[0].getValue(),
-                                               /*isNonEscaping*/false);
+                                               MarkDependenceKind::Escaping);
   return {resultElts[0], dependentValue};
 }
 

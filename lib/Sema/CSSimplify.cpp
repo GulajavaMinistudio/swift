@@ -4010,11 +4010,9 @@ ConstraintSystem::matchExistentialTypes(Type type1, Type type2,
   // we need to disallow conversions from types containing @noescape
   // functions to Any.
 
-  // Conformance to 'Any' always holds.
-  if (type2->isAny()) {
-    if (!type1->isNoEscape())
-      return getTypeMatchSuccess();
-
+  // FIXME: special case for nonescaping functions and tuples containing them
+  // shouldn't be needed, as functions have conformances to Escapable/Copyable.
+  if (type2->isAny() && type1->isNoEscape()) {
     if (shouldAttemptFixes()) {
       auto *fix = MarkExplicitlyEscaping::create(*this, type1, type2,
                                                  getConstraintLocator(locator));
@@ -6173,8 +6171,7 @@ bool ConstraintSystem::repairFailures(
       return true;
 
     auto purpose = getContextualTypePurpose(anchor);
-    if (rhs->isVoid() &&
-        (purpose == CTP_ReturnStmt || purpose == CTP_ImpliedReturnStmt)) {
+    if (rhs->isVoid() && purpose == CTP_ReturnStmt) {
       conversionsOrFixes.push_back(
           RemoveReturn::create(*this, lhs, getConstraintLocator(locator)));
       return true;
@@ -7950,50 +7947,40 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
   }
 
   // Allow '() -> T' to '() -> ()' and '() -> Never' to '() -> T' for closure
-  // literals and expressions representing an implicit return type of the single
-  // expression functions.
+  // literals and expressions representing an implied result of closures and
+  // if/switch expressions.
   if (auto elt = locator.last()) {
     if (kind >= ConstraintKind::Subtype &&
         (type1->isUninhabited() || type2->isVoid())) {
-      // A conversion from closure body type to its signature result type.
-      if (auto resultElt = elt->getAs<LocatorPathElt::ClosureBody>()) {
-        // If a single statement closure has explicit `return` let's
-        // forbid conversion to `Void` and report an error instead to
-        // honor user's intent.
-        if (type1->isUninhabited() || resultElt->hasImpliedReturn()) {
-          increaseScore(SK_FunctionConversion, locator);
-          return getTypeMatchSuccess();
-        }
-      }
-
-      // Function with an implied `return`, e.g a single expression body.
-      if (auto contextualType = elt->getAs<LocatorPathElt::ContextualType>()) {
-        if (contextualType->isFor(CTP_ImpliedReturnStmt)) {
-          increaseScore(SK_FunctionConversion, locator);
-          return getTypeMatchSuccess();
-        }
-      }
-
-      // We also need to propagate this conversion into the branches for single
-      // value statements.
+      // Implied results can occur for closure bodies, returns, and if/switch
+      // expression branches.
       //
-      // As with the previous checks, we only allow the Void conversion in
-      // an implicit single-expression closure. In the more general case for
-      // implicit branches, we only allow the Never conversion. For explicit
-      // branches, no conversions are allowed.
+      // We only allow the Void conversion for implied results in a closure
+      // context. In the more general case, we only allow the Never conversion.
+      // For explicit branches, no conversions are allowed, unless this is for
+      // a single expression body closure, in which case we still allow the
+      // Never conversion.
       auto *loc = getConstraintLocator(locator);
-      if (auto branchKind = loc->isForSingleValueStmtBranch()) {
+      if (elt->is<LocatorPathElt::ClosureBody>() || 
+          loc->isForContextualType(CTP_ReturnStmt) ||
+          loc->isForContextualType(CTP_ClosureResult) ||
+          loc->isForSingleValueStmtBranch()) {
         bool allowConversion = false;
-        switch (*branchKind) {
-        case SingleValueStmtBranchKind::Explicit:
-          allowConversion = false;
-          break;
-        case SingleValueStmtBranchKind::Implicit:
-          allowConversion = type1->isUninhabited();
-          break;
-        case SingleValueStmtBranchKind::ImplicitInSingleExprClosure:
-          allowConversion = true;
-          break;
+        if (auto *E = getAsExpr(simplifyLocatorToAnchor(loc))) {
+          if (auto kind = isImpliedResult(E)) {
+            switch (*kind) {
+            case ImpliedResultKind::Regular:
+              allowConversion = type1->isUninhabited();
+              break;
+            case ImpliedResultKind::ForClosure:
+              allowConversion = true;
+              break;
+            }
+          } else if (elt->is<LocatorPathElt::ClosureBody>()) {
+            // Even if explicit, we always allow uninhabited types in single
+            // expression closures.
+            allowConversion = type1->isUninhabited();
+          }
         }
         if (allowConversion) {
           increaseScore(SK_FunctionConversion, locator);
@@ -8563,7 +8550,6 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
   case ConstraintKind::SelfObjectOfProtocol: {
     auto conformance = TypeChecker::containsProtocol(
         type, protocol, DC->getParentModule(),
-        /*skipConditionalRequirements=*/true,
         /*allowMissing=*/true);
     if (conformance) {
       return recordConformance(conformance);
@@ -8801,7 +8787,8 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
     }
 
     // If this is a failure to conform to Copyable, tailor the error message.
-    if (protocol->isSpecificProtocol(KnownProtocolKind::Copyable)) {
+    if (kind == ConstraintKind::ConformsTo &&
+        protocol->isSpecificProtocol(KnownProtocolKind::Copyable)) {
       auto *fix =
           MustBeCopyable::create(*this,
                                  type,
@@ -10632,8 +10619,8 @@ static bool inferEnumMemberThroughTildeEqualsOperator(
   auto &ctx = cs.getASTContext();
 
   // Retrieve a corresponding ExprPattern which we can solve with ~=.
-  auto *EP =
-      llvm::cantFail(ctx.evaluator(EnumElementExprPatternRequest{pattern}));
+  auto *EP = evaluateOrFatal(ctx.evaluator,
+                             EnumElementExprPatternRequest{pattern});
 
   auto target = SyntacticElementTarget::forExprPattern(EP);
 
@@ -10815,7 +10802,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyMemberConstraint(
       // Handle `next` reference.
       if (getContextualTypePurpose(baseExpr) == CTP_ForEachSequence &&
           (isRefTo(memberRef, ctx.Id_next, /*labels=*/{}) ||
-           isRefTo(memberRef, ctx.Id_next, /*labels=*/{StringRef()}))) {
+           isRefTo(memberRef, ctx.Id_next, /*labels=*/{ "isolation" }))) {
         auto *iteratorProto = cast<ProtocolDecl>(
             getContextualType(baseExpr, /*forConstraint=*/false)
                 ->getAnyNominal());
@@ -15699,7 +15686,6 @@ void ConstraintSystem::addContextualConversionConstraint(
   auto constraintKind = ConstraintKind::Conversion;
   switch (purpose) {
   case CTP_ReturnStmt:
-  case CTP_ImpliedReturnStmt:
   case CTP_Initialization: {
     if (conversionType->is<OpaqueTypeArchetypeType>())
       constraintKind = ConstraintKind::Equal;

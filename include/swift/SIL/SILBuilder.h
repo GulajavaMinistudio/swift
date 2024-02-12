@@ -576,11 +576,11 @@ public:
                                                    beginApply));
   }
 
-  EndApplyInst *createEndApply(SILLocation loc, SILValue beginApply, SILType ResultType) {
+  EndApplyInst *createEndApply(SILLocation loc, SILValue beginApply) {
     return insert(new (getModule()) EndApplyInst(getSILDebugLocation(loc),
-                                                 beginApply, ResultType));
+                                                 beginApply));
   }
-  
+
   BuiltinInst *createBuiltin(SILLocation Loc, Identifier Name, SILType ResultTy,
                              SubstitutionMap Subs,
                              ArrayRef<SILValue> Args) {
@@ -2282,18 +2282,19 @@ public:
                                                        SILValue value);
 
   MarkDependenceInst *createMarkDependence(SILLocation Loc, SILValue value,
-                                           SILValue base, bool isNonEscaping) {
+                                           SILValue base,
+                                           MarkDependenceKind dependenceKind) {
     return createMarkDependence(Loc, value, base, value->getOwnershipKind(),
-                                isNonEscaping);
+                                dependenceKind);
   }
 
   MarkDependenceInst *
   createMarkDependence(SILLocation Loc, SILValue value, SILValue base,
                        ValueOwnershipKind forwardingOwnershipKind,
-                       bool isNonEscaping) {
+                       MarkDependenceKind dependenceKind) {
     return insert(new (getModule()) MarkDependenceInst(
                     getSILDebugLocation(Loc), value, base,
-                    forwardingOwnershipKind, isNonEscaping));
+                    forwardingOwnershipKind, dependenceKind));
   }
 
   IsUniqueInst *createIsUnique(SILLocation Loc, SILValue operand) {
