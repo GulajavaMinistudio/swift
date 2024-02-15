@@ -4178,14 +4178,15 @@ ClangTypeInfo SILFunctionType::getClangTypeInfo() const {
   return *info;
 }
 
-LifetimeDependenceInfo SILFunctionType::getLifetimeDependenceInfo() const {
+const LifetimeDependenceInfo *SILFunctionType::
+getLifetimeDependenceInfoOrNull() const {
   if (!Bits.SILFunctionType.HasLifetimeDependenceInfo)
-    return LifetimeDependenceInfo();
+    return nullptr;
   auto *info = getTrailingObjects<LifetimeDependenceInfo>();
   assert(
       !info->empty() &&
       "If the LifetimeDependenceInfo was empty, we shouldn't have stored it.");
-  return *info;
+  return info;
 }
 
 bool SILFunctionType::hasNonDerivableClangType() {
@@ -6022,4 +6023,23 @@ SourceLoc swift::extractNearestSourceLoc(Type ty) {
     return extractNearestSourceLoc(nominal);
 
   return SourceLoc();
+}
+
+StringRef swift::getNameForParamSpecifier(ParamSpecifier specifier) {
+  switch (specifier) {
+  case ParamSpecifier::Default:
+    return "default";
+  case ParamSpecifier::InOut:
+    return "inout";
+  case ParamSpecifier::Borrowing:
+    return "borrowing";
+  case ParamSpecifier::Consuming:
+    return "consuming";
+  case ParamSpecifier::LegacyShared:
+    return "__shared";
+  case ParamSpecifier::LegacyOwned:
+    return "__owned";
+  case ParamSpecifier::ImplicitlyCopyableConsuming:
+    return "implicitly_copyable_consuming";
+  }
 }

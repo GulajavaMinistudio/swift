@@ -383,8 +383,8 @@ class alignas(1 << TypeAlignInBits) TypeBase
   }
 
 protected:
-  enum { NumAFTExtInfoBits = 14 };
-  enum { NumSILExtInfoBits = 13 };
+  enum { NumAFTExtInfoBits = 15 };
+  enum { NumSILExtInfoBits = 15 };
 
   // clang-format off
   union { uint64_t OpaqueBits;
@@ -656,6 +656,9 @@ public:
 
   /// Returns true if this contextual type satisfies a conformance to Escapable.
   bool isEscapable();
+
+  /// Returns true if this contextual type is (Escapable && !isNoEscape).
+  bool mayEscape() { return !isNoEscape() && isEscapable(); }
 
   /// Does the type have outer parenthesis?
   bool hasParenSugar() const { return getKind() == TypeKind::Paren; }
@@ -2204,10 +2207,12 @@ enum class ParamSpecifier : uint8_t {
   /// `__owned`, a legacy spelling of `consuming`.
   LegacyOwned = 5,
 
-  /// `transferring`. Indicating the transfer of a value from one isolation
-  /// domain to another.
-  Transferring = 6,
+  /// A convention that is similar to consuming a parameter that is mutable and
+  /// var like, but for which no implicit copy semantics are not implemented.
+  ImplicitlyCopyableConsuming = 6,
 };
+
+StringRef getNameForParamSpecifier(ParamSpecifier name);
 
 /// Provide parameter type relevant flags, i.e. variadic, autoclosure, and
 /// escaping.
@@ -3639,6 +3644,10 @@ public:
 
   bool isThrowing() const { return getExtInfo().isThrowing(); }
 
+  bool hasTransferringResult() const {
+    return getExtInfo().hasTransferringResult();
+  }
+
   bool hasEffect(EffectKind kind) const;
 
   bool isDifferentiable() const { return getExtInfo().isDifferentiable(); }
@@ -4880,6 +4889,13 @@ public:
   bool isSendable() const { return getExtInfo().isSendable(); }
   bool isUnimplementable() const { return getExtInfo().isUnimplementable(); }
   bool isAsync() const { return getExtInfo().isAsync(); }
+  bool hasErasedIsolation() const { return getExtInfo().hasErasedIsolation(); }
+  SILFunctionTypeIsolation getIsolation() const {
+    return getExtInfo().getIsolation();
+  }
+  bool hasTransferringResult() const {
+    return getExtInfo().hasTransferringResult();
+  }
 
   /// Return the array of all the yields.
   ArrayRef<SILYieldInfo> getYields() const {
@@ -5221,7 +5237,15 @@ public:
 
   ClangTypeInfo getClangTypeInfo() const;
 
-  LifetimeDependenceInfo getLifetimeDependenceInfo() const;
+  /// Returns nullptr for an empty dependence list.
+  const LifetimeDependenceInfo *getLifetimeDependenceInfoOrNull() const;
+
+  inline LifetimeDependenceInfo getLifetimeDependenceInfo() const {
+    if (auto *depInfo = getLifetimeDependenceInfoOrNull()) {
+      return *depInfo;
+    }
+    return LifetimeDependenceInfo();
+  }
 
   /// Returns true if the function type stores a Clang type that cannot
   /// be derived from its Swift type. Returns false otherwise, including if
@@ -5456,6 +5480,8 @@ public:
     enum innerty {
       None,
       DifferentFunctionRepresentations,
+      DifferentAsyncness,
+      DifferentErasedIsolation,
       ABIEscapeToNoEscapeConversion,
       DifferentNumberOfResults,
       DifferentReturnValueConventions,

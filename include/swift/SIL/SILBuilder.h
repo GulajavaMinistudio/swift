@@ -349,6 +349,7 @@ public:
   static SILType getPartialApplyResultType(
       TypeExpansionContext context, SILType Ty, unsigned ArgCount, SILModule &M,
       SubstitutionMap subs, ParameterConvention calleeConvention,
+      SILFunctionTypeIsolation resultIsolation,
       PartialApplyInst::OnStackKind onStack =
           PartialApplyInst::OnStackKind::NotOnStack);
 
@@ -546,6 +547,8 @@ public:
   PartialApplyInst *createPartialApply(
       SILLocation Loc, SILValue Fn, SubstitutionMap Subs,
       ArrayRef<SILValue> Args, ParameterConvention CalleeConvention,
+      SILFunctionTypeIsolation ResultIsolation =
+          SILFunctionTypeIsolation::Unknown,
       PartialApplyInst::OnStackKind OnStack =
           PartialApplyInst::OnStackKind::NotOnStack,
       const GenericSpecializationInformation *SpecializationInfo = nullptr) {
@@ -557,8 +560,8 @@ public:
                         }) &&
                "Must have an owned compatible object");
     return insert(PartialApplyInst::create(
-        getSILDebugLocation(Loc), Fn, Args, Subs, CalleeConvention, *F,
-        SpecializationInfo, OnStack));
+        getSILDebugLocation(Loc), Fn, Args, Subs, CalleeConvention,
+        ResultIsolation, *F, SpecializationInfo, OnStack));
   }
 
   BeginApplyInst *createBeginApply(
@@ -1444,9 +1447,11 @@ public:
 
   MarkUnresolvedNonCopyableValueInst *createMarkUnresolvedNonCopyableValueInst(
       SILLocation loc, SILValue src,
-      MarkUnresolvedNonCopyableValueInst::CheckKind kind) {
+      MarkUnresolvedNonCopyableValueInst::CheckKind kind,
+      MarkUnresolvedNonCopyableValueInst::IsStrict_t strict
+        = MarkUnresolvedNonCopyableValueInst::IsNotStrict) {
     return insert(new (getModule()) MarkUnresolvedNonCopyableValueInst(
-        getSILDebugLocation(loc), src, kind));
+        getSILDebugLocation(loc), src, kind, strict));
   }
 
   MarkUnresolvedReferenceBindingInst *createMarkUnresolvedReferenceBindingInst(
@@ -2498,6 +2503,13 @@ public:
     return insert(new (getModule()) ExtractExecutorInst(getSILDebugLocation(Loc),
                                                         Actor, hasOwnership(),
                                                         resultType));
+  }
+
+  FunctionExtractIsolationInst *
+  createFunctionExtractIsolation(SILLocation loc, SILValue fnValue) {
+    auto resultType = SILType::getOpaqueIsolationType(getASTContext());
+    return insert(new (getModule()) FunctionExtractIsolationInst(
+                    getSILDebugLocation(loc), fnValue, resultType));
   }
 
   //===--------------------------------------------------------------------===//

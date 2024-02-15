@@ -49,9 +49,15 @@ std::string LifetimeDependenceInfo::getString() const {
 
 void LifetimeDependenceInfo::Profile(llvm::FoldingSetNodeID &ID) const {
   if (inheritLifetimeParamIndices) {
+    // Copy and Consume are the same, can be unified if we converge on dependsOn
+    // syntax
+    ID.AddInteger((uint8_t)LifetimeDependenceKind::Copy);
     inheritLifetimeParamIndices->Profile(ID);
   }
   if (scopeLifetimeParamIndices) {
+    // Borrow and Mutate are the same, can be unified if we converge on
+    // dependsOn syntax
+    ID.AddInteger((uint8_t)LifetimeDependenceKind::Borrow);
     scopeLifetimeParamIndices->Profile(ID);
   }
 }
@@ -91,7 +97,7 @@ void LifetimeDependenceInfo::getConcatenatedData(
   if (hasInheritLifetimeParamIndices()) {
     pushData(inheritLifetimeParamIndices);
   }
-  if (hasBorrowLifetimeParamIndices()) {
+  if (hasScopeLifetimeParamIndices()) {
     pushData(scopeLifetimeParamIndices);
   }
 }
@@ -322,6 +328,39 @@ LifetimeDependenceInfo::get(AbstractFunctionDecl *afd, Type resultType,
     return LifetimeDependenceInfo::fromTypeRepr(afd, resultType, allowIndex);
   }
   return LifetimeDependenceInfo::infer(afd, resultType);
+}
+
+LifetimeDependenceInfo
+LifetimeDependenceInfo::get(ASTContext &ctx,
+                            const SmallBitVector &inheritLifetimeIndices,
+                            const SmallBitVector &scopeLifetimeIndices) {
+  return LifetimeDependenceInfo{
+      inheritLifetimeIndices.any()
+          ? IndexSubset::get(ctx, inheritLifetimeIndices)
+          : nullptr,
+      scopeLifetimeIndices.any() ? IndexSubset::get(ctx, scopeLifetimeIndices)
+                                 : nullptr};
+}
+
+std::optional<LifetimeDependenceKind>
+LifetimeDependenceInfo::getLifetimeDependenceOnParam(unsigned paramIndex) {
+  if (inheritLifetimeParamIndices) {
+    if (inheritLifetimeParamIndices->contains(paramIndex)) {
+      // Can arbitarily return copy or consume here.
+      // If we converge on dependsOn(borrowed: paramName)/dependsOn(borrowed:
+      // paramName) syntax, this can be a single case value.
+      return LifetimeDependenceKind::Copy;
+    }
+  }
+  if (scopeLifetimeParamIndices) {
+    if (scopeLifetimeParamIndices->contains(paramIndex)) {
+      // Can arbitarily return borrow or mutate here.
+      // If we converge on dependsOn(borrowed: paramName)/dependsOn(borrowed:
+      // paramName) syntax, this can be a single case value.
+      return LifetimeDependenceKind::Borrow;
+    }
+  }
+  return {};
 }
 
 } // namespace swift

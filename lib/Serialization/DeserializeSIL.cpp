@@ -538,7 +538,6 @@ SILDeserializer::readSILFunctionChecked(DeclID FID, SILFunction *existingFn,
   ModuleID parentModuleID;
   TypeID funcTyID;
   IdentifierID replacedFunctionID;
-  IdentifierID usedAdHocWitnessFunctionID;
   GenericSignatureID genericSigID;
   unsigned rawLinkage, isTransparent, isSerialized, isThunk,
       isWithoutActuallyEscapingThunk, specialPurpose, inlineStrategy,
@@ -554,7 +553,7 @@ SILDeserializer::readSILFunctionChecked(DeclID FID, SILFunction *existingFn,
       numAttrs, hasQualifiedOwnership, isWeakImported,
       LIST_VER_TUPLE_PIECES(available), isDynamic, isExactSelfClass,
       isDistributed, isRuntimeAccessible, forceEnableLexicalLifetimes, funcTyID,
-      replacedFunctionID, usedAdHocWitnessFunctionID, genericSigID,
+      replacedFunctionID, genericSigID,
       clangNodeOwnerID, parentModuleID, SemanticsIDs);
 
   if (funcTyID == 0)
@@ -581,13 +580,6 @@ SILDeserializer::readSILFunctionChecked(DeclID FID, SILFunction *existingFn,
         getFuncForReference(MF->getIdentifier(replacedFunctionID).str());
   } else if (replacedFunctionID) {
     replacedObjectiveCFunc = MF->getIdentifier(replacedFunctionID);
-  }
-
-  SILFunction *usedAdHocWitnessFunction = nullptr;
-  if (usedAdHocWitnessFunctionID) {
-    auto usedAdHocWitnessFunctionStr =
-        MF->getIdentifier(usedAdHocWitnessFunctionID).str();
-    usedAdHocWitnessFunction = getFuncForReference(usedAdHocWitnessFunctionStr);
   }
 
   auto linkageOpt = fromStableSILLinkage(rawLinkage);
@@ -708,8 +700,6 @@ SILDeserializer::readSILFunctionChecked(DeclID FID, SILFunction *existingFn,
       fn->setDynamicallyReplacedFunction(replacedFunction);
     if (!replacedObjectiveCFunc.empty())
       fn->setObjCReplacement(replacedObjectiveCFunc);
-    if (usedAdHocWitnessFunction)
-      fn->setReferencedAdHocRequirementWitnessFunction(usedAdHocWitnessFunction);
     if (clangNodeOwner)
       fn->setClangNodeOwner(clangNodeOwner);
     for (auto ID : SemanticsIDs) {
@@ -1833,7 +1823,8 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn,
     auto Ty = MF->getType(TyID);
     auto Ty2 = MF->getType(TyID2);
     SILType FnTy = getSILType(Ty, SILValueCategory::Object, Fn);
-    SILType closureTy = getSILType(Ty2, SILValueCategory::Object, Fn);
+    auto closureTy = getSILType(Ty2, SILValueCategory::Object, Fn)
+                       .castTo<SILFunctionType>();
 
     SubstitutionMap Substitutions = MF->getSubstitutionMap(NumSubs);
 
@@ -1856,13 +1847,14 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn,
           ListOfValues[I],
           fnConv.getSILArgumentType(I + unappliedArgs,
                                     Builder.getTypeExpansionContext())));
-    auto onStack = closureTy.castTo<SILFunctionType>()->isNoEscape()
+    auto onStack = closureTy->isNoEscape()
                        ? PartialApplyInst::OnStackKind::OnStack
                        : PartialApplyInst::OnStackKind::NotOnStack;
+
     // FIXME: Why the arbitrary order difference in IRBuilder type argument?
     ResultInst = Builder.createPartialApply(
         Loc, FnVal, Substitutions, Args,
-        closureTy.castTo<SILFunctionType>()->getCalleeConvention(), onStack);
+        closureTy->getCalleeConvention(), closureTy->getIsolation(), onStack);
     break;
   }
   case SILInstructionKind::BuiltinInst: {
@@ -2202,6 +2194,7 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn,
   UNARY_INSTRUCTION(AbortApply)
   UNARY_INSTRUCTION(EndApply)
   UNARY_INSTRUCTION(ExtractExecutor)
+  UNARY_INSTRUCTION(FunctionExtractIsolation)
 #undef UNARY_INSTRUCTION
 #undef REFCOUNTING_INSTRUCTION
 
@@ -2399,11 +2392,14 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn,
   case SILInstructionKind::MarkUnresolvedNonCopyableValueInst: {
     using CheckKind = MarkUnresolvedNonCopyableValueInst::CheckKind;
     auto Ty = MF->getType(TyID);
-    auto CKind = CheckKind(Attr);
+    auto CKind = CheckKind(Attr & 7);
+    auto Strict = Attr & (1 << 3)
+      ? MarkUnresolvedNonCopyableValueInst::IsStrict
+      : MarkUnresolvedNonCopyableValueInst::IsNotStrict;
     ResultInst = Builder.createMarkUnresolvedNonCopyableValueInst(
         Loc,
         getLocalValue(ValID, getSILType(Ty, (SILValueCategory)TyCategory, Fn)),
-        CKind);
+        CKind, Strict);
     break;
   }
   case SILInstructionKind::StoreInst: {
@@ -3385,7 +3381,6 @@ bool SILDeserializer::hasSILFunction(StringRef Name,
   ModuleID parentModuleID;
   TypeID funcTyID;
   IdentifierID replacedFunctionID;
-  IdentifierID usedAdHocWitnessFunctionID;
   GenericSignatureID genericSigID;
   unsigned rawLinkage, isTransparent, isSerialized, isThunk,
       isWithoutActuallyEscapingThunk, isGlobal, inlineStrategy,
@@ -3401,7 +3396,7 @@ bool SILDeserializer::hasSILFunction(StringRef Name,
       numSpecAttrs, hasQualifiedOwnership, isWeakImported,
       LIST_VER_TUPLE_PIECES(available), isDynamic, isExactSelfClass,
       isDistributed, isRuntimeAccessible, forceEnableLexicalLifetimes, funcTyID,
-      replacedFunctionID, usedAdHocWitnessFunctionID, genericSigID,
+      replacedFunctionID, genericSigID,
       clangOwnerID, parentModuleID, SemanticsIDs);
   auto linkage = fromStableSILLinkage(rawLinkage);
   if (!linkage) {

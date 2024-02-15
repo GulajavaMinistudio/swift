@@ -567,7 +567,8 @@ static void hoistMarkUnresolvedNonCopyableValueInsts(
       }
     }
 
-    if (auto *mmci = dyn_cast<MarkUnresolvedNonCopyableValueInst>(nextUser)) {
+    if (auto *mmci = dyn_cast<MarkUnresolvedNonCopyableValueInst>(nextUser);
+        mmci && !mmci->isStrict()) {
       targets.push_back(mmci);
     }
   }
@@ -1162,8 +1163,7 @@ specializeApplySite(SILOptFunctionBuilder &FuncBuilder, ApplySite Apply,
     auto *PAI = cast<PartialApplyInst>(ApplyInst);
     return Builder.createPartialApply(
         Apply.getLoc(), FunctionRef, Apply.getSubstitutionMap(), Args,
-        PAI->getType().getAs<SILFunctionType>()->getCalleeConvention(),
-        PAI->isOnStack(),
+        PAI->getCalleeConvention(), PAI->getResultIsolation(), PAI->isOnStack(),
         GenericSpecializationInformation::create(ApplyInst, Builder));
   }
   case ApplySiteKind::ApplyInst:

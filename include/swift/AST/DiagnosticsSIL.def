@@ -674,6 +674,10 @@ NOTE(nonisolated_blame, none, "after %1%2 %3, "
 ERROR(non_sendable_from_deinit,none,
         "cannot access %1 %2 with a non-sendable type %0 from non-isolated deinit",
         (Type, DescriptiveDeclKind, DeclName))
+ERROR(isolated_property_mutation_in_nonisolated_context,none,
+      "actor-isolated %kind0 can not be %select{referenced|mutated}1 "
+      "from a non-isolated context",
+      (const ValueDecl *, bool))
 
 // Yield usage errors
 ERROR(return_before_yield, none, "accessor must yield before returning",())
@@ -743,6 +747,11 @@ ERROR(polymorphic_builtin_passed_type_without_static_overload, none, "Static"
       " overload %0 does not exist for polymorphic builtin '%1'. Static "
       "overload implied by passing argument of type %2",
       (Identifier, StringRef, Type))
+
+ERROR(builtin_get_function_isolation_bad_argument, none,
+      "argument to 'extractFunctionIsolation' must have '@isolated(any)' "
+      "function type",
+      ())
 
 ERROR(box_to_stack_cannot_promote_box_to_stack_due_to_escape_alloc, none,
       "Can not promote value from heap to stack due to value escaping", ())
@@ -958,9 +967,6 @@ NOTE(regionbasedisolation_named_stronglytransferred_binding, none,
 ERROR(deinit_not_visible, none,
       "deinit of non-copyable type not visible in the current module", ())
 
-ERROR(lifetime_value_outside_scope, none,
-      "lifetime-dependent value escapes its scope", ())
-
 ERROR(vector_capacity_not_constant, none,
       "vector capacity needs to be constant", ())
 
@@ -969,7 +975,15 @@ ERROR(fixed_arrays_not_available, none,
 
 ERROR(lifetime_variable_outside_scope, none,
       "lifetime-dependent variable '%0' escapes its scope", (Identifier))
-NOTE(lifetime_outside_scope_parent, none,
+ERROR(lifetime_value_outside_scope, none,
+      "lifetime-dependent value escapes its scope", ())
+NOTE(lifetime_outside_scope_argument, none,
+     "it depends on the lifetime of argument '%0'", (Identifier))
+NOTE(lifetime_outside_scope_access, none,
+     "it depends on this scoped access to variable '%0'", (Identifier))
+NOTE(lifetime_outside_scope_variable, none,
+     "it depends on the lifetime of variable '%0'", (Identifier))
+NOTE(lifetime_outside_scope_value, none,
      "it depends on the lifetime of this parent value", ())
 NOTE(lifetime_outside_scope_use, none,
      "this use of the lifetime-dependent value is out of scope", ())

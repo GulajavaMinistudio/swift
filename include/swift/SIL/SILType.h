@@ -899,6 +899,12 @@ public:
   /// lifetime dependence.
   bool isEscapable() const;
 
+  /// True for (isEscapable && !isNoEscapeFunction)
+  ///
+  /// Equivalent to getASTType()->mayEscape(), but handles SIL-specific types,
+  /// namely SILFunctionType.
+  bool mayEscape() const { return !isNoEscapeFunction() && isEscapable(); }
+
   //
   // Accessors for types used in SIL instructions:
   //
@@ -933,6 +939,9 @@ public:
 
   /// Return '()'
   static SILType getEmptyTupleType(const ASTContext &C);
+
+  /// Get the type for opaque actor isolation values.
+  static SILType getOpaqueIsolationType(const ASTContext &C);
 
   //
   // Utilities for treating SILType as a pointer-like type.

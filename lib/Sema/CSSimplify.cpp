@@ -8492,18 +8492,23 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
     return SolutionKind::Solved;
   }
 
-  // Copyable is checked structurally, so for better performance, split apart
-  // this constraint into individual Copyable constraints on each tuple element.
-  if (auto *tupleType = type->getAs<TupleType>()) {
-    if (protocol->isSpecificProtocol(KnownProtocolKind::Copyable)) {
-      for (unsigned i = 0, e = tupleType->getNumElements(); i < e; ++i) {
-        addConstraint(ConstraintKind::ConformsTo,
-                      tupleType->getElementType(i),
-                      protocol->getDeclaredInterfaceType(),
-                      locator.withPathElement(LocatorPathElt::TupleElement(i)));
-      }
+  // FIXME: This is already handled by tuple conformance lookup path and
+  // should be removed once non-copyable generics are enabled by default.
+  if (!SWIFT_ENABLE_EXPERIMENTAL_NONCOPYABLE_GENERICS) {
+    // Copyable is checked structurally, so for better performance, split apart
+    // this constraint into individual Copyable constraints on each tuple
+    // element.
+    if (auto *tupleType = type->getAs<TupleType>()) {
+      if (protocol->isSpecificProtocol(KnownProtocolKind::Copyable)) {
+        for (unsigned i = 0, e = tupleType->getNumElements(); i < e; ++i) {
+          addConstraint(
+              ConstraintKind::ConformsTo, tupleType->getElementType(i),
+              protocol->getDeclaredInterfaceType(),
+              locator.withPathElement(LocatorPathElt::TupleElement(i)));
+        }
 
-      return SolutionKind::Solved;
+        return SolutionKind::Solved;
+      }
     }
   }
 
@@ -8571,6 +8576,47 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
     auto conformance = lookupConformance(type, protocol);
     if (conformance) {
       return recordConformance(conformance);
+    }
+
+    // Account for ad-hoc requirements on some distributed actor
+    // requirements.
+    if (auto witnessInfo = locator.isForWitnessGenericParameterRequirement()) {
+      auto *GP = witnessInfo->second;
+
+      // Conformance requirement between on `Res` and `SerializationRequirement`
+      // of `DistributedActorSystem.remoteCall` are not expressible at the moment
+      // but they are verified by Sema so it's okay to omit them here and lookup
+      // dynamically during IRGen.
+      if (auto *witness = dyn_cast<FuncDecl>(witnessInfo->first)) {
+        auto synthesizeConformance = [&]() {
+          ProtocolConformanceRef synthesized(protocol);
+          auto witnessLoc = getConstraintLocator(
+              /*anchor=*/{}, LocatorPathElt::Witness(witness));
+          SynthesizedConformances.insert({witnessLoc, synthesized});
+          return recordConformance(synthesized);
+        };
+
+        if (witness->isGeneric()) {
+          // `DistributedActorSystem.remoteCall`
+          if (witness->isDistributedActorSystemRemoteCall(/*isVoidReturn=*/false)) {
+            if (GP->isEqual(cast<FuncDecl>(witness)->getResultInterfaceType()))
+              return synthesizeConformance();
+          }
+
+          // `DistributedTargetInvocationEncoder.record{Argument, ResultType}`
+          // `DistributedTargetInvocationDecoder.decodeNextArgument`
+          // `DistributedTargetInvocationResultHandler.onReturn`
+          if (witness->isDistributedTargetInvocationEncoderRecordArgument() ||
+              witness->isDistributedTargetInvocationEncoderRecordReturnType() ||
+              witness
+                  ->isDistributedTargetInvocationDecoderDecodeNextArgument() ||
+              witness->isDistributedTargetInvocationResultHandlerOnReturn()) {
+            auto genericParams = witness->getGenericParams()->getParams();
+            if (GP->isEqual(genericParams.front()->getDeclaredInterfaceType()))
+              return synthesizeConformance();
+          }
+        }
+      }
     }
   } break;
 

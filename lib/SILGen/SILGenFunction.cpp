@@ -344,6 +344,7 @@ static MacroInfo getMacroInfo(GeneratedSourceInfo &Info,
   }
   case GeneratedSourceInfo::PrettyPrinted:
   case GeneratedSourceInfo::ReplacedFunctionBody:
+  case GeneratedSourceInfo::DefaultArgument:
     break;
   }
   return Result;
@@ -1789,6 +1790,7 @@ SILGenFunction::emitApplyOfSetterToBase(SILLocation loc, SILDeclRef setter,
   PartialApplyInst *setterPAI =
       B.createPartialApply(loc, setterFRef, substitutions, capturedArgs,
                            ParameterConvention::Direct_Guaranteed,
+                           SILFunctionTypeIsolation::Unknown,
                            PartialApplyInst::OnStackKind::OnStack);
   return emitManagedRValueWithCleanup(setterPAI).getValue();
 }
@@ -1840,6 +1842,7 @@ void SILGenFunction::emitAssignOrInit(SILLocation loc, ManagedValue selfValue,
   PartialApplyInst *initPAI =
       B.createPartialApply(loc, initFRef, substitutions, selfMetatype,
                            ParameterConvention::Direct_Guaranteed,
+                           SILFunctionTypeIsolation::Unknown,
                            PartialApplyInst::OnStackKind::OnStack);
   initFRef = emitManagedRValueWithCleanup(initPAI).getValue();
 

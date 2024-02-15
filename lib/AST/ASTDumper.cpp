@@ -309,6 +309,8 @@ static StringRef getDumpString(DefaultArgumentKind value) {
     case DefaultArgumentKind::EmptyDictionary: return "[:]";
     case DefaultArgumentKind::Normal: return "normal";
     case DefaultArgumentKind::StoredProperty: return "stored property";
+    case DefaultArgumentKind::ExpressionMacro:
+    return "expression macro";
   }
 
   llvm_unreachable("Unhandled DefaultArgumentKind in switch.");
@@ -3431,6 +3433,12 @@ public:
   
   void visitIsolatedTypeRepr(IsolatedTypeRepr *T, StringRef label) {
     printCommon("isolated", label);
+    printRec(T->getBase());
+    printFoot();
+  }
+
+  void visitTransferringTypeRepr(TransferringTypeRepr *T, StringRef label) {
+    printCommon("transferring", label);
     printRec(T->getBase());
     printFoot();
   }

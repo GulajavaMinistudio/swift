@@ -3092,7 +3092,7 @@ private:
   static PartialApplyInst *
   create(SILDebugLocation DebugLoc, SILValue Callee, ArrayRef<SILValue> Args,
          SubstitutionMap Substitutions, ParameterConvention CalleeConvention,
-         SILFunction &F,
+         SILFunctionTypeIsolation ResultIsolation, SILFunction &F,
          const GenericSpecializationInformation *SpecializationInfo,
          OnStackKind onStack);
 
@@ -3101,8 +3101,14 @@ public:
   CanSILFunctionType getFunctionType() const {
     return getType().castTo<SILFunctionType>();
   }
+  ParameterConvention getCalleeConvention() const {
+    return getFunctionType()->getCalleeConvention();
+  }
   bool hasCalleeGuaranteedContext() const {
-    return getType().castTo<SILFunctionType>()->isCalleeGuaranteed();
+    return getFunctionType()->isCalleeGuaranteed();
+  }
+  SILFunctionTypeIsolation getResultIsolation() {
+    return getFunctionType()->getIsolation();
   }
 
   OnStackKind isOnStack() const {
@@ -3948,6 +3954,21 @@ class ExtractExecutorInst
 
 public:
   SILValue getExpectedExecutor() const { return getOperand(); }
+};
+
+/// Extract the isolation of an @isolated(any) function value.
+class FunctionExtractIsolationInst
+    : public UnaryInstructionBase<SILInstructionKind::FunctionExtractIsolationInst,
+                                  SingleValueInstruction>
+{
+  friend SILBuilder;
+
+  FunctionExtractIsolationInst(SILDebugLocation debugLoc, SILValue fnValue,
+                               SILType type)
+      : UnaryInstructionBase(debugLoc, fnValue, type) { }
+
+public:
+  SILValue getFunction() const { return getOperand(); }
 };
 
 /// Instantiates a key path object.
@@ -8440,6 +8461,11 @@ public:
     return dependenceKind() == MarkDependenceKind::Unresolved;
   }
 
+  void resolveToNonEscaping() {
+    sharedUInt8().MarkDependenceInst.dependenceKind =
+      uint8_t(MarkDependenceKind::NonEscaping);
+  }
+
   /// Visit the instructions that end the lifetime of an OSSA on-stack closure.
   bool visitNonEscapingLifetimeEnds(llvm::function_ref<bool (Operand*)> func)
     const;
@@ -8711,15 +8737,31 @@ public:
     /// like class initializers.
     InitableButNotConsumable,
   };
+  
+  /// During SILGen, we have not yet done escape analysis on local variables,
+  /// so we conservatively emit them as boxed and let the AllocBoxToStack
+  /// pass promote unescaped local variables. As part of this promotion,
+  /// non-strict `NoConsumeOrAssign` accesses can be promoted to
+  /// `ConsumableAndAssignable` since the variable is locally owned
+  /// if it doesn't escape. "Strict" accesses on the other hand preserve
+  /// their stricter access constraints. This is useful for representing things
+  /// like `borrow` bindings.
+  enum IsStrict_t : bool {
+    IsNotStrict = false,
+    IsStrict = true,
+  };
 
 private:
   CheckKind kind;
+  IsStrict_t strict;
 
   MarkUnresolvedNonCopyableValueInst(SILDebugLocation DebugLoc,
-                                     SILValue operand, CheckKind checkKind)
+                                     SILValue operand, CheckKind checkKind,
+                                     IsStrict_t strict = IsNotStrict)
       : UnaryInstructionBase(DebugLoc, operand, operand->getType(),
                              operand->getOwnershipKind()),
-        kind(checkKind) {
+        kind(checkKind),
+        strict(strict) {
     assert(operand->getType().isMoveOnly() &&
            "mark_unresolved_non_copyable_value can only take a move only typed "
            "value");
@@ -8740,6 +8782,10 @@ public:
     case CheckKind::InitableButNotConsumable:
       return true;
     }
+  }
+  
+  IsStrict_t isStrict() const {
+    return strict;
   }
 };
 

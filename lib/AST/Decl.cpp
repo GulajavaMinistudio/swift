@@ -1813,11 +1813,9 @@ bool Decl::isObjCImplementation() const {
 
 llvm::Optional<Identifier>
 ExtensionDecl::getCategoryNameForObjCImplementation() const {
-  assert(isObjCImplementation());
-
   auto attr = getAttrs()
                   .getAttribute<ObjCImplementationAttr>(/*AllowInvalid=*/true);
-  if (attr->isCategoryNameInvalid())
+  if (!attr || attr->isCategoryNameInvalid())
     return llvm::None;
 
   return attr->CategoryName;
@@ -2954,31 +2952,30 @@ bool Decl::isOutermostPrivateOrFilePrivateScope() const {
          !isInPrivateOrLocalContext(this);
 }
 
-bool AbstractStorageDecl::isFormallyResilient() const {
+bool AbstractStorageDecl::isResilient() const {
   // Check for an explicit @_fixed_layout attribute.
   if (getAttrs().hasAttribute<FixedLayoutAttr>())
     return false;
 
   // If we're an instance property of a nominal type, query the type.
-  auto *dc = getDeclContext();
   if (!isStatic())
-    if (auto *nominalDecl = dc->getSelfNominalTypeDecl())
+    if (auto *nominalDecl = getDeclContext()->getSelfNominalTypeDecl())
       return nominalDecl->isResilient();
 
   // Non-public global and static variables always have a
   // fixed layout.
-  if (!getFormalAccessScope(/*useDC=*/nullptr,
-                            /*treatUsableFromInlineAsPublic=*/true).isPublicOrPackage())
+  auto accessScope = getFormalAccessScope(/*useDC=*/nullptr,
+                                          /*treatUsableFromInlineAsPublic=*/true);
+  if (!accessScope.isPublicOrPackage())
     return false;
 
-  return true;
-}
-
-bool AbstractStorageDecl::isResilient() const {
-  if (!isFormallyResilient())
+  if (!getModuleContext()->isResilient())
     return false;
 
-  return getModuleContext()->isResilient();
+  // Allows bypassing resilience checks for package decls
+  // at use site within a package if opted in, whether the
+  // loaded module was built resiliently or not.
+  return !getDeclContext()->bypassResilienceInPackage(accessScope.isPackage());
 }
 
 bool AbstractStorageDecl::isResilient(ModuleDecl *M,
@@ -4209,13 +4206,6 @@ bool ValueDecl::hasOpenAccess(const DeclContext *useDC) const {
   return access == AccessLevel::Open;
 }
 
-bool ValueDecl::hasPackageAccess() const {
-  AccessLevel access =
-      getAdjustedFormalAccess(this, /*useDC*/ nullptr,
-                              /*treatUsableFromInlineAsPublic*/ false);
-  return access == AccessLevel::Package;
-}
-
 /// Given the formal access level for using \p VD, compute the scope where
 /// \p VD may be accessed, taking \@usableFromInline, \@testable imports,
 /// \@_spi imports, and enclosing access levels into account.
@@ -5056,8 +5046,14 @@ bool NominalTypeDecl::isFormallyResilient() const {
 bool NominalTypeDecl::isResilient() const {
   if (!isFormallyResilient())
     return false;
-
-  return getModuleContext()->isResilient();
+  if (!getModuleContext()->isResilient())
+    return false;
+  // Allows bypassing resilience checks for package decls
+  // at use site within a package if opted in, whether the
+  // loaded module was built resiliently or not.
+  auto accessScope = getFormalAccessScope(/*useDC=*/nullptr,
+                                          /*treatUsableFromInlineAsPublic=*/true);
+  return !getDeclContext()->bypassResilienceInPackage(accessScope.isPackage());
 }
 
 DestructorDecl *NominalTypeDecl::getValueTypeDestructor() {
@@ -6377,7 +6373,11 @@ bool EnumDecl::isFormallyExhaustive(const DeclContext *useDC) const {
   // Non-public, non-versioned enums are always exhaustive.
   AccessScope accessScope = getFormalAccessScope(/*useDC*/nullptr,
                                                  /*respectVersioned*/true);
-  if (!accessScope.isPublic())
+  // Both public and package enums should behave the same unless
+  // package enum is optimized with bypassing resilience checks.
+  if (!accessScope.isPublicOrPackage())
+    return true;
+  if (useDC && useDC->bypassResilienceInPackage(accessScope.isPackage()))
     return true;
 
   // All other checks are use-site specific; with no further information, the
@@ -7776,7 +7776,7 @@ void ParamDecl::setSpecifier(Specifier specifier) {
   // `inout` and `consuming` parameters are locally mutable.
   case ParamSpecifier::InOut:
   case ParamSpecifier::Consuming:
-  case ParamSpecifier::Transferring:
+  case ParamSpecifier::ImplicitlyCopyableConsuming:
     introducer = VarDecl::Introducer::Var;
     break;
   }
@@ -7801,8 +7801,7 @@ bool ParamDecl::isAnonClosureParam() const {
 
 bool ParamDecl::isVariadic() const {
   (void) getInterfaceType();
-
-  return DefaultValueAndFlags.getInt().contains(Flags::IsVariadic);
+  return getOptions().contains(Flag::IsVariadic);
 }
 
 ParamDecl::Specifier ParamDecl::getSpecifier() const {
@@ -7840,8 +7839,8 @@ StringRef ParamDecl::getSpecifierSpelling(ParamSpecifier specifier) {
     return "__shared";
   case ParamSpecifier::LegacyOwned:
     return "__owned";
-  case ParamSpecifier::Transferring:
-    return "transferring";
+  case ParamSpecifier::ImplicitlyCopyableConsuming:
+    return "implicitly_copyable_consuming";
   }
   llvm_unreachable("invalid ParamSpecifier");
 }
@@ -8224,8 +8223,7 @@ ParamDecl *ParamDecl::cloneWithoutType(const ASTContext &Ctx, ParamDecl *PD) {
   auto *Clone = new (Ctx) ParamDecl(
       SourceLoc(), SourceLoc(), PD->getArgumentName(),
       SourceLoc(), PD->getParameterName(), PD->getDeclContext());
-  Clone->DefaultValueAndFlags.setPointerAndInt(
-      nullptr, PD->DefaultValueAndFlags.getInt());
+  Clone->setOptionsAndPointers(nullptr, nullptr, PD->getOptions());
   Clone->Bits.ParamDecl.defaultArgumentKind =
       PD->Bits.ParamDecl.defaultArgumentKind;
 
@@ -8278,6 +8276,9 @@ DefaultArgumentKind swift::getDefaultArgKind(Expr *init) {
   // checking.
   if (isa<NilLiteralExpr>(init))
     return DefaultArgumentKind::NilLiteral;
+
+  if (isa<MacroExpansionExpr>(init))
+    return DefaultArgumentKind::ExpressionMacro;
 
   auto magic = dyn_cast<MagicIdentifierLiteralExpr>(init);
   if (!magic)
@@ -8443,8 +8444,7 @@ AnyFunctionType::Param ParamDecl::toFunctionParam(Type type) const {
   auto flags = ParameterTypeFlags::fromParameterType(
       type, isVariadic(), isAutoClosure(), isNonEphemeral(), getSpecifier(),
       isIsolated(), /*isNoDerivative*/ false, isCompileTimeConst(),
-      hasResultDependsOn(),
-      getSpecifier() == ParamDecl::Specifier::Transferring /*is transferring*/);
+      hasResultDependsOn(), isTransferring());
   return AnyFunctionType::Param(type, label, flags, internalLabel);
 }
 
@@ -8478,6 +8478,7 @@ bool ParamDecl::hasDefaultExpr() const {
 #define MAGIC_IDENTIFIER(NAME, STRING, SYNTAX_KIND) \
   case DefaultArgumentKind::NAME:
 #include "swift/AST/MagicIdentifierKinds.def"
+  case DefaultArgumentKind::ExpressionMacro:
   case DefaultArgumentKind::NilLiteral:
   case DefaultArgumentKind::EmptyArray:
   case DefaultArgumentKind::EmptyDictionary:
@@ -8501,6 +8502,7 @@ bool ParamDecl::hasCallerSideDefaultExpr() const {
   case DefaultArgumentKind::NilLiteral:
   case DefaultArgumentKind::EmptyArray:
   case DefaultArgumentKind::EmptyDictionary:
+  case DefaultArgumentKind::ExpressionMacro:
     return true;
   }
   llvm_unreachable("invalid default argument kind");
@@ -8697,6 +8699,7 @@ ParamDecl::getDefaultValueStringRepresentation(
   switch (getDefaultArgumentKind()) {
   case DefaultArgumentKind::None:
     llvm_unreachable("called on a ParamDecl with no default value");
+  case DefaultArgumentKind::ExpressionMacro:
   case DefaultArgumentKind::Normal: {
     assert(DefaultValueAndFlags.getPointer() &&
            "default value not provided yet");
@@ -8789,7 +8792,8 @@ ParamDecl::getDefaultValueStringRepresentation(
 void
 ParamDecl::setDefaultValueStringRepresentation(StringRef stringRepresentation) {
   assert(getDefaultArgumentKind() == DefaultArgumentKind::Normal ||
-         getDefaultArgumentKind() == DefaultArgumentKind::StoredProperty);
+         getDefaultArgumentKind() == DefaultArgumentKind::StoredProperty ||
+         getDefaultArgumentKind() == DefaultArgumentKind::ExpressionMacro);
   assert(!stringRepresentation.empty());
 
   if (!DefaultValueAndFlags.getPointer()) {
@@ -10067,6 +10071,8 @@ FuncDecl *FuncDecl::create(ASTContext &Context, SourceLoc StaticLoc,
       ClangNode());
   FD->setParameters(BodyParams);
   FD->FnRetType = TypeLoc(ResultTyR);
+  if (llvm::isa_and_nonnull<TransferringTypeRepr>(ResultTyR))
+    FD->setTransferringResult();
   return FD;
 }
 
@@ -12011,6 +12017,7 @@ MacroDiscriminatorContext MacroDiscriminatorContext::getParentOf(
 #include "swift/Basic/MacroRoles.def"
   case GeneratedSourceInfo::PrettyPrinted:
   case GeneratedSourceInfo::ReplacedFunctionBody:
+  case GeneratedSourceInfo::DefaultArgument:
     return origDC;
   }
 }

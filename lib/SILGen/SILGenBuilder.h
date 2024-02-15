@@ -91,13 +91,17 @@ public:
   ManagedValue createPartialApply(SILLocation loc, SILValue fn,
                                   SubstitutionMap subs,
                                   ArrayRef<ManagedValue> args,
-                                  ParameterConvention calleeConvention);
+                                  ParameterConvention calleeConvention,
+                                  SILFunctionTypeIsolation resultIsolation =
+                                    SILFunctionTypeIsolation::Unknown);
   ManagedValue createPartialApply(SILLocation loc, ManagedValue fn,
                                   SubstitutionMap subs,
                                   ArrayRef<ManagedValue> args,
-                                  ParameterConvention calleeConvention) {
+                                  ParameterConvention calleeConvention,
+                                  SILFunctionTypeIsolation resultIsolation =
+                                    SILFunctionTypeIsolation::Unknown) {
     return createPartialApply(loc, fn.getValue(), subs, args,
-                              calleeConvention);
+                              calleeConvention, resultIsolation);
   }
 
   using SILBuilder::createStructExtract;
@@ -493,7 +497,9 @@ public:
   using SILBuilder::createMarkUnresolvedNonCopyableValueInst;
   ManagedValue createMarkUnresolvedNonCopyableValueInst(
       SILLocation loc, ManagedValue value,
-      MarkUnresolvedNonCopyableValueInst::CheckKind kind);
+      MarkUnresolvedNonCopyableValueInst::CheckKind kind,
+      MarkUnresolvedNonCopyableValueInst::IsStrict_t strict
+        = MarkUnresolvedNonCopyableValueInst::IsNotStrict);
 
   using SILBuilder::emitCopyValueOperation;
   ManagedValue emitCopyValueOperation(SILLocation Loc, ManagedValue v);

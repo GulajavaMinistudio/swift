@@ -77,7 +77,7 @@ LANGUAGE_FEATURE(BuiltinHopToActor, 0, "Builtin.HopToActor")
 LANGUAGE_FEATURE(BuiltinTaskGroupWithArgument, 0, "TaskGroup builtins")
 LANGUAGE_FEATURE(InheritActorContext, 0, "@_inheritActorContext attribute")
 LANGUAGE_FEATURE(ImplicitSelfCapture, 0, "@_implicitSelfCapture attribute")
-LANGUAGE_FEATURE(BuiltinBuildTaskExecutor, 0, "TaskExecutor-building builtins")
+LANGUAGE_FEATURE(BuiltinBuildTaskExecutorRef, 0, "TaskExecutor-building builtins")
 LANGUAGE_FEATURE(BuiltinBuildExecutor, 0, "Executor-building builtins")
 LANGUAGE_FEATURE(BuiltinBuildComplexEqualityExecutor, 0, "Executor-building for 'complexEquality executor' builtins")
 LANGUAGE_FEATURE(BuiltinBuildMainExecutor, 0, "MainActor executor building builtin")
@@ -135,6 +135,7 @@ EXPERIMENTAL_FEATURE(NamedOpaqueTypes, false)
 EXPERIMENTAL_FEATURE(FlowSensitiveConcurrencyCaptures, false)
 EXPERIMENTAL_FEATURE(CodeItemMacros, false)
 EXPERIMENTAL_FEATURE(BodyMacros, true)
+EXPERIMENTAL_FEATURE(ExpressionMacroDefaultArguments, false)
 EXPERIMENTAL_FEATURE(TupleConformances, false)
 
 // Whether to enable @_used and @_section attributes
@@ -219,7 +220,7 @@ EXPERIMENTAL_FEATURE(ReferenceBindings, true)
 EXPERIMENTAL_FEATURE(BuiltinModule, true)
 
 /// Region Based Isolation testing using the TransferNonSendable pass
-EXPERIMENTAL_FEATURE(RegionBasedIsolation, false)
+EXPERIMENTAL_FEATURE(RegionBasedIsolation, true)
 
 /// Enable extended callbacks (with additional parameters) to be used when the
 /// "playground transform" is enabled.

@@ -1566,7 +1566,8 @@ public:
   }
 
   void visitPartialApplyInst(PartialApplyInst *CI) {
-    switch (CI->getFunctionType()->getCalleeConvention()) {
+    auto fnType = CI->getFunctionType();
+    switch (fnType->getCalleeConvention()) {
     case ParameterConvention::Direct_Owned:
       // Default; do nothing.
       break;
@@ -1584,6 +1585,13 @@ public:
     case ParameterConvention::Pack_Owned:
     case ParameterConvention::Pack_Inout:
       llvm_unreachable("unexpected callee convention!");
+    }
+    switch (fnType->getIsolation()) {
+    case SILFunctionTypeIsolation::Unknown:
+      break;
+    case SILFunctionTypeIsolation::Erased:
+      *this << "[isolated_any] ";
+      break;
     }
     if (CI->isOnStack())
       *this << "[on_stack] ";
@@ -2114,6 +2122,9 @@ public:
   void visitMarkUnresolvedNonCopyableValueInst(
       MarkUnresolvedNonCopyableValueInst *I) {
     using CheckKind = MarkUnresolvedNonCopyableValueInst::CheckKind;
+    if (I->isStrict()) {
+      *this << "[strict] ";
+    }
     switch (I->getCheckKind()) {
     case CheckKind::Invalid:
       llvm_unreachable("Invalid?!");
@@ -2533,10 +2544,12 @@ public:
     switch (MDI->dependenceKind()) {
     case MarkDependenceKind::Unresolved:
       *this << "[unresolved] ";
+      break;
     case MarkDependenceKind::Escaping:
       break;
     case MarkDependenceKind::NonEscaping:
       *this << "[nonescaping] ";
+      break;
     }
     *this << getIDAndType(MDI->getValue()) << " on "
           << getIDAndType(MDI->getBase());
@@ -2741,6 +2754,10 @@ public:
 
   void visitExtractExecutorInst(ExtractExecutorInst *AEI) {
     *this << getIDAndType(AEI->getExpectedExecutor());
+  }
+
+  void visitFunctionExtractIsolationInst(FunctionExtractIsolationInst *I) {
+    *this << getIDAndType(I->getFunction());
   }
 
   void visitSwitchValueInst(SwitchValueInst *SII) {
@@ -3109,6 +3126,7 @@ public:
     *this << "] ";
     if (auto witnessGenSig = witness->getDerivativeGenericSignature()) {
       auto subPrinter = PrintOptions::printSIL();
+      subPrinter.PrintInverseRequirements = true;
       witnessGenSig->print(PrintState.OS, subPrinter);
       *this << " ";
     }
@@ -3390,12 +3408,6 @@ void SILFunction::print(SILPrintContext &PrintCtx) const {
   if (auto *replacedFun = getDynamicallyReplacedFunction()) {
     OS << "[dynamic_replacement_for \"";
     OS << replacedFun->getName();
-    OS << "\"] ";
-  }
-
-  if (auto *usedFunc = getReferencedAdHocRequirementWitnessFunction()) {
-    OS << "[ref_adhoc_requirement_witness \"";
-    OS << usedFunc->getName();
     OS << "\"] ";
   }
 
@@ -3976,7 +3988,12 @@ void SILVTable::print(llvm::raw_ostream &OS, bool Verbose) const {
   OS << "sil_vtable ";
   if (isSerialized())
     OS << "[serialized] ";
-  OS << getClass()->getName() << " {\n";
+  if (SILType classTy = getClassType()) {
+    OS << classTy;
+  } else {
+    OS << getClass()->getName();
+  }
+  OS << " {\n";
 
   for (auto &entry : getEntries()) {
     OS << "  ";
@@ -4186,6 +4203,7 @@ void SILDifferentiabilityWitness::print(llvm::raw_ostream &OS,
   // (<...>)?
   if (auto derivativeGenSig = getDerivativeGenericSignature()) {
     auto subPrinter = PrintOptions::printSIL();
+    subPrinter.PrintInverseRequirements = true;
     derivativeGenSig->print(OS, subPrinter);
     OS << " ";
   }

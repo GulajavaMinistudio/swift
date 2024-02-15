@@ -29,6 +29,7 @@
 #include "swift/AST/DiagnosticsSema.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/GenericEnvironment.h"
+#include "swift/AST/InverseMarking.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/NameLookupRequests.h"
 #include "swift/AST/PackConformance.h"
@@ -178,7 +179,6 @@ ProtocolConformanceRef ModuleDecl::lookupConformance(Type type,
       ImplicitKnownProtocolConformanceRequest icvRequest{nominal, *kp};
       if (getASTContext().evaluator.hasActiveRequest(icvRequest) ||
           getASTContext().evaluator.hasActiveRequest(request)) {
-        assert(!getInvertibleProtocolKind(*kp));
         return ProtocolConformanceRef::forInvalid();
       }
     }
@@ -205,6 +205,9 @@ static ProtocolConformanceRef getBuiltinTupleTypeConformance(
   ASTContext &ctx = protocol->getASTContext();
 
   auto *tupleDecl = ctx.getBuiltinTupleDecl();
+
+  // Ignore @lvalue's within the tuple.
+  type = type->getRValueType();
 
   // Find the (unspecialized) conformance.
   SmallVector<ProtocolConformance *, 2> conformances;
@@ -400,6 +403,41 @@ static ProtocolConformanceRef getBuiltinMetaTypeTypeConformance(
   return ProtocolConformanceRef::forMissingOrInvalid(type, protocol);
 }
 
+static ProtocolConformanceRef
+getBuiltinInvertibleProtocolConformance(NominalTypeDecl *nominal,
+                                        Type type,
+                                        ProtocolDecl *protocol) {
+  assert(isa<ClassDecl>(nominal));
+  ASTContext &ctx = protocol->getASTContext();
+
+  auto ip = protocol->getInvertibleProtocolKind();
+  switch (*ip) {
+  case InvertibleProtocolKind::Copyable:
+    // If move-only classes is enabled, we'll check the markings.
+    if (ctx.LangOpts.hasFeature(Feature::MoveOnlyClasses)) {
+      auto marking = nominal->getMarking(*ip);
+      switch (marking.getInverse().getKind()) {
+      case InverseMarking::Kind::LegacyExplicit:
+      case InverseMarking::Kind::Explicit:
+        // An inverse ~Copyable prevents conformance.
+        return ProtocolConformanceRef::forInvalid();
+
+      case InverseMarking::Kind::Inferred: // ignore "inferred" inverse marking
+      case InverseMarking::Kind::None:
+        break;
+      }
+    }
+    break;
+  case InvertibleProtocolKind::Escapable:
+    // Always conforms.
+    break;
+  }
+
+  return ProtocolConformanceRef(
+      ctx.getBuiltinConformance(type, protocol,
+                                BuiltinConformanceKind::Synthesized));
+}
+
 /// Synthesize a builtin type conformance to the given protocol, if
 /// appropriate.
 static ProtocolConformanceRef
@@ -470,10 +508,18 @@ LookupConformanceInModuleRequest::evaluate(
   auto *protocol = desc.PD;
   ASTContext &ctx = mod->getASTContext();
 
+  // Remove SIL reference ownership wrapper, if present.
+  type = type->getReferenceStorageReferent();
+
   // A dynamic Self type conforms to whatever its underlying type
   // conforms to.
   if (auto selfType = type->getAs<DynamicSelfType>())
     type = selfType->getSelfType();
+
+  // A pack element type conforms to whatever its underlying pack type
+  // conforms to.
+  if (auto packElement = type->getAs<PackElementType>())
+    type = packElement->getPackType();
 
   // An archetype conforms to a protocol if the protocol is listed in the
   // archetype's list of conformances, or if the archetype has a superclass
@@ -563,13 +609,16 @@ LookupConformanceInModuleRequest::evaluate(
 #ifndef NDEBUG
   // Ensure we haven't missed queries for the specialty SIL types
   // in the AST in conformance to one of the invertible protocols.
-  if (auto kp = protocol->getKnownProtocolKind())
-    if (getInvertibleProtocolKind(*kp))
+  if (auto kp = protocol->getKnownProtocolKind()) {
+    if (getInvertibleProtocolKind(*kp)) {
       assert(!(type->is<SILFunctionType,
                         SILBoxType,
                         SILMoveOnlyWrappedType,
                         SILPackType,
                         SILTokenType>()));
+      assert(!type->is<ReferenceStorageType>());
+    }
+  }
 #endif
 
   auto nominal = type->getAnyNominal();
@@ -577,6 +626,13 @@ LookupConformanceInModuleRequest::evaluate(
   // If we don't have a nominal type, there are no conformances.
   if (!nominal || isa<ProtocolDecl>(nominal))
     return ProtocolConformanceRef::forMissingOrInvalid(type, protocol);
+
+  // We specially avoid recording conformances to invertible protocols in a
+  // class's conformance table. This prevents an evaluator cycle.
+  if (ctx.LangOpts.hasFeature(Feature::NoncopyableGenerics)
+      && isa<ClassDecl>(nominal)
+      && protocol->getInvertibleProtocolKind())
+        return getBuiltinInvertibleProtocolConformance(nominal, type, protocol);
 
   // Expand conformances added by extension macros.
   //
