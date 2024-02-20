@@ -869,9 +869,6 @@ ERROR(serialization_target_too_new_repl,none,
       "deployment target of %0 %3: %4",
       (StringRef, llvm::VersionTuple, Identifier, llvm::VersionTuple,
        StringRef))
-ERROR(serialization_noncopyable_generics_mismatch,none,
-      "module %0 was not compiled with NoncopyableGenerics",
-      (Identifier))
 
 ERROR(serialization_fatal,Fatal,
       "fatal error encountered while reading from module '%0'; "
@@ -5561,12 +5558,13 @@ ERROR(isolated_attr_global_actor_type,none,
 ERROR(isolated_attr_bad_convention,none,
       "'@isolated(%0)' function type cannot have %1 convention",
       (StringRef, StringRef))
-ERROR(isolation_macro_experimental,none,
-      "#isolation macro is experimental", ())
 
 NOTE(in_derived_conformance, none,
      "in derived conformance to %0",
      (Type))
+NOTE(in_derived_witness, none,
+     "in %0 %1 for derived conformance to %2",
+     (DescriptiveDeclKind, DeclName, Type))
 ERROR(non_sendable_param_type,none,
       "non-sendable type %0 %select{passed in call to %3 %kind2|"
       "exiting %3 context in call to non-isolated %kind2|"
@@ -7535,9 +7533,6 @@ ERROR(extension_macro_invalid_conformance,none,
 ERROR(macro_attached_to_invalid_decl,none,
       "'%0' macro cannot be attached to %1 (%base2)",
       (StringRef, DescriptiveDeclKind, const Decl *))
-ERROR(macro_as_default_argument, none,
-      "non-built-in macro cannot be used as default argument",
-      ())
 ERROR(conformance_macro,none,
       "conformance macros are replaced by extension macros",
       ())
@@ -7813,8 +7808,7 @@ ERROR(lifetime_dependence_cannot_use_kind, none,
       (StringRef, StringRef))
 ERROR(lifetime_dependence_only_on_function_method_init_result, none,
       "lifetime dependence specifiers may only be used on result of "
-      "functions, methods, initializers",
-      ())
+       "functions, methods, initializers", ())
 ERROR(lifetime_dependence_invalid_return_type, none,
       "lifetime dependence can only be specified on ~Escapable results", ())
 ERROR(lifetime_dependence_missing_ownership_modifier, none,
@@ -7822,21 +7816,22 @@ ERROR(lifetime_dependence_missing_ownership_modifier, none,
       "modifiers (borrowing, consuming, inout)", ())
 ERROR(lifetime_dependence_cannot_infer_wo_ownership_modifier_on_method, none,
       "cannot infer lifetime dependence, specify ownership modifier for the "
-      "method",
-      ())
-ERROR(lifetime_dependence_cannot_infer_wo_ambiguous_candidate, none,
+       "method", ())
+ ERROR(lifetime_dependence_cannot_infer_ambiguous_candidate, none,
       "cannot infer lifetime dependence, multiple ~Escapable or ~Copyable "
       "parameters with ownership modifiers, specify explicit lifetime "
-      "dependence",
-      ())
+       "dependence", ())
 ERROR(lifetime_dependence_cannot_infer_no_candidates, none,
-      "cannot infer lifetime dependence, no ~Escapable or ~Copyable "
-      "parameters with ownership modifiers present",
-      ())
+       "cannot infer lifetime dependence, no parameters with ownership "
+       "modifiers present", ())
 ERROR(lifetime_dependence_ctor_non_self_or_nil_return, none,
       "expected nil or self as return values in an initializer with "
-      "lifetime dependent specifiers",
-      ())
+       "lifetime dependent specifiers", ())
+ERROR(lifetime_dependence_cannot_use_infer, none,
+       "invalid use of %0 lifetime dependence on Escapable type",
+       (StringRef))
+ERROR(lifetime_dependence_on_bitwise_copyable, none,
+      "invalid lifetime dependence on bitwise copyable type", ())
 
 //===----------------------------------------------------------------------===//
 //                             MARK: Transferring

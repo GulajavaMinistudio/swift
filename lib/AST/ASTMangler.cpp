@@ -922,6 +922,8 @@ void ASTMangler::appendSymbolKind(SymbolKind SKind) {
     case SymbolKind::DistributedThunk: return appendOperator("TE");
     case SymbolKind::DistributedAccessor: return appendOperator("TF");
     case SymbolKind::AccessibleFunctionRecord: return appendOperator("HF");
+    case SymbolKind::AccessibleProtocolRequirementFunctionRecord:
+    return appendOperator("HpF");
     case SymbolKind::BackDeploymentThunk: return appendOperator("Twb");
     case SymbolKind::BackDeploymentFallback: return appendOperator("TwB");
     case SymbolKind::HasSymbolQuery: return appendOperator("TwS");
@@ -1987,6 +1989,9 @@ void ASTMangler::appendImplFunctionType(SILFunctionType *fn,
   if (!fn->isNoEscape())
     OpArgs.push_back('e');
 
+  if (fn->hasTransferringResult())
+    OpArgs.push_back('T');
+
   switch (fn->getIsolation()) {
   case SILFunctionTypeIsolation::Unknown:
     break;
@@ -2087,6 +2092,8 @@ void ASTMangler::appendImplFunctionType(SILFunctionType *fn,
   // Mangle the parameters.
   for (auto param : fn->getParameters()) {
     OpArgs.push_back(getParamConvention(param.getConvention()));
+    if (param.hasOption(SILParameterInfo::Transferring))
+      OpArgs.push_back('T');
     if (auto diffKind = getParamDifferentiability(param.getOptions()))
       OpArgs.push_back(*diffKind);
     appendType(param.getInterfaceType(), sig, forDecl);
@@ -2840,9 +2847,24 @@ void ASTMangler::appendFunctionSignature(AnyFunctionType *fn,
     break;
   }
 
-  if (Type globalActor = fn->getGlobalActor()) {
-    appendType(globalActor, sig);
+  auto isolation = fn->getIsolation();
+  switch (isolation.getKind()) {
+  case FunctionTypeIsolation::Kind::NonIsolated:
+    break;
+  case FunctionTypeIsolation::Kind::Parameter:
+    // Parameter isolation is already mangled in the parameters.
+    break;
+  case FunctionTypeIsolation::Kind::GlobalActor:
+    appendType(isolation.getGlobalActorType(), sig);
     appendOperator("Yc");
+    break;
+  case FunctionTypeIsolation::Kind::Erased:
+    appendOperator("YA");
+    break;
+  }
+
+  if (fn->hasTransferringResult()) {
+    appendOperator("YT");
   }
 
   if (auto *afd = dyn_cast_or_null<AbstractFunctionDecl>(forDecl)) {
@@ -3021,7 +3043,8 @@ void ASTMangler::appendParameterTypeListElement(
   }
   if (flags.isIsolated())
     appendOperator("Yi");
-
+  if (flags.isTransferring())
+    appendOperator("Yu");
   if (flags.isCompileTimeConst())
     appendOperator("Yt");
 

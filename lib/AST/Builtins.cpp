@@ -299,8 +299,7 @@ struct CollectGenericParams {
     // If it's an invertible protocol and NoncopyableGenerics is disabled
     // then skip the requirement.
     if (req.getProtocolDecl()->getInvertibleProtocolKind())
-      if (!(SWIFT_ENABLE_EXPERIMENTAL_NONCOPYABLE_GENERICS ||
-          SC.Context.LangOpts.hasFeature(Feature::NoncopyableGenerics)))
+      if (!SC.Context.LangOpts.hasFeature(Feature::NoncopyableGenerics))
         return;
 
     AddedRequirements.push_back(req);
@@ -736,8 +735,7 @@ namespace {
       // If it's an invertible protocol and NoncopyableGenerics is disabled
       // then skip the requirement.
       if (req.getProtocolDecl()->getInvertibleProtocolKind())
-        if (!(SWIFT_ENABLE_EXPERIMENTAL_NONCOPYABLE_GENERICS ||
-            Context.LangOpts.hasFeature(Feature::NoncopyableGenerics)))
+        if (!Context.LangOpts.hasFeature(Feature::NoncopyableGenerics))
           return;
 
       addedRequirements.push_back(req);
@@ -886,7 +884,7 @@ static ValueDecl *getTakeOperation(ASTContext &ctx, Identifier id) {
 
 static ValueDecl *getStoreOperation(ASTContext &ctx, Identifier id) {
   return getBuiltinFunction(ctx, id, _thin,
-                            _generics(_unrestricted, _conformsToDefaults(0)),
+                            _generics(_unrestricted),
                             _parameters(_owned(_typeparam(0)),
                                         _rawPointer),
                             _void);
@@ -894,7 +892,7 @@ static ValueDecl *getStoreOperation(ASTContext &ctx, Identifier id) {
 
 static ValueDecl *getDestroyOperation(ASTContext &ctx, Identifier id) {
   return getBuiltinFunction(ctx, id, _thin,
-                            _generics(_unrestricted, _conformsToDefaults(0)),
+                            _generics(_unrestricted),
                             _parameters(_metatype(_typeparam(0)),
                                         _rawPointer),
                             _void);
@@ -902,7 +900,7 @@ static ValueDecl *getDestroyOperation(ASTContext &ctx, Identifier id) {
 
 static ValueDecl *getDestroyArrayOperation(ASTContext &ctx, Identifier id) {
   return getBuiltinFunction(ctx, id, _thin,
-                            _generics(_unrestricted, _conformsToDefaults(0)),
+                            _generics(_unrestricted),
                             _parameters(_metatype(_typeparam(0)),
                                         _rawPointer,
                                         _word),
@@ -922,9 +920,20 @@ static ValueDecl *getAssumeAlignment(ASTContext &ctx, Identifier id) {
                             _rawPointer);
 }
 
+static ValueDecl *getCopyArrayOperation(ASTContext &ctx, Identifier id) {
+  return getBuiltinFunction(ctx, id, _thin,
+                            _generics(_unrestricted,
+                                      _conformsTo(_typeparam(0), _copyable)),
+                            _parameters(_metatype(_typeparam(0)),
+                                        _rawPointer,
+                                        _rawPointer,
+                                        _word),
+                            _void);
+}
+
 static ValueDecl *getTransferArrayOperation(ASTContext &ctx, Identifier id) {
   return getBuiltinFunction(ctx, id, _thin,
-                            _generics(_unrestricted, _conformsToDefaults(0)),
+                            _generics(_unrestricted),
                             _parameters(_metatype(_typeparam(0)),
                                         _rawPointer,
                                         _rawPointer,
@@ -987,9 +996,7 @@ static ValueDecl *getAllocWithTailElemsOperation(ASTContext &Context,
 static ValueDecl *getProjectTailElemsOperation(ASTContext &ctx,
                                                Identifier id) {
   return getBuiltinFunction(ctx, id, _thin,
-                            _generics(_unrestricted, _unrestricted,
-                                      _conformsToDefaults(0),
-                                      _conformsToDefaults(1)),
+                            _generics(_unrestricted, _unrestricted),
                             _parameters(_typeparam(0),
                                         _metatype(_typeparam(1))),
                             _rawPointer);
@@ -1009,9 +1016,7 @@ static ValueDecl *getGepOperation(ASTContext &ctx, Identifier id,
 static ValueDecl *getGetTailAddrOperation(ASTContext &ctx, Identifier id,
                                           Type argType) {
   return getBuiltinFunction(ctx, id, _thin,
-                            _generics(_unrestricted, _unrestricted,
-                                      _conformsToDefaults(0),
-                                      _conformsToDefaults(1)),
+                            _generics(_unrestricted, _unrestricted),
                             _parameters(_rawPointer,
                                         argType,
                                         _metatype(_typeparam(0)),
@@ -2778,6 +2783,7 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
 
   case BuiltinValueKind::Assign:
   case BuiltinValueKind::Init:
+  case BuiltinValueKind::StoreRaw:
     if (!Types.empty()) return nullptr;
     return getStoreOperation(Context, Id);
 
@@ -2786,12 +2792,15 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
     return getDestroyArrayOperation(Context, Id);
       
   case BuiltinValueKind::CopyArray:
-  case BuiltinValueKind::TakeArrayNoAlias:
-  case BuiltinValueKind::TakeArrayFrontToBack:
-  case BuiltinValueKind::TakeArrayBackToFront:
   case BuiltinValueKind::AssignCopyArrayNoAlias:
   case BuiltinValueKind::AssignCopyArrayFrontToBack:
   case BuiltinValueKind::AssignCopyArrayBackToFront:
+    if (!Types.empty()) return nullptr;
+    return getCopyArrayOperation(Context, Id);
+
+  case BuiltinValueKind::TakeArrayNoAlias:
+  case BuiltinValueKind::TakeArrayFrontToBack:
+  case BuiltinValueKind::TakeArrayBackToFront:
   case BuiltinValueKind::AssignTakeArray:
     if (!Types.empty()) return nullptr;
     return getTransferArrayOperation(Context, Id);

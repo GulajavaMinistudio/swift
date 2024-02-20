@@ -76,8 +76,6 @@
 
 #define DEBUG_TYPE "Serialization"
 
-#pragma clang optimize off
-
 using namespace swift;
 using namespace swift::serialization;
 using namespace llvm::support;
@@ -3023,6 +3021,9 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
           S.Out, S.ScratchRecord, abbrCode, false, /*implicit flag*/
           S.addDeclRef(afd), pieces.size(), pieces);
       return;
+    }
+    case DeclAttrKind::DistributedThunkTarget: {
+      assert(false && "not implemented");
     }
 
     case DeclAttrKind::TypeEraser: {

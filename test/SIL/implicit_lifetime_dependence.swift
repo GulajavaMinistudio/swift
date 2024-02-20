@@ -6,7 +6,7 @@
 // RUN: -enable-experimental-feature NoncopyableGenerics \
 // RUN: -enable-experimental-lifetime-dependence-inference | %FileCheck %s
 // REQUIRES: asserts
-// REQUIRES: noncopyable_generics
+
 
 import Builtin
 
@@ -23,6 +23,10 @@ struct BufferView : ~Escapable {
 // CHECK: sil hidden @$s28implicit_lifetime_dependence10BufferViewVyA2CYlicfC : $@convention(method) (@owned BufferView, @thin BufferView.Type) -> _inherit(1) @owned BufferView {
   init(_ otherBV: consuming BufferView) {
     self.ptr = otherBV.ptr
+  }
+// CHECK: sil hidden @$s28implicit_lifetime_dependence10BufferViewVyACSWYls_SaySiGhtcfC : $@convention(method) (UnsafeRawBufferPointer, @guaranteed Array<Int>, @thin BufferView.Type) -> _scope(1) @owned BufferView {
+  init(_ ptr: UnsafeRawBufferPointer, _ a: borrowing Array<Int>) {
+    self.ptr = ptr
   }
 }
 
@@ -71,5 +75,18 @@ struct Wrapper : ~Escapable {
 // CHECK:sil hidden @$s28implicit_lifetime_dependence7WrapperV8getView2AA10BufferViewVyYLiF : $@convention(method) (@owned Wrapper) -> _inherit(0) @owned BufferView {
   consuming func getView2() -> BufferView {
     return view
+  }
+}
+
+struct Container : ~Copyable {
+  var ptr: UnsafeRawBufferPointer
+// CHECK: sil hidden @$s28implicit_lifetime_dependence9ContainerV4viewAA10BufferViewVvg : $@convention(method) (@guaranteed Container) -> _scope(0) @owned BufferView {
+  var view: BufferView {
+    get {
+      return BufferView(ptr)
+    }
+    set(newView) {
+      ptr = newView.ptr
+    }
   }
 }

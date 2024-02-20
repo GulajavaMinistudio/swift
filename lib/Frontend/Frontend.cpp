@@ -71,7 +71,8 @@ std::string CompilerInvocation::getPCHHash() const {
                            SearchPathOpts.getPCHHashComponents(),
                            DiagnosticOpts.getPCHHashComponents(),
                            SILOpts.getPCHHashComponents(),
-                           IRGenOpts.getPCHHashComponents());
+                           IRGenOpts.getPCHHashComponents(),
+                           CASOpts.getPCHHashComponents());
 
   return llvm::toString(llvm::APInt(64, Code), 36, /*Signed=*/false);
 }
@@ -85,7 +86,8 @@ std::string CompilerInvocation::getModuleScanningHash() const {
                            SearchPathOpts.getModuleScanningHashComponents(),
                            DiagnosticOpts.getModuleScanningHashComponents(),
                            SILOpts.getModuleScanningHashComponents(),
-                           IRGenOpts.getModuleScanningHashComponents());
+                           IRGenOpts.getModuleScanningHashComponents(),
+                           CASOpts.getModuleScanningHashComponents());
 
   return llvm::toString(llvm::APInt(64, Code), 36, /*Signed=*/false);
 }
@@ -1169,9 +1171,14 @@ bool CompilerInstance::canImportCxxShim() const {
   ImportPath::Module::Builder builder(
       getASTContext().getIdentifier(CXX_SHIM_NAME));
   auto modulePath = builder.get();
+  // Currently, Swift interfaces are not to expose their
+  // C++ dependencies. Which means that when scanning them we should not
+  // bring in such dependencies, including CxxShims.
   return getASTContext().testImportModule(modulePath) &&
          !Invocation.getFrontendOptions()
-              .InputsAndOutputs.hasModuleInterfaceOutputPath();
+              .InputsAndOutputs.hasModuleInterfaceOutputPath() &&
+         !Invocation.getFrontendOptions()
+              .DependencyScanningSubInvocation;
 }
 
 bool CompilerInstance::supportCaching() const {

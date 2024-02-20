@@ -671,7 +671,7 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   Opts.EnablePackageInterfaceLoad = Args.hasArg(OPT_experimental_package_interface_load) ||
                                     ::getenv("SWIFT_ENABLE_PACKAGE_INTERFACE_LOAD");
 
-  Opts.EnableBypassResilienceInPackage = Args.hasArg(OPT_package_bypass_resilience_optimization);
+  Opts.EnableBypassResilienceInPackage = Args.hasArg(OPT_experimental_package_bypass_resilience);
 
   Opts.DisableAvailabilityChecking |=
       Args.hasArg(OPT_disable_availability_checking);
@@ -3272,6 +3272,8 @@ bool CompilerInvocation::parseArgs(
     SILOpts.SkipFunctionBodies = FunctionBodySkipping::None;
     SILOpts.CMOMode = CrossModuleOptimizationMode::Everything;
     SILOpts.EmbeddedSwift = true;
+    // OSSA modules are required for deinit de-virtualization.
+    SILOpts.EnableOSSAModules = true;
   } else {
     if (SILOpts.NoAllocations) {
       Diags.diagnose(SourceLoc(), diag::no_allocations_without_embedded);

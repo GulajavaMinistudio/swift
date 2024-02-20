@@ -1027,13 +1027,6 @@ static bool checkExpressionMacroDefaultValueRestrictions(ParamDecl *param) {
   auto *initExpr = param->getStructuralDefaultExpr();
   assert(initExpr);
 
-  // Prohibit default argument that is a non-built-in macro to avoid confusion,
-  // unless the experimental feature flag is set.
-  if (!ctx.LangOpts.hasFeature(Feature::ExpressionMacroDefaultArguments)) {
-    ctx.Diags.diagnose(initExpr->getLoc(), diag::macro_as_default_argument);
-    return false;
-  }
-
 #if SWIFT_BUILD_SWIFT_SYNTAX
   auto *DC = param->getInnermostDeclContext();
   const SourceFile *SF = DC->getParentSourceFile();
@@ -1617,12 +1610,7 @@ static bool isModuleQualified(TypeRepr *repr, ModuleDecl *module) {
 
   // FIXME(ModQual): This needs to be updated once we have an explicit
   //                 module qualification syntax.
-  IdentTypeRepr *baseIdent =
-      dyn_cast<IdentTypeRepr>(memberTy->getBaseComponent());
-  if (!baseIdent) {
-    return false;
-  }
-  return baseIdent->getNameRef().isSimpleName(module->getName());
+  return memberTy->getRoot()->isSimpleUnqualifiedIdentifier(module->getName());
 }
 
 /// If the provided type is an AttributedTypeRepr, unwraps it and provides both

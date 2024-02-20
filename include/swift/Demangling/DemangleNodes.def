@@ -133,6 +133,7 @@ NODE(ImplConvention)
 NODE(ImplDifferentiabilityKind)
 NODE(ImplErasedIsolation)
 NODE(ImplParameterResultDifferentiability)
+NODE(ImplParameterTransferring)
 NODE(ImplFunctionAttribute)
 NODE(ImplFunctionConvention)
 NODE(ImplFunctionConventionName)
@@ -149,7 +150,9 @@ NODE(InfixOperator)
 CONTEXT_NODE(Initializer)
 CONTEXT_NODE(InitAccessor)
 NODE(Isolated)
+NODE(Transferring)
 NODE(IsolatedAnyFunctionType)
+NODE(TransferringResultFunctionType)
 NODE(KeyPathGetterThunkHelper)
 NODE(KeyPathSetterThunkHelper)
 NODE(KeyPathEqualsThunkHelper)
@@ -357,6 +360,9 @@ NODE(AsyncSuspendResumePartialFunction)
 // Added in Swift 5.6
 NODE(AccessibleFunctionRecord)
 NODE(CompileTimeConst)
+
+// Added in Swift 5.11
+NODE(AccessibleProtocolRequirementFunctionRecord)
 
 // Added in Swift 5.7
 NODE(BackDeploymentThunk)

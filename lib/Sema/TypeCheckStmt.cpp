@@ -1709,8 +1709,9 @@ Stmt *PreCheckReturnStmtRequest::evaluate(Evaluator &evaluator, ReturnStmt *RS,
 
   auto *E = RS->getResult();
 
-  // In an initializer, the only expression allowed is "nil", which indicates
-  // failure from a failable initializer.
+  // In an initializer, the only expressions allowed are "nil", which indicates
+  // failure from a failable initializer or "self" in the case of ~Escapable
+  // initializers with explicit lifetime dependence.
   if (auto *ctor =
           dyn_cast_or_null<ConstructorDecl>(fn->getAbstractFunctionDecl())) {
 
@@ -1719,16 +1720,10 @@ Stmt *PreCheckReturnStmtRequest::evaluate(Evaluator &evaluator, ReturnStmt *RS,
     auto *nilExpr = dyn_cast<NilLiteralExpr>(E->getSemanticsProvidingExpr());
     if (!nilExpr) {
       if (ctor->hasLifetimeDependentReturn()) {
-        // Typecheck the expression unconditionally.
-        TypeChecker::typeCheckExpression(E, DC, {});
-
-        auto *checkE = E;
-        if (auto *load = dyn_cast<LoadExpr>(checkE))
-          checkE = load->getSubExpr();
         bool isSelf = false;
-        if (auto DRE = dyn_cast<DeclRefExpr>(checkE))
-          isSelf = DRE->getDecl() == ctor->getImplicitSelfDecl();
-
+        if (auto *UDRE = dyn_cast<UnresolvedDeclRefExpr>(E)) {
+          isSelf = UDRE->getName().isSimpleName(ctx.Id_self);
+        }
         if (!isSelf) {
           ctx.Diags.diagnose(
               RS->getStartLoc(),
