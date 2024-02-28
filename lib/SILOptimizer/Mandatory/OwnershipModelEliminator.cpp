@@ -219,6 +219,7 @@ struct OwnershipModelEliminatorVisitor
   HANDLE_FORWARDING_INST(LinearFunctionExtract)
   HANDLE_FORWARDING_INST(DifferentiableFunctionExtract)
   HANDLE_FORWARDING_INST(MarkUninitialized)
+  HANDLE_FORWARDING_INST(FunctionExtractIsolation)
 #undef HANDLE_FORWARDING_INST
 };
 
@@ -401,7 +402,7 @@ static void injectDebugPoison(DestroyValueInst *destroy) {
     const SILDebugScope *scope = debugVal->getDebugScope();
     auto loc = debugVal->getLoc();
 
-    llvm::Optional<SILDebugVariable> varInfo = debugVal->getVarInfo();
+    std::optional<SILDebugVariable> varInfo = debugVal->getVarInfo();
     if (!varInfo)
       continue;
 
@@ -836,6 +837,7 @@ struct OwnershipModelEliminator : SILFunctionTransform {
           "ownership. Please re-run with -sil-verify-all to identify the "
           "actual pass that introduced the verification error.");
       f->verify(getAnalysis<BasicCalleeAnalysis>()->getCalleeCache());
+      getPassManager()->runSwiftFunctionVerification(f);
     }
 
     if (stripOwnership(*f)) {

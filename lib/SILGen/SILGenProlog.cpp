@@ -578,7 +578,7 @@ class ArgumentInitHelper {
   LoweredParamGenerator loweredParams;
   uint16_t ArgNo = 0;
 
-  llvm::Optional<FunctionInputGenerator> FormalParamTypes;
+  std::optional<FunctionInputGenerator> FormalParamTypes;
 
 public:
   ArgumentInitHelper(SILGenFunction &SGF,
@@ -586,7 +586,7 @@ public:
       : SGF(SGF), loweredParams(SGF, numIgnoredTrailingParameters) {}
 
   /// Emit the given list of parameters.
-  unsigned emitParams(llvm::Optional<AbstractionPattern> origFnType,
+  unsigned emitParams(std::optional<AbstractionPattern> origFnType,
                       ParameterList *paramList, ParamDecl *selfParam) {
     // If have an orig function type, initialize FormalParamTypes.
     SmallVector<AnyFunctionType::Param, 8> substFormalParams;
@@ -614,7 +614,7 @@ public:
       // formal self parameter, but they do not pass an origFnType down,
       // so we can ignore that possibility.
       FormalParamTypes.emplace(SGF.getASTContext(), loweredParams, *origFnType,
-                               llvm::makeArrayRef(substFormalParams),
+                               llvm::ArrayRef(substFormalParams),
                                /*ignore final*/ false);
     }
 
@@ -827,7 +827,7 @@ private:
       // We don't need to mark_uninitialized since we immediately initialize.
       auto mutableBox =
           SGF.emitLocalVariableWithCleanup(pd,
-                                           /*uninitialized kind*/ llvm::None);
+                                           /*uninitialized kind*/ std::nullopt);
       argrv.ensurePlusOne(SGF, loc).forwardInto(SGF, loc, mutableBox.get());
       return;
     }
@@ -1209,20 +1209,30 @@ static void emitCaptureArguments(SILGenFunction &SGF,
 }
 
 void SILGenFunction::emitProlog(
-    DeclContext *DC, CaptureInfo captureInfo,
-    ParameterList *paramList, ParamDecl *selfParam, Type resultType,
-    llvm::Optional<Type> errorType, SourceLoc throwsLoc,
-    llvm::Optional<AbstractionPattern> origClosureType) {
+    DeclContext *DC, CaptureInfo captureInfo, ParameterList *paramList,
+    ParamDecl *selfParam, Type resultType, std::optional<Type> errorType,
+    SourceLoc throwsLoc) {
   // Emit the capture argument variables. These are placed last because they
   // become the first curry level of the SIL function.
   assert(captureInfo.hasBeenComputed() &&
          "can't emit prolog of function with uncomputed captures");
 
+  bool hasErasedIsolation =
+    (TypeContext && TypeContext->ExpectedLoweredType->hasErasedIsolation());
+
   uint16_t ArgNo = emitBasicProlog(DC, paramList, selfParam, resultType,
                                    errorType, throwsLoc,
                                    /*ignored parameters*/
-                                     captureInfo.getCaptures().size(),
-                                   origClosureType);
+                                     (hasErasedIsolation ? 1 : 0) +
+                                     captureInfo.getCaptures().size());
+
+  // If we're emitting into a type context that expects erased isolation,
+  // add (and ignore) the isolation parameter.
+  if (hasErasedIsolation) {
+    SILType ty = SILType::getOpaqueIsolationType(getASTContext());
+    SILValue val = F.begin()->createFunctionArgument(ty);
+    (void) val;
+  }
 
   for (auto capture : captureInfo.getCaptures()) {
     if (capture.isDynamicSelfMetadata()) {
@@ -1421,12 +1431,14 @@ static void emitIndirectErrorParameter(SILGenFunction &SGF,
 
 uint16_t SILGenFunction::emitBasicProlog(
     DeclContext *DC, ParameterList *paramList, ParamDecl *selfParam,
-    Type resultType, llvm::Optional<Type> errorType, SourceLoc throwsLoc,
-    unsigned numIgnoredTrailingParameters,
-    llvm::Optional<AbstractionPattern> origClosureType) {
+    Type resultType, std::optional<Type> errorType, SourceLoc throwsLoc,
+    unsigned numIgnoredTrailingParameters) {
   // Create the indirect result parameters.
   auto genericSig = DC->getGenericSignatureOfContext();
   resultType = resultType->getReducedType(genericSig);
+
+  std::optional<AbstractionPattern> origClosureType;
+  if (TypeContext) origClosureType = TypeContext->OrigType;
 
   AbstractionPattern origResultType = origClosureType
     ? origClosureType->getFunctionResultType()
@@ -1435,7 +1447,7 @@ uint16_t SILGenFunction::emitBasicProlog(
   
   emitIndirectResultParameters(*this, resultType, origResultType, DC);
 
-  llvm::Optional<AbstractionPattern> origErrorType;
+  std::optional<AbstractionPattern> origErrorType;
   if (origClosureType && !origClosureType->isTypeParameterOrOpaqueArchetype()) {
     CanType substClosureType = origClosureType->getType()
         .subst(origClosureType->getGenericSubstitutions())->getCanonicalType();
