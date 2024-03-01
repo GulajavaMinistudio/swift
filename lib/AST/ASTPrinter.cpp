@@ -1205,6 +1205,11 @@ static bool hasLessAccessibleSetter(const AbstractStorageDecl *ASD) {
   return ASD->getSetterFormalAccess() < ASD->getFormalAccess();
 }
 
+static bool isImplicitRethrowsProtocol(const ProtocolDecl *proto) {
+  return proto->isSpecificProtocol(KnownProtocolKind::AsyncSequence) ||
+      proto->isSpecificProtocol(KnownProtocolKind::AsyncIteratorProtocol);
+}
+
 void PrintAST::printAttributes(const Decl *D) {
   if (Options.SkipAttributes)
     return;
@@ -1214,6 +1219,17 @@ void PrintAST::printAttributes(const Decl *D) {
     (void)D->getSemanticAttrs();
 
   auto attrs = D->getAttrs();
+
+  // When printing a Swift interface, make sure that older compilers see
+  // @rethrows on the AsyncSequence and AsyncIteratorProtocol.
+  if (Options.AsyncSequenceRethrows && Options.IsForSwiftInterface) {
+    if (auto proto = dyn_cast<ProtocolDecl>(D)) {
+      if (isImplicitRethrowsProtocol(proto)) {
+        Printer << "@rethrows";
+        Printer.printNewline();
+      }
+    }
+  }
 
   // Save the current number of exclude attrs to restore once we're done.
   unsigned originalExcludeAttrCount = Options.ExcludeAttrList.size();
@@ -3305,6 +3321,35 @@ static bool usesFeatureNoAsyncAvailability(Decl *decl) {
    return decl->getAttrs().getNoAsync(decl->getASTContext()) != nullptr;
 }
 
+static bool usesFeatureAssociatedTypeAvailability(Decl *decl) {
+  return isa<AssociatedTypeDecl>(decl) &&
+      decl->getAttrs().hasAttribute<AvailableAttr>();
+}
+
+static void
+suppressingFeatureAssociatedTypeAvailability(
+    PrintOptions &options, llvm::function_ref<void()> action) {
+  unsigned originalExcludeAttrCount = options.ExcludeAttrList.size();
+  options.ExcludeAttrList.push_back(DeclAttrKind::Available);
+  action();
+  options.ExcludeAttrList.resize(originalExcludeAttrCount);
+}
+
+static bool usesFeatureAsyncSequenceFailure(Decl *decl) {
+  if (auto proto = dyn_cast<ProtocolDecl>(decl)) {
+    return isImplicitRethrowsProtocol(proto);
+  }
+
+  return false;
+}
+
+static void
+suppressingFeatureAsyncSequenceFailure(
+    PrintOptions &options, llvm::function_ref<void()> action) {
+  llvm::SaveAndRestore<bool> saved(options.AsyncSequenceRethrows, true);
+  action();
+}
+
 static bool usesFeatureBuiltinIntLiteralAccessors(Decl *decl) {
   return false;
 }
@@ -3809,7 +3854,20 @@ static bool usesFeatureTransferringArgsAndResults(Decl *decl) {
     if (pd->isTransferring())
       return true;
 
-  // TODO: Results.
+  if (auto *fDecl = dyn_cast<FuncDecl>(decl)) {
+    auto fnTy = fDecl->getInterfaceType();
+    bool hasTransferring = false;
+    if (auto *ft = llvm::dyn_cast_if_present<FunctionType>(fnTy)) {
+      if (ft->hasExtInfo())
+        hasTransferring = ft->hasTransferringResult();
+    } else if (auto *ft =
+               llvm::dyn_cast_if_present<GenericFunctionType>(fnTy)) {
+      if (ft->hasExtInfo())
+        hasTransferring = ft->hasTransferringResult();
+    }
+    if (hasTransferring)
+      return true;
+  }
 
   return false;
 }
@@ -6374,6 +6432,32 @@ void Decl::printInherited(ASTPrinter &Printer, const PrintOptions &Opts) const {
   printer.printInherited(this);
 }
 
+/// Determine whether this typealias is an inferred typealias "Failure" that
+/// would conflict with another entity named failure in the same type.
+static bool isConflictingFailureTypeWitness(
+    const TypeAliasDecl *typealias) {
+  if (!typealias->isImplicit())
+    return false;
+
+  ASTContext &ctx = typealias->getASTContext();
+  if (typealias->getName() != ctx.Id_Failure)
+    return false;
+
+  auto nominal = typealias->getDeclContext()->getSelfNominalTypeDecl();
+  if (!nominal)
+    return false;
+
+  // Look for another entity with the same name.
+  auto lookupResults = nominal->lookupDirect(
+      typealias->getName(), typealias->getLoc());
+  for (auto found : lookupResults) {
+    if (found != typealias)
+      return true;
+  }
+
+  return false;
+}
+
 bool Decl::shouldPrintInContext(const PrintOptions &PO) const {
   // Skip getters/setters. They are part of the variable or subscript.
   if (isa<AccessorDecl>(this))
@@ -6411,6 +6495,14 @@ bool Decl::shouldPrintInContext(const PrintOptions &PO) const {
 
   if (isa<IfConfigDecl>(this)) {
     return PO.PrintIfConfig;
+  }
+
+  // Prior to Swift 6, we shouldn't print the inferred associated type
+  // witness for AsyncSequence.Failure. It is always determined from the
+  // AsyncIteratorProtocol witness.
+  if (auto typealias = dyn_cast<TypeAliasDecl>(this)) {
+    if (isConflictingFailureTypeWitness(typealias))
+      return false;
   }
 
   // Print everything else.
@@ -7398,7 +7490,7 @@ public:
     Printer << " -> ";
 
     if (T->hasExtInfo() && T->hasTransferringResult()) {
-      Printer.printKeyword("transferring", Options);
+      Printer.printKeyword("transferring ", Options);
     }
 
     if (T->hasLifetimeDependenceInfo()) {

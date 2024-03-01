@@ -163,6 +163,8 @@ const char UnsafeDeserializationError::ID = '\0';
 void UnsafeDeserializationError::anchor() {}
 const char ModularizationError::ID = '\0';
 void ModularizationError::anchor() {}
+const char InvalidEnumValueError::ID = '\0';
+void InvalidEnumValueError::anchor() {}
 
 /// Skips a single record in the bitstream.
 ///
@@ -1717,6 +1719,35 @@ ModuleFile::getSubstitutionMapChecked(serialization::SubstitutionMapID id) {
   return substitutions;
 }
 
+bool ModuleFile::readInheritedProtocols(
+    SmallVectorImpl<ProtocolDecl *> &inherited) {
+  using namespace decls_block;
+
+  BCOffsetRAII lastRecordOffset(DeclTypeCursor);
+
+  llvm::BitstreamEntry entry =
+      fatalIfUnexpected(DeclTypeCursor.advance(AF_DontPopBlockAtEnd));
+  if (entry.Kind != llvm::BitstreamEntry::Record)
+    return false;
+
+  SmallVector<uint64_t, 8> scratch;
+  unsigned recordID =
+      fatalIfUnexpected(DeclTypeCursor.readRecord(entry.ID, scratch));
+  if (recordID != INHERITED_PROTOCOLS)
+    return false;
+
+  lastRecordOffset.reset();
+
+  ArrayRef<uint64_t> inheritedIDs;
+  InheritedProtocolsLayout::readRecord(scratch, inheritedIDs);
+
+  llvm::transform(inheritedIDs, std::back_inserter(inherited),
+                  [&](uint64_t protocolID) {
+                    return cast<ProtocolDecl>(getDecl(protocolID));
+                  });
+  return true;
+}
+
 bool ModuleFile::readDefaultWitnessTable(ProtocolDecl *proto) {
   using namespace decls_block;
 
@@ -3185,6 +3216,21 @@ class DeclDeserializer {
       decl.get<ExtensionDecl *>()->setInherited(inherited);
   }
 
+  void handleInherited(ProtocolDecl *P,
+                       ArrayRef<ProtocolDecl *> inherited) {
+    SmallVector<InheritedEntry, 2> inheritedTypes;
+    llvm::transform(inherited, std::back_inserter(inheritedTypes), [](auto *I) {
+      return InheritedEntry(TypeLoc::withoutLoc(I->getDeclaredInterfaceType()),
+                            /*isUnchecked=*/false,
+                            /*isRetroactive=*/false,
+                            /*isPreconcurrency=*/false);
+    });
+
+    P->setInherited(ctx.AllocateCopy(inheritedTypes));
+    ctx.evaluator.cacheOutput(InheritedProtocolsRequest{P},
+                              ctx.AllocateCopy(inherited));
+  }
+
 public:
   DeclDeserializer(ModuleFile &MF, Serialized<Decl *> &declOrOffset)
       : MF(MF), ctx(MF.getContext()), declOrOffset(declOrOffset) {}
@@ -4423,21 +4469,21 @@ public:
     IdentifierID nameID;
     DeclContextID contextID;
     bool isImplicit, isClassBounded, isObjC, hasSelfOrAssocTypeRequirements;
+    TypeID superclassID;
     uint8_t rawAccessLevel;
-    unsigned numInheritedTypes;
-    ArrayRef<uint64_t> rawInheritedAndDependencyIDs;
+    ArrayRef<uint64_t> dependencyIDs;
 
     decls_block::ProtocolLayout::readRecord(scratch, nameID, contextID,
                                             isImplicit, isClassBounded, isObjC,
                                             hasSelfOrAssocTypeRequirements,
-                                            rawAccessLevel, numInheritedTypes,
-                                            rawInheritedAndDependencyIDs);
+                                            superclassID,
+                                            rawAccessLevel,
+                                            dependencyIDs);
 
     Identifier name = MF.getIdentifier(nameID);
     PrettySupplementalDeclNameTrace trace(name);
 
-    for (TypeID dependencyID :
-           rawInheritedAndDependencyIDs.slice(numInheritedTypes)) {
+    for (TypeID dependencyID : dependencyIDs) {
       auto dependency = MF.getTypeChecked(dependencyID);
       if (!dependency) {
         return llvm::make_error<TypeError>(
@@ -4455,6 +4501,8 @@ public:
         /*TrailingWhere=*/nullptr);
     declOrOffset = proto;
 
+    proto->setSuperclass(MF.getType(superclassID));
+
     ctx.evaluator.cacheOutput(ProtocolRequiresClassRequest{proto},
                               std::move(isClassBounded));
     ctx.evaluator.cacheOutput(HasSelfOrAssociatedTypeRequirementsRequest{proto},
@@ -4465,13 +4513,16 @@ public:
     else
       return MF.diagnoseFatal();
 
+    SmallVector<ProtocolDecl *, 2> inherited;
+    if (!MF.readInheritedProtocols(inherited))
+      return MF.diagnoseFatal();
+
+    handleInherited(proto, inherited);
+
     auto genericParams = MF.maybeReadGenericParams(DC);
     assert(genericParams && "protocol with no generic parameters?");
     ctx.evaluator.cacheOutput(GenericParamListRequest{proto},
                               std::move(genericParams));
-
-    handleInherited(proto,
-                    rawInheritedAndDependencyIDs.slice(0, numInheritedTypes));
 
     if (isImplicit)
       proto->setImplicit();
@@ -5295,8 +5346,9 @@ public:
     return macro;
   }
 
-  AvailableAttr *readAvailable_DECL_ATTR(SmallVectorImpl<uint64_t> &scratch,
-                                         StringRef blobData);
+  Expected<AvailableAttr *>
+  readAvailable_DECL_ATTR(SmallVectorImpl<uint64_t> &scratch,
+                          StringRef blobData);
 };
 }
 
@@ -5349,7 +5401,7 @@ ModuleFile::getDeclChecked(
   return declOrOffset;
 }
 
-AvailableAttr *
+Expected<AvailableAttr *>
 DeclDeserializer::readAvailable_DECL_ATTR(SmallVectorImpl<uint64_t> &scratch,
                                           StringRef blobData) {
   bool isImplicit;
@@ -5362,14 +5414,21 @@ DeclDeserializer::readAvailable_DECL_ATTR(SmallVectorImpl<uint64_t> &scratch,
   DEF_VER_TUPLE_PIECES(Deprecated);
   DEF_VER_TUPLE_PIECES(Obsoleted);
   DeclID renameDeclID;
-  unsigned platform, messageSize, renameSize;
+  unsigned rawPlatform, messageSize, renameSize;
 
   // Decode the record, pulling the version tuple information.
   serialization::decls_block::AvailableDeclAttrLayout::readRecord(
       scratch, isImplicit, isUnavailable, isDeprecated, isNoAsync,
-      isPackageDescriptionVersionSpecific, isSPI, LIST_VER_TUPLE_PIECES(Introduced),
-      LIST_VER_TUPLE_PIECES(Deprecated), LIST_VER_TUPLE_PIECES(Obsoleted),
-      platform, renameDeclID, messageSize, renameSize);
+      isPackageDescriptionVersionSpecific, isSPI,
+      LIST_VER_TUPLE_PIECES(Introduced), LIST_VER_TUPLE_PIECES(Deprecated),
+      LIST_VER_TUPLE_PIECES(Obsoleted), rawPlatform, renameDeclID, messageSize,
+      renameSize);
+
+  auto maybePlatform = platformFromUnsigned(rawPlatform);
+  if (!maybePlatform.has_value())
+    return llvm::make_error<InvalidEnumValueError>(rawPlatform, "PlatformKind");
+
+  PlatformKind platform = maybePlatform.value();
 
   ValueDecl *renameDecl = nullptr;
   if (renameDeclID) {
@@ -5391,7 +5450,7 @@ DeclDeserializer::readAvailable_DECL_ATTR(SmallVectorImpl<uint64_t> &scratch,
     platformAgnostic = PlatformAgnosticAvailabilityKind::Deprecated;
   else if (isNoAsync)
     platformAgnostic = PlatformAgnosticAvailabilityKind::NoAsync;
-  else if (((PlatformKind)platform) == PlatformKind::none &&
+  else if (platform == PlatformKind::none &&
            (!Introduced.empty() || !Deprecated.empty() || !Obsoleted.empty()))
     platformAgnostic =
         isPackageDescriptionVersionSpecific
@@ -5402,9 +5461,9 @@ DeclDeserializer::readAvailable_DECL_ATTR(SmallVectorImpl<uint64_t> &scratch,
     platformAgnostic = PlatformAgnosticAvailabilityKind::None;
 
   auto attr = new (ctx) AvailableAttr(
-      SourceLoc(), SourceRange(), (PlatformKind)platform, message, rename,
-      renameDecl, Introduced, SourceRange(), Deprecated, SourceRange(),
-      Obsoleted, SourceRange(), platformAgnostic, isImplicit, isSPI);
+      SourceLoc(), SourceRange(), platform, message, rename, renameDecl,
+      Introduced, SourceRange(), Deprecated, SourceRange(), Obsoleted,
+      SourceRange(), platformAgnostic, isImplicit, isSPI);
   return attr;
 }
 
@@ -5643,7 +5702,11 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
       }
 
       case decls_block::Available_DECL_ATTR: {
-        Attr = readAvailable_DECL_ATTR(scratch, blobData);
+        auto attrOrError = readAvailable_DECL_ATTR(scratch, blobData);
+        if (!attrOrError)
+          return MF.diagnoseFatal(attrOrError.takeError());
+
+        Attr = attrOrError.get();
         break;
       }
 
@@ -5753,7 +5816,10 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
           }
 
           auto attr = readAvailable_DECL_ATTR(scratch, blobData);
-          availabilityAttrs.push_back(attr);
+          if (!attr)
+            return MF.diagnoseFatal(attr.takeError());
+
+          availabilityAttrs.push_back(attr.get());
           restoreOffset2.cancel();
           --numAvailabilityAttrs;
         }

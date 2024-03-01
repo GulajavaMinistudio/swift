@@ -286,8 +286,31 @@ public:
         // We only care about macros, so skip everything else.
         if (generatedInfo->kind != GeneratedSourceInfo::ReplacedFunctionBody &&
             generatedInfo->kind != GeneratedSourceInfo::PrettyPrinted)
-          if (auto *MemBuf = SM.getLLVMSourceMgr().getMemoryBuffer(BufferID))
+          if (auto *MemBuf = SM.getLLVMSourceMgr().getMemoryBuffer(BufferID)) {
             Source = MemBuf->getBuffer();
+            // This is copying the buffer twice, but Xcode depends on this
+            // comment in the file.
+            auto origRange = generatedInfo->originalSourceRange;
+            if (origRange.isValid()) {
+              std::string s;
+              {
+                llvm::raw_string_ostream buffer(s);
+                buffer << MemBuf->getBuffer() << "\n";
+                auto originalFilename =
+                    SM.getDisplayNameForLoc(origRange.getStart(), true);
+                unsigned startLine, startColumn, endLine, endColumn;
+                std::tie(startLine, startColumn) =
+                    SM.getPresumedLineAndColumnForLoc(origRange.getStart());
+                std::tie(endLine, endColumn) =
+                    SM.getPresumedLineAndColumnForLoc(origRange.getEnd());
+                buffer << "// original-source-range: "
+                       << DebugPrefixMap.remapPath(originalFilename) << ":"
+                       << startLine << ":" << startColumn << "-" << endLine
+                       << ":" << endColumn << "\n";
+              }
+              Source = BumpAllocatedString(s);
+            }
+          }
       }
     }
     Cached.File = getOrCreateFile(
@@ -2938,21 +2961,19 @@ bool IRGenDebugInfoImpl::buildDebugInfoExpression(
     llvm::DIExpression::FragmentInfo &Fragment) {
   assert(VarInfo.DIExpr && "SIL debug info expression not found");
 
-#ifndef NDEBUG
-  bool HasFragment = VarInfo.DIExpr.hasFragment();
-#endif
-
   const auto &DIExpr = VarInfo.DIExpr;
   for (const SILDIExprOperand &ExprOperand : DIExpr.operands()) {
+    llvm::DIExpression::FragmentInfo SubFragment = {0, 0};
     switch (ExprOperand.getOperator()) {
     case SILDIExprOperator::Fragment:
-      assert(HasFragment && "Fragment must be the last part of a DIExpr");
-#ifndef NDEBUG
-      // Trigger the assert above if we have more than one fragment expression.
-      HasFragment = false;
-#endif
-      if (!handleFragmentDIExpr(ExprOperand, Fragment))
+      if (!handleFragmentDIExpr(ExprOperand, SubFragment))
         return false;
+      assert(!Fragment.SizeInBits
+             || (SubFragment.OffsetInBits + SubFragment.SizeInBits
+              <= Fragment.SizeInBits)
+             && "Invalid nested fragments");
+      Fragment.OffsetInBits += SubFragment.OffsetInBits;
+      Fragment.SizeInBits = SubFragment.SizeInBits;
       break;
     case SILDIExprOperator::Dereference:
       Operands.push_back(llvm::dwarf::DW_OP_deref);
