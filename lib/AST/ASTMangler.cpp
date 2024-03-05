@@ -1987,9 +1987,6 @@ void ASTMangler::appendImplFunctionType(SILFunctionType *fn,
   if (!fn->isNoEscape())
     OpArgs.push_back('e');
 
-  if (fn->hasTransferringResult())
-    OpArgs.push_back('T');
-
   switch (fn->getIsolation()) {
   case SILFunctionTypeIsolation::Unknown:
     break;
@@ -2096,6 +2093,10 @@ void ASTMangler::appendImplFunctionType(SILFunctionType *fn,
       OpArgs.push_back(*diffKind);
     appendType(param.getInterfaceType(), sig, forDecl);
   }
+
+  // Mangle if we have a transferring result.
+  if (fn->hasTransferringResult())
+    OpArgs.push_back('T');
 
   // Mangle the results.
   for (auto result : fn->getResults()) {
@@ -3697,6 +3698,12 @@ static unsigned conformanceRequirementIndex(
     if (req.getKind() != RequirementKind::Conformance)
       continue;
 
+    // This is an ABI compatibility hack for noncopyable generics.
+    // We should have really been skipping marker protocols here all along,
+    // but it's too late now, so skip Copyable and Escapable specifically.
+    if (req.getProtocolDecl()->getInvertibleProtocolKind())
+      continue;
+
     if (req.getFirstType()->isEqual(entry.first) &&
         req.getProtocolDecl() == entry.second)
       return result;
@@ -3704,7 +3711,8 @@ static unsigned conformanceRequirementIndex(
     ++result;
   }
 
-  llvm_unreachable("Conformance access path step is missing from requirements");
+  llvm::errs() <<"Conformance access path step is missing from requirements";
+  abort();
 }
 
 void ASTMangler::appendDependentProtocolConformance(
