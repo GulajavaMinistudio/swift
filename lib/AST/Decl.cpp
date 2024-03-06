@@ -1763,32 +1763,32 @@ bool ExtensionDecl::isConstrainedExtension() const {
   return !typeSig->isEqual(extSig);
 }
 
-bool ExtensionDecl::isEquivalentToExtendedContext() const {
+bool ExtensionDecl::isInSameDefiningModule() const {
   auto decl = getExtendedNominal();
-  bool extendDeclFromSameModule = false;
   auto extensionAlterName = getAlternateModuleName();
   auto typeAlterName = decl->getAlternateModuleName();
 
   if (!extensionAlterName.empty()) {
     if (!typeAlterName.empty()) {
       // Case I: type and extension are both moved from somewhere else
-      extendDeclFromSameModule = typeAlterName == extensionAlterName;
+      return typeAlterName == extensionAlterName;
     } else {
       // Case II: extension alone was moved from somewhere else
-      extendDeclFromSameModule = extensionAlterName ==
-        decl->getParentModule()->getNameStr();
+      return extensionAlterName == decl->getParentModule()->getNameStr();
     }
   } else {
     if (!typeAlterName.empty()) {
       // Case III: extended type alone was moved from somewhere else
-      extendDeclFromSameModule = typeAlterName == getParentModule()->getNameStr();
+      return typeAlterName == getParentModule()->getNameStr();
     } else {
       // Case IV: neither of type and extension was moved from somewhere else
-      extendDeclFromSameModule = getParentModule() == decl->getParentModule();
+      return getParentModule() == decl->getParentModule();
     }
   }
+}
 
-  return extendDeclFromSameModule
+bool ExtensionDecl::isEquivalentToExtendedContext() const {
+  return isInSameDefiningModule()
     && !isConstrainedExtension()
     && !getDeclaredInterfaceType()->isExistentialType();
 }
@@ -2294,9 +2294,9 @@ static bool isDefaultInitializable(const TypeRepr *typeRepr, ASTContext &ctx) {
       return true;
     }
 
-    if (auto *identRepr = dyn_cast<GenericIdentTypeRepr>(typeRepr)) {
-      if (identRepr->getNameRef().getBaseIdentifier() == ctx.Id_Optional &&
-          identRepr->getNumGenericArgs() == 1)
+    if (auto *unqualIdentRepr = dyn_cast<UnqualifiedIdentTypeRepr>(typeRepr)) {
+      if (unqualIdentRepr->getNumGenericArgs() == 1 &&
+          unqualIdentRepr->getNameRef().getBaseIdentifier() == ctx.Id_Optional)
         return true;
     }
   }
@@ -6736,7 +6736,7 @@ NominalTypeDecl::hasInverseMarking(InvertibleProtocolKind target) const {
       continue;
 
     auto *subjectRepr =
-        dyn_cast<IdentTypeRepr>(requirementRepr.getSubjectRepr());
+        dyn_cast<UnqualifiedIdentTypeRepr>(requirementRepr.getSubjectRepr());
 
     if (!(subjectRepr && subjectRepr->isBound()))
       continue;
@@ -6779,7 +6779,8 @@ ProtocolDecl::hasInverseMarking(InvertibleProtocolKind target) const {
         reqRepr.getKind() != RequirementReprKind::TypeConstraint)
       continue;
 
-    auto *subjectRepr = dyn_cast<IdentTypeRepr>(reqRepr.getSubjectRepr());
+    auto *subjectRepr =
+        dyn_cast<UnqualifiedIdentTypeRepr>(reqRepr.getSubjectRepr());
     auto *constraintRepr = reqRepr.getConstraintRepr();
 
     if (!subjectRepr || !subjectRepr->getNameRef().isSimpleName(ctx.Id_Self))
@@ -9517,7 +9518,7 @@ BraceStmt *AbstractFunctionDecl::getBody(bool canSynthesize) const {
 
   // Don't allow getBody() to trigger parsing of an unparsed body containing the
   // IDE inspection location.
-  // FIXME: We should be properly constructing the range of the the body as a
+  // FIXME: We should be properly constructing the range of the body as a
   // CharSourceRange but we can't because we don't have access to the lexer
   // here. Using the end location of the SourceRange works good enough here
   // because the last token is a '}' and the IDE inspection point is not inside
