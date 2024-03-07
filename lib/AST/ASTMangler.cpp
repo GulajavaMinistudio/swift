@@ -70,7 +70,7 @@ static bool inversesAllowed(const Decl *decl) {
     if (auto *storage = accessor->getStorage())
       decl = storage;
 
-  return !decl->getParsedAttrs().hasAttribute<PreInverseGenericsAttr>();
+  return !decl->getAttrs().hasAttribute<PreInverseGenericsAttr>();
 }
 
 static bool inversesAllowedIn(const DeclContext *ctx) {
@@ -449,6 +449,9 @@ std::string ASTMangler::mangleReabstractionThunkHelper(
   Mod = Module;
   assert(ThunkType->getPatternSubstitutions().empty() && "not implemented");
   GenericSignature GenSig = ThunkType->getInvocationGenericSignature();
+
+  // Reabstraction thunks never reference inverse conformances.
+  llvm::SaveAndRestore X(AllowInverses, false);
 
   beginMangling();
   appendType(FromType, GenSig);
@@ -4246,23 +4249,22 @@ void ASTMangler::appendDistributedThunk(
          "distributed thunk to mangle must be function decl");
   assert(thunk->getContextKind() == DeclContextKind::AbstractFunctionDecl);
 
-  auto inProtocolExtensionMangleAsReference =
+  auto referenceInProtocolContextOrRequirement =
       [&thunk, asReference]() -> ProtocolDecl * {
-    if (!asReference) {
-      return nullptr;
-    }
+    auto *DC = thunk->getDeclContext();
+    if (!asReference)
+      return dyn_cast_or_null<ProtocolDecl>(DC);
 
-    if (auto extension = dyn_cast<ExtensionDecl>(thunk->getDeclContext())) {
+    if (auto extension = dyn_cast<ExtensionDecl>(DC))
       return dyn_cast_or_null<ProtocolDecl>(extension->getExtendedNominal());
-    }
+
     return nullptr;
   };
 
-  if (auto type = inProtocolExtensionMangleAsReference()) {
-    appendContext(type->getDeclContext(), base,
+  if (auto *P = referenceInProtocolContextOrRequirement()) {
+    appendContext(P->getDeclContext(), base,
                   thunk->getAlternateModuleName());
-    auto baseName = type->getBaseName();
-    appendIdentifier(Twine("$", baseName.getIdentifier().str()).str());
+    appendIdentifier(Twine("$", P->getNameStr()).str());
     appendOperator("C"); // necessary for roundtrip, though we don't use it
   } else {
     appendContextOf(thunk, base);
