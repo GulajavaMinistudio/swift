@@ -567,9 +567,6 @@ namespace swift {
     /// rewrite system.
     bool EnableRequirementMachineOpaqueArchetypes = false;
 
-    /// Enable experimental associated type inference improvements.
-    bool EnableExperimentalAssociatedTypeInference = false;
-
     /// Enable implicit lifetime dependence for ~Escapable return types.
     bool EnableExperimentalLifetimeDependenceInference = true;
 
@@ -968,6 +965,10 @@ namespace swift {
 
     /// Using ClangIncludeTreeRoot for compilation.
     bool HasClangIncludeTreeRoot = false;
+
+    /// Whether the dependency scanner should construct all swift-frontend
+    /// invocations directly from clang cc1 args.
+    bool ClangImporterDirectCC1Scan = false;
 
     /// Return a hash code of any components from these options that should
     /// contribute to a Swift Bridging PCH hash.

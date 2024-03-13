@@ -708,6 +708,27 @@ func multipleCapture2(_ k: Klass) -> () {
     print("foo bar")
 }
 
+func consumeString() {
+  var s = "asdf" // expected-warning{{}}
+  _ = consume s
+}
+
+func consumeArray() {
+  var x:[Int] = [] // expected-warning{{}}
+  _ = consume x
+}
+
+func consumeInitdArray() {
+  let x:[Int] ; x = []
+  _ = consume x
+}
+
+func isNegative(_ c: consuming Int) -> Bool { return c < 0 }
+func consumeInt() {
+    var g = 0 // expected-warning{{variable 'g' was never mutated; consider changing to 'let' constant}}
+    isNegative(consume g) // expected-warning{{result of call to 'isNegative' is unused}}
+}
+
 //////////////////////
 // Reinit in pieces //
 //////////////////////

@@ -448,6 +448,12 @@ void SILLinkerVisitor::process() {
       Fn->setSerialized(IsSerialized_t::IsNotSerialized);
     }
 
+    if (Fn->getModule().getASTContext().LangOpts.hasFeature(Feature::Embedded) &&
+        Fn->getModule().getASTContext().LangOpts.DebuggerSupport) {
+      // LLDB requires that functions with bodies are not external.
+      Fn->setLinkage(stripExternalFromLinkage(Fn->getLinkage()));
+    }
+
     LLVM_DEBUG(llvm::dbgs() << "Process imports in function: "
                             << Fn->getName() << "\n");
 

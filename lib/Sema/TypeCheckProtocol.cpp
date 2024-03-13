@@ -1281,18 +1281,18 @@ swift::matchWitness(WitnessChecker::RequirementEnvironmentCache &reqEnvCache,
   return matchWitness(dc, req, witness, setup, matchTypes, finalize);
 }
 
-static bool
-witnessHasImplementsAttrForRequiredName(ValueDecl *witness,
-                                        ValueDecl *requirement) {
+bool
+swift::witnessHasImplementsAttrForRequiredName(ValueDecl *witness,
+                                               ValueDecl *requirement) {
   if (auto A = witness->getAttrs().getAttribute<ImplementsAttr>()) {
     return A->getMemberName() == requirement->getName();
   }
   return false;
 }
 
-static bool
-witnessHasImplementsAttrForExactRequirement(ValueDecl *witness,
-                                            ValueDecl *requirement) {
+bool
+swift::witnessHasImplementsAttrForExactRequirement(ValueDecl *witness,
+                                                   ValueDecl *requirement) {
   assert(requirement->isProtocolRequirement());
   auto *PD = cast<ProtocolDecl>(requirement->getDeclContext());
   if (auto A = witness->getAttrs().getAttribute<ImplementsAttr>()) {
@@ -1455,9 +1455,20 @@ swift::lookupValueWitnesses(DeclContext *DC, ValueDecl *req, bool *ignoringNames
     DC->lookupQualified(nominal, reqName, nominal->getLoc(),
                         options, lookupResults);
     for (auto *decl : lookupResults) {
+      // a distributed thunk is the witness
       if (!isa<ProtocolDecl>(decl->getDeclContext())) {
-        witnesses.push_back(decl);
-        addedAny = true;
+        auto func = dyn_cast<AbstractFunctionDecl>(req);
+        if (func && func->isDistributedThunk()) {
+          if (auto candidate = dyn_cast<AbstractFunctionDecl>(decl)) {
+            if (auto thunk = candidate->getDistributedThunk()) {
+              witnesses.push_back(thunk);
+              addedAny = true;
+            }
+          }
+        } else {
+          witnesses.push_back(decl);
+          addedAny = true;
+        }
       }
     };
 
@@ -1468,8 +1479,9 @@ swift::lookupValueWitnesses(DeclContext *DC, ValueDecl *req, bool *ignoringNames
       DC->lookupQualified(nominal, reqBaseName, nominal->getLoc(),
                           options, lookupResults);
       for (auto *decl : lookupResults) {
-        if (!isa<ProtocolDecl>(decl->getDeclContext()))
+        if (!isa<ProtocolDecl>(decl->getDeclContext())) {
           witnesses.push_back(decl);
+        }
       }
 
       *ignoringNames = true;
@@ -1828,44 +1840,29 @@ RequirementCheck WitnessChecker::checkWitness(ValueDecl *requirement,
 # pragma mark Witness resolution
 
 /// Retrieve the Objective-C method key from the given function.
-namespace {
-  using ObjCMethodKey = std::pair<ObjCSelector, char>;
-  using ObjCRequirementMap = llvm::SmallDenseMap<ObjCMethodKey,
-                                                 TinyPtrVector<AbstractFunctionDecl *>, 4>;
-}
-
-/// Retrieve the Objective-C method key from the given function.
-static ObjCMethodKey getObjCMethodKey(AbstractFunctionDecl *func) {
+ObjCRequirementMap::MethodKey
+ObjCRequirementMap::getObjCMethodKey(AbstractFunctionDecl *func) {
   return std::make_pair(func->getObjCSelector(), func->isInstanceMember());
 }
 
 /// Precompute map for getObjCRequirements().
-static ObjCRequirementMap getObjCRequirementMap(ProtocolDecl *proto) {
+ObjCRequirementMap
+ObjCRequirementMapRequest::evaluate(Evaluator &evaluator,
+                                    const ProtocolDecl *proto) const {
+  // This map only applies to Obj-C protocols so it's wasteful to evaluate this
+  // request and cache the result for non-Obj-C protocols.
+  assert(proto->isObjC());
+
   ObjCRequirementMap map;
-
-  if (!proto->isObjC())
-    return map;
-
   for (auto requirement : proto->getProtocolRequirements()) {
     auto funcRequirement = dyn_cast<AbstractFunctionDecl>(requirement);
     if (!funcRequirement)
       continue;
 
-    map[getObjCMethodKey(funcRequirement)].push_back(funcRequirement);
+    map.addRequirement(funcRequirement);
   }
 
   return map;
-}
-
-/// Retrieve the Objective-C requirements in this protocol that have the
-/// given Objective-C method key.
-static ArrayRef<AbstractFunctionDecl *>
-getObjCRequirements(const ObjCRequirementMap &map, ObjCMethodKey key) {
-  auto known = map.find(key);
-  if (known == map.end())
-    return { };
-
-  return known->second;
 }
 
 /// @returns a non-null requirement if the given requirement is part of a
@@ -1874,8 +1871,8 @@ getObjCRequirements(const ObjCRequirementMap &map, ObjCMethodKey key) {
 /// is the requirement required by this function. Otherwise, nullptr is
 /// returned.
 static ValueDecl *getObjCRequirementSibling(
-    ProtocolDecl *proto, ValueDecl *requirement, const ObjCRequirementMap &map,
-    llvm::function_ref<bool(AbstractFunctionDecl*)> predicate) {
+    ProtocolDecl *proto, ValueDecl *requirement,
+    llvm::function_ref<bool(AbstractFunctionDecl *)> predicate) {
   if (!proto->isObjC())
     return nullptr;
 
@@ -1884,8 +1881,8 @@ static ValueDecl *getObjCRequirementSibling(
 
   // We only care about functions
   if (auto fnRequirement = dyn_cast<AbstractFunctionDecl>(requirement)) {
-    auto fnSelector = getObjCMethodKey(fnRequirement);
-    auto similarRequirements = getObjCRequirements(map, fnSelector);
+    auto map = proto->getObjCRequiremenMap();
+    auto similarRequirements = map.getRequirements(fnRequirement);
     // ... whose selector is one that maps to multiple requirement declarations.
     for (auto candidate : similarRequirements) {
       if (candidate == fnRequirement)
@@ -1936,9 +1933,8 @@ class MultiConformanceChecker {
     NormalProtocolConformance *conformance);
 
   /// Determine whether the given requirement was left unsatisfied.
-  bool isUnsatisfiedReq(
-      NormalProtocolConformance *conformance, ValueDecl *req,
-      const ObjCRequirementMap &map);
+  bool isUnsatisfiedReq(NormalProtocolConformance *conformance, ValueDecl *req);
+
 public:
   MultiConformanceChecker(ASTContext &ctx) : Context(ctx) {}
 
@@ -1965,9 +1961,8 @@ public:
 
 }
 
-bool MultiConformanceChecker::
-isUnsatisfiedReq(NormalProtocolConformance *conformance, ValueDecl *req,
-                 const ObjCRequirementMap &map) {
+bool MultiConformanceChecker::isUnsatisfiedReq(
+    NormalProtocolConformance *conformance, ValueDecl *req) {
   if (conformance->isInvalid()) return false;
   if (isa<TypeDecl>(req)) return false;
 
@@ -1981,7 +1976,7 @@ isUnsatisfiedReq(NormalProtocolConformance *conformance, ValueDecl *req,
     // If another @objc requirement refers to the same Objective-C
     // method, this requirement isn't unsatisfied.
     if (getObjCRequirementSibling(
-            proto, req, map, [conformance](AbstractFunctionDecl *cand) {
+            proto, req, [conformance](AbstractFunctionDecl *cand) {
               return static_cast<bool>(conformance->getWitness(cand));
             })) {
       return false;
@@ -2022,12 +2017,11 @@ void MultiConformanceChecker::checkAllConformances() {
     if (!anyInvalid) {
       // Check whether there are any unsatisfied requirements.
       auto proto = conformance->getProtocol();
-      ObjCRequirementMap map = getObjCRequirementMap(proto);
 
       for (auto *req : proto->getProtocolRequirements()) {
         // If the requirement is unsatisfied, we might want to warn
         // about near misses; record it.
-        if (isUnsatisfiedReq(conformance, req, map)) {
+        if (isUnsatisfiedReq(conformance, req)) {
           UnsatisfiedReqs.push_back(req);
           continue;
         }
@@ -2424,8 +2418,16 @@ checkIndividualConformance(NormalProtocolConformance *conformance) {
       implyingConf = implyingConf->getImplyingConformance();
     }
 
+    // If the conditional requirements all have the form `T : Copyable`, then
+    // we accept the implied conformance with the same conditional requirements.
     auto implyingCondReqs = implyingConf->getConditionalRequirements();
-    if (!implyingCondReqs.empty()) {
+    bool allCondReqsInvertible = llvm::all_of(implyingCondReqs,
+        [&](Requirement req) {
+          return (req.getKind() == RequirementKind::Conformance &&
+                  req.getProtocolDecl()->getInvertibleProtocolKind());
+        });
+
+    if (!allCondReqsInvertible) {
       // FIXME:
       // We shouldn't suggest including witnesses for the conformance, because
       // those suggestions will go in the current DeclContext, but really they
@@ -3699,25 +3701,23 @@ filterProtocolRequirements(
 /// Sometimes a witness isn't really diagnosed as missing if we have two
 /// complementary Objective-C protocol requirements, only one of which must
 /// be witnessed.
-static bool shouldRecordMissingWitness(
-    ProtocolDecl *proto,
-    NormalProtocolConformance *conformance,
-    ValueDecl *requirement) {
+static bool
+hasSatisfiedObjCSiblingRequirement(ProtocolDecl *proto,
+                                   NormalProtocolConformance *conformance,
+                                   ValueDecl *requirement) {
   assert(proto == requirement->getDeclContext());
   assert(proto == conformance->getProtocol());
 
   // We only care about functions.
   auto fnRequirement = dyn_cast<AbstractFunctionDecl>(requirement);
   if (fnRequirement == nullptr)
-    return true;
+    return false;
 
   if (!proto->isObjC())
-    return true;
-
-  auto map = getObjCRequirementMap(proto);
+    return false;
 
   if (getObjCRequirementSibling(
-          proto, fnRequirement, map,
+          proto, fnRequirement,
           [proto, conformance](AbstractFunctionDecl *candidate) {
             // FIXME: This performs a recursive lookup in the lazy case, so
             // we have to dodge the cycle.
@@ -3739,10 +3739,10 @@ static bool shouldRecordMissingWitness(
             // record a missing witness.
             return static_cast<bool>(conformance->getWitness(candidate));
           })) {
-    return false;
+    return true;
   }
 
-  return true;
+  return false;
 }
 
 static void diagnoseProtocolStubFixit(
@@ -3948,6 +3948,27 @@ getAdopteeSelfSameTypeConstraint(ClassDecl *selfClass, ValueDecl *witness) {
       return true;
     });
   return target;
+}
+
+static bool allowOptionalWitness(ProtocolDecl *proto,
+                                 NormalProtocolConformance *conformance,
+                                 ValueDecl *requirement) {
+  auto Attrs = requirement->getAttrs();
+
+  // An optional requirement is trivially satisfied with an empty requirement.
+  if (Attrs.hasAttribute<OptionalAttr>())
+    return true;
+
+  // An 'unavailable' requirement is treated like an optional requirement.
+  if (Attrs.isUnavailable(proto->getASTContext()))
+    return true;
+
+  // A requirement with a satisfied Obj-C alternative requirement is effectively
+  // optional.
+  if (hasSatisfiedObjCSiblingRequirement(proto, conformance, requirement))
+    return true;
+
+  return false;
 }
 
 void ConformanceChecker::checkNonFinalClassWitness(ValueDecl *requirement,
@@ -4376,9 +4397,7 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
   //
   // Treat 'unavailable' implicitly as if it were 'optional'.
   // The compiler will reject actual uses.
-  auto Attrs = requirement->getAttrs();
-  if (Attrs.hasAttribute<OptionalAttr>() ||
-      Attrs.isUnavailable(getASTContext())) {
+  if (allowOptionalWitness(Proto, Conformance, requirement)) {
     return ResolveWitnessResult::Missing;
   }
 
@@ -4391,11 +4410,9 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
     return ResolveWitnessResult::ExplicitFailed;
   }
 
-
   if (!numViable) {
     // Save the missing requirement for later diagnosis.
-    if (shouldRecordMissingWitness(Proto, Conformance, requirement))
-      getASTContext().addDelayedMissingWitness(Conformance, {requirement, matches});
+    getASTContext().addDelayedMissingWitness(Conformance, {requirement, matches});
     return ResolveWitnessResult::Missing;
   }
 
@@ -4553,11 +4570,7 @@ ResolveWitnessResult ConformanceChecker::resolveWitnessViaDefault(
                        ValueDecl *requirement) {
   assert(!isa<AssociatedTypeDecl>(requirement) && "Use resolveTypeWitnessVia*");
 
-  // An optional requirement is trivially satisfied with an empty requirement.
-  // An 'unavailable' requirement is treated like an optional requirement.
-  auto Attrs = requirement->getAttrs();
-  if (Attrs.hasAttribute<OptionalAttr>() ||
-      Attrs.isUnavailable(getASTContext())) {
+  if (allowOptionalWitness(Proto, Conformance, requirement)) {
     recordOptionalWitness(requirement);
     return ResolveWitnessResult::Success;
   }
@@ -4950,7 +4963,6 @@ hasInvalidTypeInConformanceContext(const ValueDecl *requirement,
 
 void ConformanceChecker::resolveValueWitnesses() {
   bool usesPreconcurrencyConformance = false;
-  auto objcRequirementMap = getObjCRequirementMap(Proto);
 
   for (auto *requirement : Proto->getProtocolRequirements()) {
     // Associated type requirements handled elsewhere.
@@ -5096,13 +5108,13 @@ void ConformanceChecker::resolveValueWitnesses() {
     // async-looking ObjC protocol method requirement into two Swift protocol
     // requirements: an async version and a sync version. Exactly one of the two
     // must be witnessed by the conformer.
-    if (!requirement->isImplicit() &&
-        getObjCRequirementSibling(
-            Proto, requirement, objcRequirementMap,
-            [this](AbstractFunctionDecl *cand) {
-              return !cand->getAttrs().hasAttribute<OptionalAttr>() &&
-                     !cand->isImplicit() && this->Conformance->hasWitness(cand);
-            })) {
+    if (getObjCRequirementSibling(Proto, requirement,
+                                  [this](AbstractFunctionDecl *cand) {
+                                    return static_cast<bool>(
+                                        this->Conformance->getWitness(cand));
+                                  })) {
+      recordOptionalWitness(requirement);
+      finalizeWitness();
       continue;
     }
 
@@ -6106,10 +6118,10 @@ void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {
       tryDiagnoseExecutorConformance(Context, nominal, proto);
     } else if (NoncopyableGenerics
         && proto->isSpecificProtocol(KnownProtocolKind::Copyable)) {
-      checkCopyableConformance(conformance);
+      checkCopyableConformance(dc, ProtocolConformanceRef(conformance));
     } else if (NoncopyableGenerics
         && proto->isSpecificProtocol(KnownProtocolKind::Escapable)) {
-      checkEscapableConformance(conformance);
+      checkEscapableConformance(dc, ProtocolConformanceRef(conformance));
     } else if (Context.LangOpts.hasFeature(Feature::BitwiseCopyable) &&
                proto->isSpecificProtocol(KnownProtocolKind::BitwiseCopyable)) {
       checkBitwiseCopyableConformance(

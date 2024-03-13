@@ -163,7 +163,6 @@ public:
   IGNORED_ATTR(BackDeployed)
   IGNORED_ATTR(Documentation)
   IGNORED_ATTR(LexicalLifetimes)
-  IGNORED_ATTR(DistributedThunkTarget)
   IGNORED_ATTR(AllowFeatureSuppression)
   IGNORED_ATTR(PreInverseGenerics)
 #undef IGNORED_ATTR
@@ -3886,7 +3885,7 @@ void AttributeChecker::visitImplementsAttr(ImplementsAttr *attr) {
   // conforms to the specified protocol.
   NominalTypeDecl *NTD = DC->getSelfNominalTypeDecl();
   if (auto *OtherPD = dyn_cast<ProtocolDecl>(NTD)) {
-    if (!OtherPD->inheritsFrom(PD) &&
+    if (!(OtherPD == PD || OtherPD->inheritsFrom(PD)) &&
         !(OtherPD->isSpecificProtocol(KnownProtocolKind::DistributedActor) ||
           PD->isSpecificProtocol(KnownProtocolKind::Actor))) {
       diagnose(attr->getLocation(),
@@ -4680,6 +4679,16 @@ Type TypeChecker::checkReferenceOwnershipAttr(VarDecl *var, Type type,
         .warnUntilSwiftVersion(5)
         .fixItRemove(attr->getRange());
     attr->setInvalid();
+  }
+
+  // Embedded Swift prohibits weak/unowned but allows unowned(unsafe).
+  if (var->getASTContext().LangOpts.hasFeature(Feature::Embedded)) {
+    if (ownershipKind == ReferenceOwnership::Weak ||
+        ownershipKind == ReferenceOwnership::Unowned) {
+      Diags.diagnose(attr->getLocation(), diag::weak_unowned_in_embedded_swift,
+               ownershipKind);
+      attr->setInvalid();
+    }
   }
 
   if (attr->isInvalid())
@@ -6909,17 +6918,6 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
               var->getName() == Ctx.Id_actorSystem)) {
           diagnoseAndRemoveAttr(attr,
                                 diag::nonisolated_distributed_actor_storage);
-          return;
-        }
-
-        // 'nonisolated' is redundant for the stored properties of a struct.
-        if (isa<StructDecl>(nominal) &&
-            !var->isStatic() &&
-            var->isOrdinaryStoredProperty() &&
-            !isWrappedValueOfPropWrapper(var)) {
-          diagnoseAndRemoveAttr(attr, diag::nonisolated_storage_value_type,
-                                nominal->getDescriptiveKind())
-            .warnUntilSwiftVersion(6);
           return;
         }
       }

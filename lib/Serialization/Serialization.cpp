@@ -3065,9 +3065,6 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
           S.addDeclRef(afd), pieces.size(), pieces);
       return;
     }
-    case DeclAttrKind::DistributedThunkTarget: {
-      assert(false && "not implemented");
-    }
 
     case DeclAttrKind::TypeEraser: {
       auto abbrCode = S.DeclTypeAbbrCodes[TypeEraserDeclAttrLayout::Code];
@@ -5219,6 +5216,11 @@ getRawSILResultInfoOptions(swift::SILResultInfo::Options options) {
     result |= SILResultInfoFlags::NotDifferentiable;
   }
 
+  if (options.contains(SILResultInfo::IsTransferring)) {
+    options -= SILResultInfo::IsTransferring;
+    result |= SILResultInfoFlags::IsTransferring;
+  }
+
   // If we still have any options set, then this code is out of sync. Signal an
   // error by returning none!
   if (bool(options))
@@ -5706,7 +5708,7 @@ public:
         fnTy->isAsync(), stableCoroutineKind, stableCalleeConvention,
         stableRepresentation, fnTy->isPseudogeneric(), fnTy->isNoEscape(),
         fnTy->isUnimplementable(), fnTy->hasErasedIsolation(),
-        stableDiffKind, fnTy->hasErrorResult(), fnTy->hasTransferringResult(),
+        stableDiffKind, fnTy->hasErrorResult(),
         fnTy->getParameters().size(),
         fnTy->getNumYields(), fnTy->getNumResults(),
         invocationSigID, invocationSubstMapID, patternSubstMapID,

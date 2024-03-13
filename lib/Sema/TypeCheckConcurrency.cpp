@@ -421,18 +421,6 @@ GlobalActorAttributeRequest::evaluate(
             .highlight(globalActorAttr->getRangeWithAt());
         return std::nullopt;
       }
-
-      // ... and not if it's the instance storage of a struct
-      if (isStoredInstancePropertyOfStruct(var)) {
-        var->diagnose(diag::global_actor_on_storage_of_value_type,
-                      var->getName())
-            .highlight(globalActorAttr->getRangeWithAt())
-            .warnUntilSwiftVersion(6);
-
-        // In Swift 6, once the diag above is an error, it is disallowed.
-        if (var->getASTContext().isSwiftVersionAtLeast(6))
-          return std::nullopt;
-      }
     }
   } else if (isa<ExtensionDecl>(decl)) {
     // Extensions are okay.
@@ -2145,7 +2133,13 @@ namespace {
         DiagnosticList errors = list.getSecond();
         ActorIsolation isolation = key.second;
 
-        auto behavior = DiagnosticBehavior::Error;
+        auto behavior = DiagnosticBehavior::Warning;
+        // Upgrade behavior if @preconcurrency not detected
+        if (llvm::any_of(errors, [&](IsolationError error) {
+          return !error.preconcurrency;
+        })) {
+          behavior = DiagnosticBehavior::Error;
+        }
 
         // Add Fix-it for missing @SomeActor annotation
         if (isolation.isGlobalActor()) {
@@ -2153,15 +2147,15 @@ namespace {
                   const_cast<DeclContext *>(getDeclContext()),
                   isolation.getGlobalActor(), behavior) &&
               errors.size() > 1) {
-            behavior= DiagnosticBehavior::Note;
+            behavior = DiagnosticBehavior::Note;
           }
         }
 
         for (IsolationError error : errors) {
           // Diagnose actor_isolated_non_self_reference as note
-          // if fix-it provided in missingGlobalActorOnContext
+          // if there are multiple of these diagnostics
           ctx.Diags.diagnose(error.loc, error.diag)
-              .limitBehaviorUntilSwiftVersion(behavior, 6);
+            .limitBehaviorUntilSwiftVersion(behavior, 6);
         }
       }
 
@@ -2170,7 +2164,14 @@ namespace {
         DiagnosticList errors = list.getSecond();
         ActorIsolation isolation = key.first;
 
-        auto behavior = DiagnosticBehavior::Error;
+        auto behavior = DiagnosticBehavior::Warning;
+        // Upgrade behavior if @preconcurrency not detected
+        if (llvm::any_of(errors, [&](IsolationError error) {
+          return !error.preconcurrency;
+        })) {
+          behavior = DiagnosticBehavior::Error;
+        }
+
 
         // Add Fix-it for missing @SomeActor annotation
         if (isolation.isGlobalActor()) {
@@ -2178,15 +2179,16 @@ namespace {
                   const_cast<DeclContext *>(getDeclContext()),
                   isolation.getGlobalActor(), behavior) &&
               errors.size() > 1) {
-            behavior= DiagnosticBehavior::Note;
+            behavior = DiagnosticBehavior::Note;
           }
         }
 
         for (IsolationError error : errors) {
           // Diagnose actor_isolated_call as note if
-          // fix-it provided in missingGlobalActorOnContext
+          // if there are multiple actor-isolated function calls
+          // from outside the actor
           ctx.Diags.diagnose(error.loc, error.diag)
-              .limitBehaviorUntilSwiftVersion(behavior, 6);
+            .limitBehaviorUntilSwiftVersion(behavior, 6);
         }
       }
 
@@ -3449,8 +3451,12 @@ namespace {
 
           IsolationError mismatch([calleeDecl, apply, unsatisfiedIsolation, getContextIsolation]() {
             if (calleeDecl) {
+              auto preconcurrency = getContextIsolation().preconcurrency() || 
+                getActorIsolation(calleeDecl).preconcurrency();
+
               return IsolationError(
                              apply->getLoc(),
+                             preconcurrency,
                              Diagnostic(diag::actor_isolated_call_decl,
                                         *unsatisfiedIsolation,
                                         calleeDecl,
@@ -3458,6 +3464,7 @@ namespace {
             } else {
               return IsolationError(
                              apply->getLoc(),
+                             getContextIsolation().preconcurrency(),
                              Diagnostic(diag::actor_isolated_call,
                                         *unsatisfiedIsolation,
                                         getContextIsolation()));
@@ -3476,7 +3483,8 @@ namespace {
         } else {
           if (calleeDecl) {
             auto preconcurrency = getContextIsolation().preconcurrency() ||
-                getActorIsolation(calleeDecl).preconcurrency();
+              getActorIsolation(calleeDecl).preconcurrency();
+
             ctx.Diags.diagnose(
                                apply->getLoc(), diag::actor_isolated_call_decl,
                                *unsatisfiedIsolation,
@@ -3979,6 +3987,7 @@ namespace {
 
         if (ctx.LangOpts.hasFeature(Feature::GroupActorErrors)) {
           IsolationError mismatch = IsolationError(loc,
+              preconcurrencyContext,
               Diagnostic(diag::actor_isolated_non_self_reference,
                   decl, useKind, refKind + 1, refGlobalActor,
                   result.isolation));
@@ -4908,9 +4917,13 @@ ActorIsolation ActorIsolationRequest::evaluate(
           diagVar = originalVar;
         }
         if (var->isLet()) {
-          if (!var->getInterfaceType()->isSendableType()) {
-            diagVar->diagnose(diag::shared_immutable_state_decl, diagVar)
+          auto type = var->getInterfaceType();
+          if (!type->isSendableType()) {
+            diagVar->diagnose(diag::shared_immutable_state_decl,
+                              diagVar, type)
                 .warnUntilSwiftVersion(6);
+            diagVar->diagnose(diag::shared_immutable_state_decl_note,
+                              diagVar, type);
           }
         } else {
           diagVar->diagnose(diag::shared_mutable_state_decl, diagVar)

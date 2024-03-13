@@ -53,6 +53,17 @@ func transferAsyncResultWithTransferringArg2Throwing(_ x: transferring NonSendab
 
 @MainActor var globalNonSendableKlass = NonSendableKlass()
 
+@MainActor
+struct MainActorIsolatedStruct {
+  let ns = NonSendableKlass()
+}
+
+@MainActor
+enum MainActorIsolatedEnum {
+  case first
+  case second(NonSendableKlass)
+}
+
 /////////////////
 // MARK: Tests //
 /////////////////
@@ -99,7 +110,14 @@ func transferInAndOut(_ x: transferring NonSendableKlass) -> transferring NonSen
 
 
 func transferReturnArg(_ x: NonSendableKlass) -> transferring NonSendableKlass {
-  return x // expected-warning {{call site passes `self` or a non-sendable argument of this function to another thread, potentially yielding a race with the caller}}
+  return x // expected-warning {{transferring 'x' may cause a race}}
+  // expected-note @-1 {{task-isolated 'x' cannot be a transferring result. task-isolated uses may race with caller uses}}
+}
+
+// TODO: This will be fixed once I represent @MainActor on func types.
+@MainActor func transferReturnArgMainActor(_ x: NonSendableKlass) -> transferring NonSendableKlass {
+  return x // expected-warning {{transferring 'x' may cause a race}}
+  // expected-note @-1 {{task-isolated 'x' cannot be a transferring result. task-isolated uses may race with caller uses}}
 }
 
 // This is safe since we are returning the whole tuple fresh. In contrast,
@@ -115,4 +133,51 @@ func useTransferredResultMainActor() async {
 
 func useTransferredResult() async {
   let _ = await transferAsyncResult()
+}
+
+extension MainActorIsolatedStruct {
+  func testNonSendableErrorReturnWithTransfer() -> transferring NonSendableKlass {
+    return ns // expected-warning {{transferring 'self.ns' may cause a race}}
+    // expected-note @-1 {{main actor-isolated 'self.ns' cannot be a transferring result. main actor-isolated uses may race with caller uses}}
+  }
+  func testNonSendableErrorReturnNoTransfer() -> NonSendableKlass {
+    return ns
+  }
+}
+
+extension MainActorIsolatedEnum {
+  func testSwitchReturn() -> transferring NonSendableKlass? {
+    switch self {
+    case .first:
+      return nil
+    case .second(let ns):
+      return ns
+    }
+  } // expected-warning {{transferring 'ns.some' may cause a race}}
+  // expected-note @-1 {{main actor-isolated 'ns.some' cannot be a transferring result. main actor-isolated uses may race with caller uses}}
+
+  func testSwitchReturnNoTransfer() -> NonSendableKlass? {
+    switch self {
+    case .first:
+      return nil
+    case .second(let ns):
+      return ns
+    }
+  }
+
+  func testIfLetReturn() -> transferring NonSendableKlass? {
+    if case .second(let ns) = self {
+      return ns // TODO: The error below should be here.
+    }
+    return nil
+  } // expected-warning {{transferring 'ns.some' may cause a race}}
+  // expected-note @-1 {{main actor-isolated 'ns.some' cannot be a transferring result. main actor-isolated uses may race with caller uses}} 
+
+  func testIfLetReturnNoTransfer() -> NonSendableKlass? {
+    if case .second(let ns) = self {
+      return ns
+    }
+    return nil
+  }
+
 }

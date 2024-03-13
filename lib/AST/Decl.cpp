@@ -6467,6 +6467,15 @@ ProtocolDecl::getInvertibleProtocolKind() const {
   return std::nullopt;
 }
 
+ObjCRequirementMap ProtocolDecl::getObjCRequiremenMap() const {
+  ObjCRequirementMap defaultMap;
+  if (!isObjC())
+    return defaultMap;
+
+  return evaluateOrDefault(getASTContext().evaluator,
+                           ObjCRequirementMapRequest{this}, defaultMap);
+}
+
 ArrayRef<ProtocolDecl *> ProtocolDecl::getInheritedProtocols() const {
   auto *mutThis = const_cast<ProtocolDecl *>(this);
   return evaluateOrDefault(getASTContext().evaluator,
@@ -6657,16 +6666,6 @@ findInverseInInheritance(InheritedTypes inherited,
 }
 
 InverseMarking::Mark
-AssociatedTypeDecl::hasInverseMarking(InvertibleProtocolKind target) const {
-  auto &ctx = getASTContext();
-
-  if (!ctx.LangOpts.hasFeature(Feature::NoncopyableGenerics))
-    return InverseMarking::Mark();
-
-  return findInverseInInheritance(getInherited(), target);
-}
-
-InverseMarking::Mark
 NominalTypeDecl::hasInverseMarking(InvertibleProtocolKind target) const {
   switch (target) {
   case InvertibleProtocolKind::Copyable:
@@ -6694,102 +6693,15 @@ NominalTypeDecl::hasInverseMarking(InvertibleProtocolKind target) const {
   if (!ctx.LangOpts.hasFeature(Feature::NoncopyableGenerics))
     return InverseMarking::Mark(InverseMarking::Kind::None);
 
-  // Claim that the tuple decl has an inferred ~TARGET marking.
+  // Claim that the tuple decl has an explicit ~TARGET marking.
   if (isa<BuiltinTupleDecl>(this))
-    return InverseMarking::Mark(InverseMarking::Kind::Inferred);
+    return InverseMarking::Mark(InverseMarking::Kind::Explicit);
 
-  if (auto P = dyn_cast<ProtocolDecl>(this))
-    return P->hasInverseMarking(target);
+  assert(!isa<ProtocolDecl>(this));
 
   // Search the inheritance clause first.
   if (auto inverse = findInverseInInheritance(getInherited(), target))
     return inverse;
-
-  // Check the generic parameters for an explicit ~TARGET marking
-  // which would result in an Inferred ~TARGET marking for this context.
-  auto *gpList = getParsedGenericParams();
-  if (!gpList)
-    return InverseMarking::Mark();
-
-  llvm::SmallSet<GenericTypeParamDecl *, 4> params;
-
-  // Scan the inheritance clauses of generic parameters only for an inverse.
-  for (GenericTypeParamDecl *param : gpList->getParams()) {
-    auto inverse = findInverseInInheritance(param->getInherited(), target);
-
-    // Inverse is inferred from one of the generic parameters.
-    if (inverse)
-      return inverse.with(InverseMarking::Kind::Inferred);
-
-    params.insert(param);
-  }
-
-  // Next, scan the where clause and return the result.
-  auto whereClause = getTrailingWhereClause();
-  if (!whereClause)
-    return InverseMarking::Mark();
-
-  auto requirements = whereClause->getRequirements();
-  for (unsigned i : indices(requirements)) {
-    auto requirementRepr = requirements[i];
-    if (requirementRepr.getKind() != RequirementReprKind::TypeConstraint)
-      continue;
-
-    auto *subjectRepr =
-        dyn_cast<UnqualifiedIdentTypeRepr>(requirementRepr.getSubjectRepr());
-
-    if (!(subjectRepr && subjectRepr->isBound()))
-      continue;
-
-    auto *subjectGP =
-        dyn_cast<GenericTypeParamDecl>(subjectRepr->getBoundDecl());
-    if (!subjectGP || !params.contains(subjectGP))
-      continue;
-
-    auto *constraintRepr =
-        dyn_cast<InverseTypeRepr>(requirementRepr.getConstraintRepr());
-    if (!constraintRepr || constraintRepr->isInvalid())
-      continue;
-
-    if (constraintRepr->isInverseOf(target, getDeclContext()))
-      return InverseMarking::Mark(InverseMarking::Kind::Inferred,
-                                  constraintRepr->getLoc());
-  }
-
-  return InverseMarking::Mark();
-}
-
-InverseMarking::Mark
-ProtocolDecl::hasInverseMarking(InvertibleProtocolKind target) const {
-  auto &ctx = getASTContext();
-
-  // Legacy support stops here.
-  if (!ctx.LangOpts.hasFeature(Feature::NoncopyableGenerics))
-    return InverseMarking::Mark();
-
-  if (auto inverse = findInverseInInheritance(getInherited(), target))
-    return inverse;
-
-  auto *whereClause = getTrailingWhereClause();
-  if (!whereClause)
-    return InverseMarking::Mark();
-
-  for (const auto &reqRepr : whereClause->getRequirements()) {
-    if (reqRepr.isInvalid() ||
-        reqRepr.getKind() != RequirementReprKind::TypeConstraint)
-      continue;
-
-    auto *subjectRepr =
-        dyn_cast<UnqualifiedIdentTypeRepr>(reqRepr.getSubjectRepr());
-    auto *constraintRepr = reqRepr.getConstraintRepr();
-
-    if (!subjectRepr || !subjectRepr->getNameRef().isSimpleName(ctx.Id_Self))
-      continue;
-
-    if (constraintRepr->isInverseOf(target, getDeclContext()))
-      return InverseMarking::Mark(InverseMarking::Kind::Explicit,
-                                  constraintRepr->getLoc());
-  }
 
   return InverseMarking::Mark();
 }
@@ -7906,6 +7818,17 @@ bool VarDecl::isOrdinaryStoredProperty() const {
   // the assert into a full-fledged part of the condition if needed.
   assert(!isAsyncLet());
   return hasStorage() && !hasObservers();
+}
+
+VarDecl *VarDecl::createImplicitStringInterpolationVar(DeclContext *DC) {
+  // Make the variable which will contain our temporary value.
+  ASTContext &C = DC->getASTContext();
+  auto var =
+      new (C) VarDecl(/*IsStatic=*/false, VarDecl::Introducer::Var,
+                      /*NameLoc=*/SourceLoc(), C.Id_dollarInterpolation, DC);
+  var->setImplicit(true);
+  var->setUserAccessible(false);
+  return var;
 }
 
 void ParamDecl::setSpecifier(Specifier specifier) {

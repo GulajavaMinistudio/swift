@@ -3919,10 +3919,6 @@ public:
         TypeDecl::getOverriddenDecl());
   }
 
-  /// Determine whether this type has ~<target>` stated as
-  /// one of its inherited types.
-  InverseMarking::Mark hasInverseMarking(InvertibleProtocolKind target) const;
-
   /// Retrieve the set of associated types overridden by this associated
   /// type.
   llvm::TinyPtrVector<AssociatedTypeDecl *> getOverriddenDecls() const;
@@ -4223,7 +4219,7 @@ public:
   ///
   /// This is used by deserialization of module files to report
   /// conformances.
-  void registerProtocolConformance(ProtocolConformance *conformance,
+  void registerProtocolConformance(NormalProtocolConformance *conformance,
                                    bool synthesized = false);
 
   void setConformanceLoader(LazyMemberLoader *resolver, uint64_t contextData);
@@ -5078,6 +5074,35 @@ enum class KnownDerivableProtocolKind : uint8_t {
 
 using PrimaryAssociatedTypeName = std::pair<Identifier, SourceLoc>;
 
+/// A wrapper for a dictionary that maps Obj-C protocol requirement selectors to
+/// a list of function decls.
+class ObjCRequirementMap {
+public:
+  using FunctionList = TinyPtrVector<AbstractFunctionDecl *>;
+
+private:
+  using MethodKey = std::pair<ObjCSelector, char>;
+  llvm::SmallDenseMap<MethodKey, FunctionList, 4> storage;
+
+  static MethodKey getObjCMethodKey(AbstractFunctionDecl *func);
+
+public:
+  void addRequirement(AbstractFunctionDecl *requirement) {
+    storage[getObjCMethodKey(requirement)].push_back(requirement);
+  }
+
+  /// Retrieve the Objective-C requirements in this protocol that have the
+  /// given Objective-C method key.
+  FunctionList getRequirements(AbstractFunctionDecl *requirement) const {
+    auto key = getObjCMethodKey(requirement);
+    auto known = storage.find(key);
+    if (known == storage.end())
+      return {};
+
+    return known->second;
+  }
+};
+
 /// ProtocolDecl - A declaration of a protocol, for example:
 ///
 ///   protocol Drawable {
@@ -5258,10 +5283,6 @@ public:
   /// Determine whether this protocol inherits from the given ("super")
   /// protocol.
   bool inheritsFrom(const ProtocolDecl *Super) const;
-
-  /// Determine whether this protocol has ~<target>` stated on
-  /// itself, one of its inherited types or `Self` requirements.
-  InverseMarking::Mark hasInverseMarking(InvertibleProtocolKind target) const;
   
   SourceLoc getStartLoc() const { return ProtocolLoc; }
   SourceRange getSourceRange() const {
@@ -5310,6 +5331,10 @@ public:
   /// Determine if this is an invertible protocol and return its kind,
   /// i.e., for a protocol P, returns the kind if inverse constraint ~P exists.
   std::optional<InvertibleProtocolKind> getInvertibleProtocolKind() const;
+
+  /// Returns a dictionary that maps Obj-C protocol requirement selectors to a
+  /// list of function decls.
+  ObjCRequirementMap getObjCRequiremenMap() const;
 
 private:
   void computeKnownProtocolKind() const;
@@ -6471,6 +6496,8 @@ public:
   }
 
   clang::PointerAuthQualifier getPointerAuthQualifier() const;
+
+  static VarDecl *createImplicitStringInterpolationVar(DeclContext *DC);
 
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Decl *D) { 
