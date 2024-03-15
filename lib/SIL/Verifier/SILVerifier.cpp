@@ -2305,7 +2305,7 @@ public:
       auto fnType = requireObjectType(SILFunctionType, arguments[4],
                                       "result of createAsyncTask");
       auto expectedExtInfo =
-        SILExtInfoBuilder().withAsync(true).withConcurrent(true).build();
+        SILExtInfoBuilder().withAsync(true).withSendable(true).build();
       require(fnType->getExtInfo().isEqualTo(expectedExtInfo, /*clang types*/true),
               "function argument to createAsyncTask has incorrect ext info");
       // FIXME: it'd be better if we took a consuming closure here
@@ -2419,7 +2419,7 @@ public:
     }
     if (F.isSerialized()) {
       require(RefG->isSerialized()
-                || hasPublicVisibility(RefG->getLinkage()),
+                || hasPublicOrPackageVisibility(RefG->getLinkage(), F.getModule().getOptions().EnableSerializePackage),
               "alloc_global inside fragile function cannot "
               "reference a private or hidden symbol");
     }
@@ -2438,7 +2438,7 @@ public:
     }
     if (F.isSerialized()) {
       require(RefG->isSerialized()
-              || hasPublicVisibility(RefG->getLinkage()),
+              || hasPublicOrPackageVisibility(RefG->getLinkage(), F.getModule().getOptions().EnableSerializePackage),
               "global_addr/value inside fragile function cannot "
               "reference a private or hidden symbol");
     }

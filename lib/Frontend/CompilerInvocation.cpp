@@ -186,8 +186,9 @@ void CompilerInvocation::setDefaultBlocklistsIfNecessary() {
 }
 
 static void updateRuntimeLibraryPaths(SearchPathOptions &SearchPathOpts,
-                                      LangOptions &LangOpts) {
-  llvm::Triple &Triple = LangOpts.Target;
+                                      const FrontendOptions &FrontendOpts,
+                                      const LangOptions &LangOpts) {
+  const llvm::Triple &Triple = LangOpts.Target;
   llvm::SmallString<128> LibPath(SearchPathOpts.RuntimeResourcePath);
 
   StringRef LibSubDir = getPlatformNameForTriple(Triple);
@@ -220,15 +221,18 @@ static void updateRuntimeLibraryPaths(SearchPathOptions &SearchPathOpts,
   }
 
   if (!SearchPathOpts.getSDKPath().empty()) {
+    const char *swiftDir = FrontendOpts.UseSharedResourceFolder
+      ? "swift" : "swift_static";
+
     if (tripleIsMacCatalystEnvironment(Triple)) {
       LibPath = SearchPathOpts.getSDKPath();
       llvm::sys::path::append(LibPath, "System", "iOSSupport");
-      llvm::sys::path::append(LibPath, "usr", "lib", "swift");
+      llvm::sys::path::append(LibPath, "usr", "lib", swiftDir);
       RuntimeLibraryImportPaths.push_back(std::string(LibPath.str()));
     }
 
     LibPath = SearchPathOpts.getSDKPath();
-    llvm::sys::path::append(LibPath, "usr", "lib", "swift");
+    llvm::sys::path::append(LibPath, "usr", "lib", swiftDir);
     if (!Triple.isOSDarwin()) {
       // Use the non-architecture suffixed form with directory-layout
       // swiftmodules.
@@ -298,7 +302,7 @@ setBridgingHeaderFromFrontendOptions(ClangImporterOptions &ImporterOpts,
 
 void CompilerInvocation::setRuntimeResourcePath(StringRef Path) {
   SearchPathOpts.RuntimeResourcePath = Path.str();
-  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts);
+  updateRuntimeLibraryPaths(SearchPathOpts, FrontendOpts, LangOpts);
 }
 
 void CompilerInvocation::setTargetTriple(StringRef Triple) {
@@ -307,12 +311,12 @@ void CompilerInvocation::setTargetTriple(StringRef Triple) {
 
 void CompilerInvocation::setTargetTriple(const llvm::Triple &Triple) {
   LangOpts.setTarget(Triple);
-  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts);
+  updateRuntimeLibraryPaths(SearchPathOpts, FrontendOpts, LangOpts);
 }
 
 void CompilerInvocation::setSDKPath(const std::string &Path) {
   SearchPathOpts.setSDKPath(Path);
-  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts);
+  updateRuntimeLibraryPaths(SearchPathOpts, FrontendOpts, LangOpts);
 }
 
 bool CompilerInvocation::setModuleAliasMap(std::vector<std::string> args,
@@ -369,7 +373,7 @@ static void PrintArg(raw_ostream &OS, const char *Arg, StringRef TempDir) {
     llvm::sys::fs::make_absolute(TempPath);
     llvm::sys::path::native(TempPath);
 
-    if (StringRef(ArgPath).startswith(TempPath)) {
+    if (StringRef(ArgPath).starts_with(TempPath)) {
       // Don't write temporary file names in the debug info. This would prevent
       // incremental llvm compilation because we would generate different IR on
       // every compiler invocation.
@@ -852,7 +856,7 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     // Allow StrictConcurrency to have a value that corresponds to the
     // -strict-concurrency=<blah> settings.
     StringRef value = A->getValue();
-    if (value.startswith("StrictConcurrency")) {
+    if (value.starts_with("StrictConcurrency")) {
       auto decomposed = value.split("=");
       if (decomposed.first == "StrictConcurrency") {
         if (decomposed.second == "") {
@@ -886,7 +890,7 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     // this form of feature, so specially handle it here until features can
     // maybe have extra arguments in the future.
     auto strRef = StringRef(A->getValue());
-    if (strRef.startswith("AvailabilityMacro=")) {
+    if (strRef.starts_with("AvailabilityMacro=")) {
       auto availability = strRef.split("=").second;
 
       Opts.AvailabilityMacros.push_back(availability.str());
@@ -2003,7 +2007,7 @@ static bool ParseDiagnosticArgs(DiagnosticOptions &Opts, ArgList &Args,
 
   for (const Arg *arg: Args.filtered(OPT_emit_macro_expansion_files)) {
     StringRef contents = arg->getValue();
-    bool negated = contents.startswith("no-");
+    bool negated = contents.starts_with("no-");
     if (negated)
       contents = contents.drop_front(3);
     if (contents == "diagnostics")
@@ -2341,6 +2345,18 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
   } else if (Args.hasArg(OPT_EnbaleCMOEverything)) {
     Opts.CMOMode = CrossModuleOptimizationMode::Everything;
   }
+
+  if (Args.hasArg(OPT_ExperimentalPackageCMO)) {
+    if (!FEOpts.AllowNonResilientAccess) {
+      Diags.diagnose(SourceLoc(), diag::ignoring_option_requires_option,
+                     "-experimental-package-cmo",
+                     "-experimental-allow-non-resilient-access");
+    } else {
+      Opts.EnableSerializePackage = true;
+      Opts.CMOMode = CrossModuleOptimizationMode::Default;
+    }
+  }
+
   Opts.EnableStackProtection =
       Args.hasFlag(OPT_enable_stack_protector, OPT_disable_stack_protector,
                    Opts.EnableStackProtection);
@@ -2472,23 +2488,43 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
 }
 
 void CompilerInvocation::buildDebugFlags(std::string &Output,
-                                         const ArrayRef<const char*> &Args,
+                                         const ArgList &Args,
                                          StringRef SDKPath,
                                          StringRef ResourceDir) {
+  ArgStringList ReducedArgs;
+  for (auto *A : Args) {
+    // Do not encode cache invariant options, even for non-caching build.
+    // Those options do not affect compilation task thus do not need to be
+    // tracked.
+    if (A->getOption().hasFlag(options::CacheInvariant))
+      continue;
+
+    A->render(Args, ReducedArgs);
+
+    // If the argument is file list, the path itself is irrelevant.
+    if (A->getOption().hasFlag(options::ArgumentIsFileList)) {
+      assert(A->getValues().size() == 1 &&
+             A->getOption().getRenderStyle() == Option::RenderSeparateStyle &&
+             "filelist options all have one argument and are all Separate<>");
+      ReducedArgs.pop_back();
+      ReducedArgs.push_back("<filelist>");
+    }
+  }
+
   // This isn't guaranteed to be the same temp directory as what the driver
   // uses, but it's highly likely.
   llvm::SmallString<128> TDir;
   llvm::sys::path::system_temp_directory(true, TDir);
 
   llvm::raw_string_ostream OS(Output);
-  interleave(Args,
+  interleave(ReducedArgs,
              [&](const char *Argument) { PrintArg(OS, Argument, TDir.str()); },
              [&] { OS << " "; });
 
   // Inject the SDK path and resource dir if they are nonempty and missing.
   bool haveSDKPath = SDKPath.empty();
   bool haveResourceDir = ResourceDir.empty();
-  for (auto A : Args) {
+  for (auto A : ReducedArgs) {
     StringRef Arg(A);
     // FIXME: this should distinguish between key and value.
     if (!haveSDKPath && Arg.equals("-sdk"))
@@ -2525,6 +2561,8 @@ static bool ParseTBDGenArgs(TBDGenOptions &Opts, ArgList &Args,
 
   Opts.VirtualFunctionElimination = Args.hasArg(OPT_enable_llvm_vfe);
   Opts.WitnessMethodElimination = Args.hasArg(OPT_enable_llvm_wme);
+  Opts.FragileResilientProtocols =
+    Args.hasArg(OPT_enable_fragile_resilient_protocol_witnesses);
 
   if (const Arg *A = Args.getLastArg(OPT_tbd_compatibility_version)) {
     Opts.CompatibilityVersion = A->getValue();
@@ -2565,14 +2603,10 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
              "unknown -g<kind> option");
   }
   if (Opts.DebugInfoLevel >= IRGenDebugInfoLevel::LineTables) {
-    if (Args.hasArg(options::OPT_debug_info_store_invocation)) {
-      ArgStringList RenderedArgs;
-      for (auto A : Args)
-        A->render(Args, RenderedArgs);
+    if (Args.hasArg(options::OPT_debug_info_store_invocation))
       CompilerInvocation::buildDebugFlags(Opts.DebugFlags,
-                                          RenderedArgs, SDKPath,
+                                          Args, SDKPath,
                                           ResourceDir);
-    }
 
     if (const Arg *A = Args.getLastArg(OPT_file_compilation_dir))
       Opts.DebugCompilationDir = A->getValue();
@@ -2640,7 +2674,7 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
 
   for (const Arg *A : Args.filtered(OPT_Xcc)) {
     StringRef Opt = A->getValue();
-    if (Opt.startswith("-D") || Opt.startswith("-U"))
+    if (Opt.starts_with("-D") || Opt.starts_with("-U"))
       Opts.ClangDefines.push_back(Opt.str());
   }
 
@@ -3046,6 +3080,10 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
     Args.hasFlag(OPT_enable_relative_protocol_witness_tables,
                  OPT_disable_relative_protocol_witness_tables,
                  Opts.UseRelativeProtocolWitnessTables);
+  Opts.UseFragileResilientProtocolWitnesses =
+    Args.hasFlag(OPT_enable_fragile_resilient_protocol_witnesses,
+                 OPT_disable_fragile_resilient_protocol_witnesses,
+                 Opts.UseFragileResilientProtocolWitnesses);
   Opts.EnableLargeLoadableTypesReg2Mem =
       Args.hasFlag(OPT_enable_large_loadable_types_reg2mem,
                    OPT_disable_large_loadable_types_reg2mem,
@@ -3274,7 +3312,7 @@ bool CompilerInvocation::parseArgs(
     return true;
   }
 
-  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts);
+  updateRuntimeLibraryPaths(SearchPathOpts, FrontendOpts, LangOpts);
   setDefaultPrebuiltCacheIfNecessary();
   setDefaultBlocklistsIfNecessary();
 
@@ -3299,6 +3337,17 @@ bool CompilerInvocation::parseArgs(
   } else {
     if (SILOpts.NoAllocations) {
       Diags.diagnose(SourceLoc(), diag::no_allocations_without_embedded);
+      return true;
+    }
+  }
+
+  // With Swift 6, enable @_spiOnly by default and forbid the old version.
+  // This also enables proper error reporting of ioi references from spi decls.
+  if (LangOpts.EffectiveLanguageVersion.isVersionAtLeast(6)) {
+    LangOpts.EnableSPIOnlyImports = true;
+
+    if (ParsedArgs.hasArg(OPT_experimental_spi_imports)) {
+      Diags.diagnose(SourceLoc(), diag::error_old_spi_only_import_unsupported);
       return true;
     }
   }

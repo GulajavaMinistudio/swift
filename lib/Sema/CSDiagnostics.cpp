@@ -903,7 +903,7 @@ bool GenericArgumentsMismatchFailure::diagnoseAsError() {
           auto *decl = DRE->getDecl();
           if (decl && decl->hasName()) {
             auto baseName = DRE->getDecl()->getBaseIdentifier();
-            if (baseName.str().startswith("$__builder")) {
+            if (baseName.str().starts_with("$__builder")) {
               diagnostic =
                   diag::cannot_convert_result_builder_result_to_return_type;
               break;
@@ -3473,9 +3473,7 @@ bool ContextualFailure::tryProtocolConformanceFixIt(
       evaluateOrDefault(getASTContext().evaluator,
                         ResolveTypeWitnessesRequest{conformance},
                         evaluator::SideEffect());
-      evaluateOrDefault(getASTContext().evaluator,
-                        ResolveValueWitnessesRequest{conformance},
-                        evaluator::SideEffect());
+      conformance->resolveValueWitnesses();
 
       fakeConformances.push_back(conformance);
     }

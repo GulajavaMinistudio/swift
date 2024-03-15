@@ -164,7 +164,7 @@ LANGUAGE_FEATURE(FreestandingMacros, 397, "freestanding declaration macros")
 SUPPRESSIBLE_LANGUAGE_FEATURE(RetroactiveAttribute, 364, "@retroactive")
 SUPPRESSIBLE_LANGUAGE_FEATURE(ExtensionMacroAttr, 0, "@attached(extension)")
 LANGUAGE_FEATURE(TypedThrows, 413, "Typed throws")
-LANGUAGE_FEATURE(OptionalIsolatedParameters, 420, "Optional isolated parameters")
+CONDITIONALLY_SUPPRESSIBLE_LANGUAGE_FEATURE(OptionalIsolatedParameters, 420, "Optional isolated parameters")
 SUPPRESSIBLE_LANGUAGE_FEATURE(Extern, 0, "@_extern")
 LANGUAGE_FEATURE(ExpressionMacroDefaultArguments, 422, "Expression macro as caller-side default argument")
 LANGUAGE_FEATURE(BuiltinStoreRaw, 0, "Builtin.storeRaw")
@@ -333,6 +333,9 @@ EXPERIMENTAL_FEATURE(DynamicActorIsolation, false)
 
 // Allow for `switch` of noncopyable values to be borrowing or consuming.
 EXPERIMENTAL_FEATURE(BorrowingSwitch, true)
+
+// Enable explicit isolation of closures.
+EXPERIMENTAL_FEATURE(ClosureIsolation, true)
 
 // Enable isolated(any) attribute on function types.
 CONDITIONALLY_SUPPRESSIBLE_EXPERIMENTAL_FEATURE(IsolatedAny, true)

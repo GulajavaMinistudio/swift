@@ -3083,6 +3083,14 @@ static void suppressingFeatureIsolatedAny(PrintOptions &options,
   action();
 }
 
+static void suppressingFeatureOptionalIsolatedParameters(
+    PrintOptions &options,
+    llvm::function_ref<void()> action) {
+  llvm::SaveAndRestore<bool> scope(
+      options.SuppressOptionalIsolatedParams, true);
+  action();
+}
+
 static void suppressingFeatureAssociatedTypeImplements(PrintOptions &options,
                                      llvm::function_ref<void()> action) {
   unsigned originalExcludeAttrCount = options.ExcludeAttrList.size();
@@ -3660,8 +3668,11 @@ static void printParameterFlags(ASTPrinter &printer,
     break;
   }
   
-  if (flags.isIsolated())
-    printer.printKeyword("isolated", options, " ");
+  if (flags.isIsolated()) {
+    if (!(param && param->getInterfaceType()->isOptional() &&
+          options.SuppressOptionalIsolatedParams))
+      printer.printKeyword("isolated", options, " ");
+  }
 
   if (flags.hasResultDependsOn())
     printer.printKeyword("_resultDependsOn", options, " ");
@@ -3809,6 +3820,16 @@ void PrintAST::printOneParameter(const ParamDecl *param,
   }
 
   if (param->isDefaultArgument() && Options.PrintDefaultArgumentValue) {
+    auto defaultArgKind = param->getDefaultArgumentKind();
+    if (param->isIsolated() &&
+        defaultArgKind == DefaultArgumentKind::ExpressionMacro &&
+        Options.SuppressOptionalIsolatedParams) {
+      // If we're suppressing optional isolated parameters, print
+      // 'nil' instead of '#isolation'
+      Printer << " = nil";
+      return;
+    }
+
     Printer.callPrintStructurePre(PrintStructureKind::DefaultArgumentClause);
     SWIFT_DEFER {
       Printer.printStructurePost(PrintStructureKind::DefaultArgumentClause);
@@ -5269,6 +5290,11 @@ void PrintAST::visitLinearToDifferentiableFunctionExpr(swift::LinearToDifferenti
 void PrintAST::visitActorIsolationErasureExpr(ActorIsolationErasureExpr *expr) {
 }
 
+void PrintAST::visitExtractFunctionIsolationExpr(ExtractFunctionIsolationExpr *expr) {
+  visit(expr->getFunctionExpr());
+  Printer << ".isolation";
+}
+
 void PrintAST::visitPropertyWrapperValuePlaceholderExpr(swift::PropertyWrapperValuePlaceholderExpr *expr) {
 }
 
@@ -5801,7 +5827,7 @@ class TypePrinter : public TypeVisitor<TypePrinter> {
   bool isLLDBExpressionModule(ModuleDecl *M) {
     if (!M)
       return false;
-    return M->getRealName().str().startswith(LLDB_EXPRESSIONS_MODULE_NAME_PREFIX);
+    return M->getRealName().str().starts_with(LLDB_EXPRESSIONS_MODULE_NAME_PREFIX);
   }
 
   bool shouldPrintFullyQualified(TypeBase *T) {

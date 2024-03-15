@@ -2498,8 +2498,10 @@ namespace {
           auto *patternBindingDecl = getTopPatternBindingDecl();
           if (patternBindingDecl && patternBindingDecl->isAsyncLet()) {
             // Defer diagnosing checking of non-Sendable types that are passed
-            // into async let to SIL level region based isolation.
-            if (!ctx.LangOpts.hasFeature(Feature::RegionBasedIsolation)) {
+            // into async let to SIL level region based isolation if we have
+            // transferring and region based isolation enabled.
+            if (!ctx.LangOpts.hasFeature(Feature::RegionBasedIsolation) ||
+                !ctx.LangOpts.hasFeature(Feature::TransferringArgsAndResults)) {
               diagnoseNonSendableTypes(
                   type, getDeclContext(),
                   /*inDerivedConformance*/Type(), capture.getLoc(),
@@ -3539,15 +3541,36 @@ namespace {
       // Check for sendability of the result type if we do not have a
       // transferring result.
       if ((!ctx.LangOpts.hasFeature(Feature::TransferringArgsAndResults) ||
-           !fnType->hasTransferringResult()) &&
-          diagnoseNonSendableTypes(
-             fnType->getResult(), getDeclContext(),
-             /*inDerivedConformance*/Type(),
-             apply->getLoc(),
-             diag::non_sendable_call_result_type,
-             apply->isImplicitlyAsync().has_value(),
-             *unsatisfiedIsolation))
-        return true;
+           !fnType->hasTransferringResult())) {
+        // See if we are a autoclosure that has a direct callee that has the
+        // same non-transferred type value returned. If so, do not emit an
+        // error... we are going to emit an error on the call expr and do not
+        // want to emit the error twice.
+        auto willDoubleError = [&]() -> bool {
+          auto *autoclosure = dyn_cast<AutoClosureExpr>(apply->getFn());
+          if (!autoclosure)
+            return false;
+          auto *await =
+              dyn_cast<AwaitExpr>(autoclosure->getSingleExpressionBody());
+          if (!await)
+            return false;
+          auto *subCallExpr = dyn_cast<CallExpr>(await->getSubExpr());
+          if (!subCallExpr)
+            return false;
+          return subCallExpr->getType().getPointer() ==
+                 fnType->getResult().getPointer();
+        };
+
+        if (!willDoubleError() &&
+            diagnoseNonSendableTypes(fnType->getResult(), getDeclContext(),
+                                     /*inDerivedConformance*/ Type(),
+                                     apply->getLoc(),
+                                     diag::non_sendable_call_result_type,
+                                     apply->isImplicitlyAsync().has_value(),
+                                     *unsatisfiedIsolation)) {
+          return true;
+        }
+      }
 
       return false;
     }
@@ -4059,6 +4082,13 @@ namespace {
         if (Type globalActor = resolveGlobalActorType(explicitClosure))
           return ActorIsolation::forGlobalActor(globalActor)
               .withPreconcurrency(preconcurrency);
+
+        if (auto *attr =
+                explicitClosure->getAttrs().getAttribute<NonisolatedAttr>();
+            attr && ctx.LangOpts.hasFeature(Feature::ClosureIsolation)) {
+          return ActorIsolation::forNonisolated(attr->isUnsafe())
+              .withPreconcurrency(preconcurrency);
+        }
       }
 
       // If a closure has an isolated parameter, it is isolated to that
@@ -6009,7 +6039,7 @@ static Type applyUnsafeConcurrencyToParameterType(
                   type->getASTContext().getMainActorType());
 
   return fnType->withExtInfo(fnType->getExtInfo()
-                               .withConcurrent(sendable)
+                               .withSendable(sendable)
                                .withIsolation(isolation));
 }
 

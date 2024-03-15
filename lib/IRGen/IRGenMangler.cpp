@@ -70,7 +70,7 @@ std::string IRGenMangler::manglePartialApplyForwarder(StringRef FuncName) {
   if (FuncName.empty()) {
     beginMangling();
   } else {
-    if (FuncName.startswith(MANGLING_PREFIX_STR)) {
+    if (FuncName.starts_with(MANGLING_PREFIX_STR)) {
       Buffer << FuncName;
     } else {
       beginMangling();
@@ -505,7 +505,7 @@ IRGenMangler::appendExtendedExistentialTypeShape(CanGenericSignature genSig,
                                                  CanType shapeType) {
   // Append the generalization signature.
   if (genSig) {
-    // Generalization signature never reference inverses.
+    // Generalization signature never mangles inverses.
     llvm::SaveAndRestore X(AllowInverses, false);
     appendGenericSignature(genSig);
   }
