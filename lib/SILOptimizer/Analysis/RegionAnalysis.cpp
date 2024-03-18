@@ -2018,7 +2018,7 @@ public:
   }
 
   void translateSILLookThrough(SingleValueInstruction *svi) {
-    assert(svi->getNumOperands() == 1);
+    assert(svi->getNumRealOperands() == 1);
     auto srcID = tryToTrackValue(svi->getOperand(0));
     auto destID = tryToTrackValue(svi);
     assert(((!destID || !srcID) || destID->getID() == srcID->getID()) &&
@@ -2261,7 +2261,7 @@ public:
       return;
 
     case TranslationSemantics::LookThrough:
-      assert(inst->getNumOperands() == 1);
+      assert(inst->getNumRealOperands() == 1);
       assert((isStaticallyLookThroughInst(inst) ||
               isLookThroughIfResultNonSendable(inst) ||
               isLookThroughIfOperandNonSendable(inst) ||
@@ -2638,7 +2638,7 @@ CONSTANT_TRANSLATION(DynamicMethodBranchInst, TerminatorPhi)
 CONSTANT_TRANSLATION(AwaitAsyncContinuationInst, AssertingIfNonSendable)
 CONSTANT_TRANSLATION(GetAsyncContinuationInst, AssertingIfNonSendable)
 CONSTANT_TRANSLATION(ExtractExecutorInst, AssertingIfNonSendable)
-CONSTANT_TRANSLATION(FunctionExtractIsolationInst, AssertingIfNonSendable)
+CONSTANT_TRANSLATION(FunctionExtractIsolationInst, Require)
 
 //===---
 // Existential Box
@@ -3345,8 +3345,8 @@ TrackableValue RegionAnalysisValueMap::getTrackableValue(
 
     auto storage = AccessStorageWithBase::compute(svi->getOperand(0));
     if (storage.storage) {
-      if (isa<RefElementAddrInst>(storage.base)) {
-        auto *nomDecl = storage.storage.getRoot()
+      if (auto *reai = dyn_cast<RefElementAddrInst>(storage.base)) {
+        auto *nomDecl = reai->getOperand()
                             ->getType()
                             .getNominalOrBoundGenericNominal();
         iter.first->getSecond().mergeIsolationRegionInfo(
