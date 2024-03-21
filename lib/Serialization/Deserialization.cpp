@@ -213,23 +213,24 @@ void
 ModularizationError::diagnose(const ModuleFile *MF,
                               DiagnosticBehavior limit) const {
   auto &ctx = MF->getContext();
+  auto loc = getSourceLoc();
 
   auto diagnoseError = [&](Kind errorKind) {
     switch (errorKind) {
     case Kind::DeclMoved:
-      return ctx.Diags.diagnose(getSourceLoc(),
+      return ctx.Diags.diagnose(loc,
                                 diag::modularization_issue_decl_moved,
                                 declIsType, name, expectedModule,
                                 foundModule);
     case Kind::DeclKindChanged:
       return
-        ctx.Diags.diagnose(getSourceLoc(),
+        ctx.Diags.diagnose(loc,
                            diag::modularization_issue_decl_type_changed,
                            declIsType, name, expectedModule,
                            referenceModule->getName(), foundModule,
                            foundModule != expectedModule);
     case Kind::DeclNotFound:
-      return ctx.Diags.diagnose(getSourceLoc(),
+      return ctx.Diags.diagnose(loc,
                                 diag::modularization_issue_decl_not_found,
                                 declIsType, name, expectedModule);
     }
@@ -245,7 +246,7 @@ ModularizationError::diagnose(const ModuleFile *MF,
   // expected module name and the decl name from the diagnostic.
 
   // Show context with relevant file paths.
-  ctx.Diags.diagnose(SourceLoc(),
+  ctx.Diags.diagnose(loc,
                      diag::modularization_issue_note_expected,
                      declIsType, expectedModule,
                      expectedModule->getModuleSourceFilename());
@@ -257,17 +258,23 @@ ModularizationError::diagnose(const ModuleFile *MF,
     auto CML = ctx.getClangModuleLoader();
     auto &CSM = CML->getClangASTContext().getSourceManager();
     StringRef filename = CSM.getFilename(expectedUnderlying->DefinitionLoc);
-    ctx.Diags.diagnose(SourceLoc(),
+    ctx.Diags.diagnose(loc,
                        diag::modularization_issue_note_expected_underlying,
                        expectedUnderlying->Name,
                        filename);
   }
 
   if (foundModule)
-    ctx.Diags.diagnose(SourceLoc(),
+    ctx.Diags.diagnose(loc,
                        diag::modularization_issue_note_found,
                        declIsType, foundModule,
                        foundModule->getModuleSourceFilename());
+
+  if (mismatchingTypes.has_value()) {
+    ctx.Diags.diagnose(loc,
+                       diag::modularization_issue_type_mismatch,
+                       mismatchingTypes->first, mismatchingTypes->second);
+  }
 
   // A Swift language version mismatch could lead to a different set of rules
   // from APINotes files being applied when building the module vs when reading
@@ -277,7 +284,7 @@ ModularizationError::diagnose(const ModuleFile *MF,
     clientLangVersion = MF->getContext().LangOpts.EffectiveLanguageVersion;
   ModuleDecl *referenceModuleDecl = referenceModule->getAssociatedModule();
   if (clientLangVersion != moduleLangVersion) {
-    ctx.Diags.diagnose(SourceLoc(),
+    ctx.Diags.diagnose(loc,
                        diag::modularization_issue_swift_version,
                        referenceModuleDecl, moduleLangVersion,
                        clientLangVersion);
@@ -292,7 +299,7 @@ ModularizationError::diagnose(const ModuleFile *MF,
   if (referenceModule->getResilienceStrategy() ==
                                                ResilienceStrategy::Resilient &&
       referenceModuleIsDistributed) {
-    ctx.Diags.diagnose(SourceLoc(),
+    ctx.Diags.diagnose(loc,
                        diag::modularization_issue_stale_module,
                        referenceModuleDecl,
                        referenceModule->getModuleFilename());
@@ -302,7 +309,7 @@ ModularizationError::diagnose(const ModuleFile *MF,
   // it may be hidden by some clang defined passed via `-Xcc` affecting how
   // headers are seen.
   if (expectedUnderlying) {
-    ctx.Diags.diagnose(SourceLoc(),
+    ctx.Diags.diagnose(loc,
                        diag::modularization_issue_audit_headers,
                        expectedModule->isNonSwiftModule(), expectedModule);
   }
@@ -313,11 +320,11 @@ ModularizationError::diagnose(const ModuleFile *MF,
   // Local modules can reference both local modules and distributed modules.
   if (referenceModuleIsDistributed) {
     if (!expectedModule->isNonUserModule()) {
-      ctx.Diags.diagnose(SourceLoc(),
+      ctx.Diags.diagnose(loc,
                          diag::modularization_issue_layering_expected_local,
                          referenceModuleDecl, expectedModule);
     } else if (foundModule && !foundModule->isNonUserModule()) {
-      ctx.Diags.diagnose(SourceLoc(),
+      ctx.Diags.diagnose(loc,
                          diag::modularization_issue_layering_found_local,
                          referenceModuleDecl, foundModule);
     }
@@ -335,11 +342,13 @@ ModularizationError::diagnose(const ModuleFile *MF,
          expectedModuleName.starts_with(foundModuleName)) &&
         (expectedUnderlying ||
          expectedModule->findUnderlyingClangModule())) {
-      ctx.Diags.diagnose(SourceLoc(),
+      ctx.Diags.diagnose(loc,
                          diag::modularization_issue_related_modules,
                          declIsType, name);
     }
   }
+
+  ctx.Diags.flushConsumers();
 }
 
 void TypeError::diagnose(const ModuleFile *MF) const {
@@ -2144,6 +2153,7 @@ ModuleFile::resolveCrossReference(ModuleID MID, uint32_t pathLen) {
 
     auto errorKind = ModularizationError::Kind::DeclNotFound;
     ModuleDecl *foundIn = nullptr;
+    std::optional<std::pair<Type, Type>> mismatchingTypes;
     bool isType = false;
 
     if (recordID == XREF_TYPE_PATH_PIECE ||
@@ -2187,7 +2197,10 @@ ModuleFile::resolveCrossReference(ModuleID MID, uint32_t pathLen) {
                                       values);
         }
 
-        bool hadAMatchBeforeFiltering = !values.empty();
+        std::optional<ValueDecl*> matchBeforeFiltering = std::nullopt;
+        if (!values.empty()) {
+          matchBeforeFiltering = values[0];
+        }
         filterValues(filterTy, nullptr, nullptr, isType, inProtocolExt,
                      importedFromClang, isStatic, std::nullopt, values);
 
@@ -2199,13 +2212,21 @@ ModuleFile::resolveCrossReference(ModuleID MID, uint32_t pathLen) {
           errorKind = ModularizationError::Kind::DeclMoved;
           foundIn = otherModule;
           break;
-        } else if (hadAMatchBeforeFiltering) {
+        } else if (matchBeforeFiltering.has_value()) {
           // Found a match that was filtered out. This may be from the same
           // expected module if there's a type difference. This can be caused
           // by the use of different Swift language versions between a library
           // with serialized SIL and a client.
           errorKind = ModularizationError::Kind::DeclKindChanged;
           foundIn = otherModule;
+
+          if (filterTy) {
+            auto expectedTy = filterTy->getCanonicalType();
+            auto foundTy = (*matchBeforeFiltering)->getInterfaceType();
+            if (expectedTy && foundTy && !expectedTy->isEqual(foundTy))
+              mismatchingTypes = std::make_pair(expectedTy, foundTy);
+          }
+
           break;
         }
       }
@@ -2218,7 +2239,8 @@ ModuleFile::resolveCrossReference(ModuleID MID, uint32_t pathLen) {
                                                        baseModule,
                                                        this,
                                                        foundIn,
-                                                       pathTrace);
+                                                       pathTrace,
+                                                       mismatchingTypes);
 
     // If we want to workaround broken modularization, we can keep going if
     // we found a matching top-level decl in a different module. This is

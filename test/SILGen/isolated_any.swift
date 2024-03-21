@@ -56,7 +56,7 @@ func convertFromNonIsolated(fn: @escaping @Sendable () async -> ())
 // CHECK-NEXT:    [[FN_COPY:%.*]] = copy_value %0 :
 // CHECK-NEXT:    [[MAIN_ACTOR_METATYPE:%.*]] = metatype $@thick MainActor.Type
 // CHECK-NEXT:    // function_ref
-// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.]] = function_ref @$sScM6sharedScMvgZ :
+// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.*]] = function_ref @$sScM6sharedScMvgZ :
 // CHECK-NEXT:    [[MAIN_ACTOR:%.*]] = apply [[MAIN_ACTOR_SHARED_FN]]([[MAIN_ACTOR_METATYPE]])
 // CHECK-NEXT:    [[ERASED_MAIN_ACTOR:%.*]] = init_existential_ref [[MAIN_ACTOR]] :
 // CHECK-NEXT:    [[ISOLATION:%.*]] = enum $Optional<any Actor>, #Optional.some!enumelt, [[ERASED_MAIN_ACTOR]] : $any Actor
@@ -81,7 +81,7 @@ func convertFromMainActor(fn: @escaping @Sendable @MainActor () async -> ())
 // CHECK-NEXT:    [[FN_COPY:%.*]] = copy_value %0 :
 // CHECK-NEXT:    [[MAIN_ACTOR_METATYPE:%.*]] = metatype $@thick MainActor.Type
 // CHECK-NEXT:    // function_ref
-// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.]] = function_ref @$sScM6sharedScMvgZ :
+// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.*]] = function_ref @$sScM6sharedScMvgZ :
 // CHECK-NEXT:    [[MAIN_ACTOR:%.*]] = apply [[MAIN_ACTOR_SHARED_FN]]([[MAIN_ACTOR_METATYPE]])
 // CHECK-NEXT:    [[ERASED_MAIN_ACTOR:%.*]] = init_existential_ref [[MAIN_ACTOR]] :
 // CHECK-NEXT:    [[ISOLATION:%.*]] = enum $Optional<any Actor>, #Optional.some!enumelt, [[ERASED_MAIN_ACTOR]] : $any Actor
@@ -162,7 +162,7 @@ func testEraseSyncNonIsolatedClosure() {
 // CHECK-NEXT:    [[CLOSURE_FN:%.*]] = function_ref @$s4test0A25EraseSyncMainActorClosureyyFyyYbScMYccfU_ :
 // CHECK-NEXT:    [[MAIN_ACTOR_METATYPE:%.*]] = metatype $@thick MainActor.Type
 // CHECK-NEXT:    // function_ref
-// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.]] = function_ref @$sScM6sharedScMvgZ :
+// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.*]] = function_ref @$sScM6sharedScMvgZ :
 // CHECK-NEXT:    [[MAIN_ACTOR:%.*]] = apply [[MAIN_ACTOR_SHARED_FN]]([[MAIN_ACTOR_METATYPE]])
 // CHECK-NEXT:    [[ERASED_MAIN_ACTOR:%.*]] = init_existential_ref [[MAIN_ACTOR]] :
 // CHECK-NEXT:    [[ISOLATION:%.*]] = enum $Optional<any Actor>, #Optional.some!enumelt, [[ERASED_MAIN_ACTOR]] : $any Actor
@@ -201,7 +201,7 @@ func testEraseInheritingSyncNonIsolatedClosure() {
 // CHECK-NEXT:    [[CLOSURE_FN:%.*]] = function_ref @$s4test0A35EraseInheritingSyncMainActorClosureyyFyyYbScMYccfU_ :
 // CHECK-NEXT:    [[MAIN_ACTOR_METATYPE:%.*]] = metatype $@thick MainActor.Type
 // CHECK-NEXT:    // function_ref
-// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.]] = function_ref @$sScM6sharedScMvgZ :
+// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.*]] = function_ref @$sScM6sharedScMvgZ :
 // CHECK-NEXT:    [[MAIN_ACTOR:%.*]] = apply [[MAIN_ACTOR_SHARED_FN]]([[MAIN_ACTOR_METATYPE]])
 // CHECK-NEXT:    [[ERASED_MAIN_ACTOR:%.*]] = init_existential_ref [[MAIN_ACTOR]] :
 // CHECK-NEXT:    [[ISOLATION:%.*]] = enum $Optional<any Actor>, #Optional.some!enumelt, [[ERASED_MAIN_ACTOR]] : $any Actor
@@ -210,8 +210,6 @@ func testEraseInheritingSyncNonIsolatedClosure() {
 // CHECK-NEXT:    [[TAKE_FN:%.*]] = function_ref @$s4test29takeInheritingSyncIsolatedAny2fnyyyYbYAc_tF
 // CHECK-NEXT:    apply [[TAKE_FN]]([[CLOSURE]])
 // CHECK-NEXT:    destroy_value [[CLOSURE]]
-// CHECK-NEXT:    tuple ()
-// CHECK-NEXT:    return
 @MainActor
 func testEraseInheritingSyncMainActorClosure() {
   takeInheritingSyncIsolatedAny { @MainActor in
@@ -273,7 +271,7 @@ func testEraseAsyncNonIsolatedClosure() {
 // CHECK-NEXT:    [[CLOSURE_FN:%.*]] = function_ref @$s4test0A26EraseAsyncMainActorClosureyyFyyYaYbcfU_ :
 // CHECK-NEXT:    [[MAIN_ACTOR_METATYPE:%.*]] = metatype $@thick MainActor.Type
 // CHECK-NEXT:    // function_ref
-// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.]] = function_ref @$sScM6sharedScMvgZ :
+// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.*]] = function_ref @$sScM6sharedScMvgZ :
 // CHECK-NEXT:    [[MAIN_ACTOR:%.*]] = apply [[MAIN_ACTOR_SHARED_FN]]([[MAIN_ACTOR_METATYPE]])
 // CHECK-NEXT:    [[ERASED_MAIN_ACTOR:%.*]] = init_existential_ref [[MAIN_ACTOR]] :
 // CHECK-NEXT:    [[ISOLATION:%.*]] = enum $Optional<any Actor>, #Optional.some!enumelt, [[ERASED_MAIN_ACTOR]] : $any Actor
@@ -312,7 +310,7 @@ func testEraseInheritingAsyncNonIsolatedClosure() {
 // CHECK-NEXT:    [[CLOSURE_FN:%.*]] = function_ref @$s4test0A36EraseInheritingAsyncMainActorClosureyyFyyYaYbcfU_ :
 // CHECK-NEXT:    [[MAIN_ACTOR_METATYPE:%.*]] = metatype $@thick MainActor.Type
 // CHECK-NEXT:    // function_ref
-// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.]] = function_ref @$sScM6sharedScMvgZ :
+// CHECK-NEXT:    [[MAIN_ACTOR_SHARED_FN:%.*]] = function_ref @$sScM6sharedScMvgZ :
 // CHECK-NEXT:    [[MAIN_ACTOR:%.*]] = apply [[MAIN_ACTOR_SHARED_FN]]([[MAIN_ACTOR_METATYPE]])
 // CHECK-NEXT:    [[ERASED_MAIN_ACTOR:%.*]] = init_existential_ref [[MAIN_ACTOR]] :
 // CHECK-NEXT:    [[ISOLATION:%.*]] = enum $Optional<any Actor>, #Optional.some!enumelt, [[ERASED_MAIN_ACTOR]] : $any Actor
@@ -321,8 +319,6 @@ func testEraseInheritingAsyncNonIsolatedClosure() {
 // CHECK-NEXT:    [[TAKE_FN:%.*]] = function_ref @$s4test30takeInheritingAsyncIsolatedAny2fnyyyYaYbYAc_tF
 // CHECK-NEXT:    apply [[TAKE_FN]]([[CLOSURE]])
 // CHECK-NEXT:    destroy_value [[CLOSURE]]
-// CHECK-NEXT:    tuple ()
-// CHECK-NEXT:    return
 @MainActor
 func testEraseInheritingAsyncMainActorClosure() {
   takeInheritingAsyncIsolatedAny {
@@ -344,7 +340,7 @@ actor MyGlobalActorInstance {}
 // CHECK-NEXT:    [[CLOSURE_FN:%.*]] = function_ref @$s4test0A38EraseInheritingAsyncGlobalActorClosureyyFyyYaYbcfU_ :
 // CHECK-NEXT:    [[GLOBAL_ACTOR_METATYPE:%.*]] = metatype $@thin MyGlobalActor.Type
 // CHECK-NEXT:    // function_ref
-// CHECK-NEXT:    [[GLOBAL_ACTOR_SHARED_FN:%.]] = function_ref @$s4test13MyGlobalActorV6sharedAA0bcD8InstanceCvau :
+// CHECK-NEXT:    [[GLOBAL_ACTOR_SHARED_FN:%.*]] = function_ref @$s4test13MyGlobalActorV6sharedAA0bcD8InstanceCvau :
 // CHECK-NEXT:    [[GLOBAL_ACTOR_PTR:%.*]] = apply [[GLOBAL_ACTOR_SHARED_FN]]()
 // CHECK-NEXT:    [[GLOBAL_ACTOR_ADDR:%.*]] = pointer_to_address [[GLOBAL_ACTOR_PTR]] : $Builtin.RawPointer to [strict] $*MyGlobalActorInstance
 // CHECK-NEXT:    [[GLOBAL_ACTOR:%.*]] = load [copy] [[GLOBAL_ACTOR_ADDR]] : $*MyGlobalActorInstance
@@ -355,8 +351,6 @@ actor MyGlobalActorInstance {}
 // CHECK-NEXT:    [[TAKE_FN:%.*]] = function_ref @$s4test30takeInheritingAsyncIsolatedAny2fnyyyYaYbYAc_tF
 // CHECK-NEXT:    apply [[TAKE_FN]]([[CLOSURE]])
 // CHECK-NEXT:    destroy_value [[CLOSURE]]
-// CHECK-NEXT:    tuple ()
-// CHECK-NEXT:    return
 @MyGlobalActor
 func testEraseInheritingAsyncGlobalActorClosure() {
   takeInheritingAsyncIsolatedAny {
