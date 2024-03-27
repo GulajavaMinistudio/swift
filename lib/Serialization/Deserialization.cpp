@@ -4480,14 +4480,14 @@ public:
     IdentifierID nameID;
     DeclContextID contextID;
     bool isImplicit, isClassBounded, isObjC, hasSelfOrAssocTypeRequirements;
-    TypeID superclassID;
+    DeclID superclassDeclID;
     uint8_t rawAccessLevel;
     ArrayRef<uint64_t> dependencyIDs;
 
     decls_block::ProtocolLayout::readRecord(scratch, nameID, contextID,
                                             isImplicit, isClassBounded, isObjC,
                                             hasSelfOrAssocTypeRequirements,
-                                            superclassID,
+                                            superclassDeclID,
                                             rawAccessLevel,
                                             dependencyIDs);
 
@@ -4512,8 +4512,10 @@ public:
         /*TrailingWhere=*/nullptr);
     declOrOffset = proto;
 
-    proto->setSuperclass(MF.getType(superclassID));
+    auto *superclassDecl = dyn_cast_or_null<ClassDecl>(MF.getDecl(superclassDeclID));
 
+    ctx.evaluator.cacheOutput(SuperclassDeclRequest{proto},
+                              std::move(superclassDecl));
     ctx.evaluator.cacheOutput(ProtocolRequiresClassRequest{proto},
                               std::move(isClassBounded));
     ctx.evaluator.cacheOutput(HasSelfOrAssociatedTypeRequirementsRequest{proto},
@@ -6029,22 +6031,6 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
 
         Attr = SPIAccessControlAttr::create(ctx, SourceLoc(),
                                             SourceRange(), spis);
-        break;
-      }
-
-      case decls_block::AllowFeatureSuppression_DECL_ATTR: {
-        bool isImplicit;
-        ArrayRef<uint64_t> featureIds;
-        serialization::decls_block::AllowFeatureSuppressionDeclAttrLayout
-                     ::readRecord(scratch, isImplicit, featureIds);
-
-        SmallVector<Identifier, 4> features;
-        for (auto id : featureIds)
-          features.push_back(MF.getIdentifier(id));
-
-        Attr = AllowFeatureSuppressionAttr::create(ctx, SourceLoc(),
-                                                   SourceRange(), isImplicit,
-                                                   features);
         break;
       }
 
@@ -8821,7 +8807,7 @@ bool ModuleFile::maybeReadLifetimeDependenceSpecifier(
                                        lifetimeDependenceData);
 
   unsigned startIndex = 0;
-  auto pushData = [&](LifetimeDependenceKind kind) {
+  auto pushData = [&](ParsedLifetimeDependenceKind kind) {
     for (unsigned i = 0; i < numDeclParams + 1; i++) {
       if (lifetimeDependenceData[startIndex + i]) {
         specifierList.push_back(
@@ -8833,10 +8819,10 @@ bool ModuleFile::maybeReadLifetimeDependenceSpecifier(
   };
 
   if (hasInheritLifetimeParamIndices) {
-    pushData(LifetimeDependenceKind::Consume);
+    pushData(ParsedLifetimeDependenceKind::Inherit);
   }
   if (hasScopeLifetimeParamIndices) {
-    pushData(LifetimeDependenceKind::Borrow);
+    pushData(ParsedLifetimeDependenceKind::Scope);
   }
   return true;
 }

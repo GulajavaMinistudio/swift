@@ -705,6 +705,7 @@ class PrintAST : public ASTVisitor<PrintAST> {
     StringRef RawText =
         RC->getRawText(ClangContext.getSourceManager()).rtrim("\n\r");
     trimLeadingWhitespaceFromLines(RawText, WhitespaceToTrim, Lines);
+    indent();
     bool FirstLine = true;
     for (auto Line : Lines) {
       if (FirstLine)
@@ -1133,23 +1134,6 @@ public:
     if (Synthesize) {
       Printer.setSynthesizedTarget(Options.TransformContext->getDecl());
     }
-
-    // We want to print a newline before doc comments.  Swift code already
-    // handles this, but we need to insert it for clang doc comments when not
-    // printing other clang comments. Do it now so the printDeclPre callback
-    // happens after the newline.
-    if (Options.PrintDocumentationComments &&
-        !Options.PrintRegularClangComments &&
-        D->hasClangNode()) {
-      auto clangNode = D->getClangNode();
-      auto clangDecl = clangNode.getAsDecl();
-      if (clangDecl &&
-          clangDecl->getASTContext().getRawCommentForAnyRedecl(clangDecl)) {
-        Printer.printNewline();
-        indent();
-      }
-    }
-
 
     Printer.callPrintDeclPre(D, Options.BracketOptions);
 
@@ -2727,7 +2711,7 @@ void PrintAST::printMembers(ArrayRef<Decl *> members, bool needComma,
       if (!member->shouldPrintInContext(Options))
         continue;
 
-      if (Options.EmptyLineBetweenMembers)
+      if (Options.EmptyLineBetweenDecls)
         Printer.printNewline();
       indent();
       visit(member);
@@ -4011,6 +3995,7 @@ void PrintAST::visitAccessorDecl(AccessorDecl *decl) {
 
   switch (auto kind = decl->getAccessorKind()) {
   case AccessorKind::Get:
+  case AccessorKind::DistributedGet:
   case AccessorKind::Address:
   case AccessorKind::Read:
   case AccessorKind::Modify:
@@ -4136,8 +4121,7 @@ void PrintAST::visitFuncDecl(FuncDecl *decl) {
         if (auto *typeRepr = dyn_cast_or_null<LifetimeDependentReturnTypeRepr>(
                 decl->getResultTypeRepr())) {
           for (auto &dep : typeRepr->getLifetimeDependencies()) {
-            Printer << " " << dep.getLifetimeDependenceKindString() << "(";
-            Printer << dep.getParamString() << ") ";
+            Printer << " " << dep.getLifetimeDependenceSpecifierString() << " ";
           }
         }
       }
@@ -4377,8 +4361,7 @@ void PrintAST::visitConstructorDecl(ConstructorDecl *decl) {
         auto *typeRepr =
             cast<LifetimeDependentReturnTypeRepr>(decl->getResultTypeRepr());
         for (auto &dep : typeRepr->getLifetimeDependencies()) {
-          Printer << dep.getLifetimeDependenceKindString() << "(";
-          Printer << dep.getParamString() << ") ";
+          Printer << dep.getLifetimeDependenceSpecifierString() << " ";
         }
         // TODO: Handle failable initializers with lifetime dependent returns
         Printer << "Self";
@@ -7766,7 +7749,9 @@ static void getSyntacticInheritanceClause(const ProtocolDecl *proto,
                                           llvm::SmallVectorImpl<InheritedEntry> &Results) {
   auto &ctx = proto->getASTContext();
 
-  if (auto superclassTy = proto->getSuperclass()) {
+  auto genericSig = proto->getGenericSignature();
+  if (auto superclassTy = genericSig->getSuperclassBound(
+        proto->getSelfInterfaceType())) {
     Results.emplace_back(TypeLoc::withoutLoc(superclassTy),
                          /*isUnchecked=*/false,
                          /*isRetroactive=*/false,

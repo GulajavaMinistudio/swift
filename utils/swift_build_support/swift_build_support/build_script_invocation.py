@@ -137,8 +137,6 @@ class BuildScriptInvocation(object):
             '--build-swift-clang-overlays', str(
                 args.build_swift_clang_overlays).lower(),
             '--build-swift-remote-mirror', str(args.build_swift_remote_mirror).lower(),
-            '--build-swift-external-generic-metadata-builder', str(
-                args.build_swift_external_generic_metadata_builder).lower(),
         ]
 
         # Compute any product specific cmake arguments.
@@ -512,6 +510,12 @@ class BuildScriptInvocation(object):
             impl_args += [
                 "--darwin_symroot_path_filters=%s" %
                 ' '.join(args.darwin_symroot_path_filters)
+            ]
+
+        if args.extra_dsymutil_args:
+            impl_args += [
+                "--extra-dsymutil-args=%s" % ' '.join(
+                    shlex.quote(opt) for opt in args.extra_dsymutil_args)
             ]
 
         # Compute the set of host-specific variables, which we pass through to

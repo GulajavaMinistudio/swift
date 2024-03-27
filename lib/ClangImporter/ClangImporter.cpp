@@ -610,7 +610,7 @@ void importer::getNormalInvocationArguments(
     // '@_nonSendable' on Clang declarations is fully supported, including the
     // 'attribute push' pragma.
     if (clangSupportsPragmaAttributeWithSwiftAttr())
-      invocationArgStrs.push_back( "-D__SWIFT_ATTR_SUPPORTS_SENDABLE_DECLS=1");
+      invocationArgStrs.push_back("-D__SWIFT_ATTR_SUPPORTS_SENDABLE_DECLS=1");
 
     // Get the version of this compiler and pass it to C/Objective-C
     // declarations.
@@ -660,6 +660,11 @@ void importer::getNormalInvocationArguments(
       }
     }
   }
+
+  // If we support TransferringArgsAndResults, set the -D flag to signal that it
+  // is supported.
+  if (LangOpts.hasFeature(Feature::TransferringArgsAndResults))
+    invocationArgStrs.push_back("-D__SWIFT_ATTR_SUPPORTS_TRANSFERRING=1");
 
   if (searchPathOpts.getSDKPath().empty()) {
     invocationArgStrs.push_back("-Xclang");
@@ -5391,19 +5396,18 @@ synthesizeBaseClassFieldGetterOrAddressGetterBody(AbstractFunctionDecl *afd,
   auto *baseMemberCallExpr =
       CallExpr::createImplicit(ctx, baseMemberDotCallExpr, argumentList);
   Type resultType = baseGetterMethod->getResultInterfaceType();
-  if (kind == AccessorKind::Address && resultType->isUnsafeMutablePointer()) {
-    resultType = getterDecl->getResultInterfaceType();
-  }
   baseMemberCallExpr->setType(resultType);
   baseMemberCallExpr->setThrows(nullptr);
 
   Expr *returnExpr = baseMemberCallExpr;
   // Cast an 'address' result from a mutable pointer if needed.
   if (kind == AccessorKind::Address &&
-      baseGetterMethod->getResultInterfaceType()->isUnsafeMutablePointer())
+      baseGetterMethod->getResultInterfaceType()->isUnsafeMutablePointer()) {
+    auto finalResultType = getterDecl->getResultInterfaceType();
     returnExpr = SwiftDeclSynthesizer::synthesizeReturnReinterpretCast(
-        ctx, baseGetterMethod->getResultInterfaceType(), resultType,
+        ctx, baseGetterMethod->getResultInterfaceType(), finalResultType,
         returnExpr);
+  }
 
   auto *returnStmt = ReturnStmt::createImplicit(ctx, returnExpr);
 

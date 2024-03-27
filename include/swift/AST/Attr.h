@@ -192,9 +192,11 @@ protected:
       isUnsafe : 1
     );
 
-    SWIFT_INLINE_BITFIELD_FULL(AllowFeatureSuppressionAttr, DeclAttribute, 32,
+    SWIFT_INLINE_BITFIELD_FULL(AllowFeatureSuppressionAttr, DeclAttribute, 1+31,
       : NumPadBits,
-      NumFeatures : 32
+      Inverted : 1,
+
+      NumFeatures : 31
     );
   } Bits;
   // clang-format on
@@ -2628,13 +2630,16 @@ class AllowFeatureSuppressionAttr final
       private llvm::TrailingObjects<AllowFeatureSuppressionAttr, Identifier> {
   friend TrailingObjects;
 
-  /// Create an implicit @objc attribute with the given (optional) name.
-  AllowFeatureSuppressionAttr(SourceLoc atLoc, SourceRange range,
-                              bool implicit, ArrayRef<Identifier> features);
+  AllowFeatureSuppressionAttr(SourceLoc atLoc, SourceRange range, bool implicit,
+                              bool inverted, ArrayRef<Identifier> features);
+
 public:
   static AllowFeatureSuppressionAttr *create(ASTContext &ctx, SourceLoc atLoc,
                                              SourceRange range, bool implicit,
+                                             bool inverted,
                                              ArrayRef<Identifier> features);
+
+  bool getInverted() const { return Bits.AllowFeatureSuppressionAttr.Inverted; }
 
   ArrayRef<Identifier> getSuppressedFeatures() const {
     return {getTrailingObjects<Identifier>(),
@@ -3021,6 +3026,9 @@ public:
   /// Given a name like "autoclosure", return the type attribute ID that
   /// corresponds to it.
   static std::optional<TypeAttrKind> getAttrKindFromString(StringRef Str);
+
+  /// Returns true if type attributes of the given kind only appear in SIL.
+  static bool isSilOnly(TypeAttrKind TK);
 
   /// Return the name (like "autoclosure") for an attribute ID.
   static const char *getAttrName(TypeAttrKind kind);

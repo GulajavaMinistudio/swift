@@ -124,6 +124,16 @@ TypeAttribute::getAttrKindFromString(StringRef Str) {
       .Default(std::nullopt);
 }
 
+bool TypeAttribute::isSilOnly(TypeAttrKind TK) {
+  switch (TK) {
+#define SIL_TYPE_ATTR(X, C) case TypeAttrKind::C:
+#include "swift/AST/TypeAttr.def"
+    return true;
+  default:
+    return false;
+  }
+}
+
 /// Return the name (like "autoclosure") for an attribute ID.
 const char *TypeAttribute::getAttrName(TypeAttrKind kind) {
   switch (kind) {
@@ -1265,14 +1275,17 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     Printer << "(" << cast<AlignmentAttr>(this)->getValue() << ")";
     break;
 
-  case DeclAttrKind::AllowFeatureSuppression:
-    Printer.printAttrName("@_allowFeatureSuppression");
+  case DeclAttrKind::AllowFeatureSuppression: {
+    auto Attr = cast<AllowFeatureSuppressionAttr>(this);
+    Printer.printAttrName(Attr->getInverted() ? "@_disallowFeatureSuppression"
+                                              : "@_allowFeatureSuppression");
     Printer << "(";
-    interleave(cast<AllowFeatureSuppressionAttr>(this)->getSuppressedFeatures(),
-               [&](Identifier ident) { Printer << ident; },
-               [&] { Printer << ", "; });
+    interleave(
+        Attr->getSuppressedFeatures(),
+        [&](Identifier ident) { Printer << ident; }, [&] { Printer << ", "; });
     Printer << ")";
     break;
+  }
 
   case DeclAttrKind::SILGenName:
     Printer.printAttrName("@_silgen_name");
@@ -1937,7 +1950,11 @@ StringRef DeclAttribute::getAttrName() const {
   case DeclAttrKind::Extern:
     return "_extern";
   case DeclAttrKind::AllowFeatureSuppression:
-    return "_allowFeatureSuppression";
+    if (cast<AllowFeatureSuppressionAttr>(this)->getInverted()) {
+      return "_disallowFeatureSuppression";
+    } else {
+      return "_allowFeatureSuppression";
+    }
   }
   llvm_unreachable("bad DeclAttrKind");
 }
@@ -2922,24 +2939,24 @@ StorageRestrictionsAttr::getAccessesProperties(AccessorDecl *attachedTo) const {
                            {});
 }
 
-AllowFeatureSuppressionAttr::AllowFeatureSuppressionAttr(SourceLoc atLoc,
-                                                         SourceRange range,
-                                                         bool implicit,
-                                              ArrayRef<Identifier> features)
-    : DeclAttribute(DeclAttrKind::AllowFeatureSuppression,
-                    atLoc, range, implicit) {
+AllowFeatureSuppressionAttr::AllowFeatureSuppressionAttr(
+    SourceLoc atLoc, SourceRange range, bool implicit, bool inverted,
+    ArrayRef<Identifier> features)
+    : DeclAttribute(DeclAttrKind::AllowFeatureSuppression, atLoc, range,
+                    implicit) {
+  Bits.AllowFeatureSuppressionAttr.Inverted = inverted;
   Bits.AllowFeatureSuppressionAttr.NumFeatures = features.size();
   std::uninitialized_copy(features.begin(), features.end(),
                           getTrailingObjects<Identifier>());
 }
 
-AllowFeatureSuppressionAttr *
-AllowFeatureSuppressionAttr::create(ASTContext &ctx, SourceLoc atLoc,
-                                    SourceRange range, bool implicit,
-                                    ArrayRef<Identifier> features) {
+AllowFeatureSuppressionAttr *AllowFeatureSuppressionAttr::create(
+    ASTContext &ctx, SourceLoc atLoc, SourceRange range, bool implicit,
+    bool inverted, ArrayRef<Identifier> features) {
   unsigned size = totalSizeToAlloc<Identifier>(features.size());
   auto *mem = ctx.Allocate(size, alignof(AllowFeatureSuppressionAttr));
-  return new (mem) AllowFeatureSuppressionAttr(atLoc, range, implicit, features);
+  return new (mem)
+      AllowFeatureSuppressionAttr(atLoc, range, implicit, inverted, features);
 }
 
 void swift::simple_display(llvm::raw_ostream &out, const DeclAttribute *attr) {
@@ -2947,8 +2964,8 @@ void swift::simple_display(llvm::raw_ostream &out, const DeclAttribute *attr) {
     attr->print(out);
 }
 
-bool swift::hasAttribute(
-    const LangOptions &langOpts, llvm::StringRef attributeName) {
+static bool hasDeclAttribute(const LangOptions &langOpts,
+                             llvm::StringRef attributeName) {
   std::optional<DeclAttrKind> kind =
       DeclAttribute::getAttrKindFromString(attributeName);
   if (!kind)
@@ -2966,4 +2983,28 @@ bool swift::hasAttribute(
     return false;
 
   return true;
+}
+
+static bool hasTypeAttribute(const LangOptions &langOpts,
+                             llvm::StringRef attributeName) {
+  std::optional<TypeAttrKind> kind =
+      TypeAttribute::getAttrKindFromString(attributeName);
+  if (!kind)
+    return false;
+
+  if (TypeAttribute::isSilOnly(*kind))
+    return false;
+
+  return true;
+}
+
+bool swift::hasAttribute(const LangOptions &langOpts,
+                         llvm::StringRef attributeName) {
+  if (hasDeclAttribute(langOpts, attributeName))
+    return true;
+
+  if (hasTypeAttribute(langOpts, attributeName))
+    return true;
+
+  return false;
 }

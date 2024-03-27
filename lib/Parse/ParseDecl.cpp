@@ -2461,8 +2461,10 @@ Parser::parseDocumentationAttribute(SourceLoc atLoc, SourceLoc loc) {
 }
 
 ParserResult<AllowFeatureSuppressionAttr>
-Parser::parseAllowFeatureSuppressionAttribute(SourceLoc atLoc, SourceLoc loc) {
-  StringRef attrName = "_allowFeatureSuppression";
+Parser::parseAllowFeatureSuppressionAttribute(bool inverted, SourceLoc atLoc,
+                                              SourceLoc loc) {
+  StringRef attrName =
+      inverted ? "_disallowFeatureSuppression" : "_allowFeatureSuppression";
 
   SmallVector<Identifier, 4> features;
   SourceRange parensRange;
@@ -2479,9 +2481,9 @@ Parser::parseAllowFeatureSuppressionAttribute(SourceLoc atLoc, SourceLoc loc) {
     return status;
 
   auto range = SourceRange(loc, parensRange.End);
-  return makeParserResult(
-    AllowFeatureSuppressionAttr::create(Context, loc, range, /*implicit*/ false,
-                                        features));
+  return makeParserResult(AllowFeatureSuppressionAttr::create(
+      Context, loc, range, /*implicit*/ false, /*inverted*/ inverted,
+      features));
 }
 
 static std::optional<MacroIntroducedDeclNameKind>
@@ -3900,7 +3902,8 @@ ParserStatus Parser::parseNewDeclAttribute(DeclAttributes &Attributes,
     break;
   }
   case DeclAttrKind::AllowFeatureSuppression: {
-    auto Attr = parseAllowFeatureSuppressionAttribute(AtLoc, Loc);
+    auto inverted = (AttrName == "_disallowFeatureSuppression");
+    auto Attr = parseAllowFeatureSuppressionAttribute(inverted, AtLoc, Loc);
     Status |= Attr;
     if (Attr.isNonNull())
       Attributes.add(Attr.get());
@@ -5057,21 +5060,12 @@ ParserStatus Parser::parseTypeAttribute(TypeOrCustomAttr &result,
   llvm_unreachable("bad attribute kind");
 }
 
-static std::optional<LifetimeDependenceKind>
-getLifetimeDependenceKind(const Token &T) {
-  if (T.isContextualKeyword("_copy") || T.isContextualKeyword("_inherit")) {
-    return LifetimeDependenceKind::Copy;
+static ParsedLifetimeDependenceKind getSILLifetimeDependenceKind(const Token &T) {
+  if (T.isContextualKeyword("_inherit")) {
+    return ParsedLifetimeDependenceKind::Inherit;
   }
-  if (T.isContextualKeyword("_consume")) {
-    return LifetimeDependenceKind::Consume;
-  }
-  if (T.isContextualKeyword("_borrow") || T.isContextualKeyword("_scope")) {
-    return LifetimeDependenceKind::Borrow;
-  }
-  if (T.isContextualKeyword("_mutate")) {
-    return LifetimeDependenceKind::Mutate;
-  }
-  return std::nullopt;
+  assert(T.isContextualKeyword("_scope"));
+  return ParsedLifetimeDependenceKind::Scope;
 }
 
 ParserStatus Parser::parseLifetimeDependenceSpecifiers(
@@ -5079,12 +5073,20 @@ ParserStatus Parser::parseLifetimeDependenceSpecifiers(
   ParserStatus status;
   // TODO: Add fixits for diagnostics in this function.
   do {
-    auto lifetimeDependenceKind = getLifetimeDependenceKind(Tok);
-    if (!lifetimeDependenceKind.has_value()) {
+    if (!isLifetimeDependenceToken()) {
       break;
     }
-    // consume the lifetime dependence kind
-    consumeToken();
+
+    auto lifetimeDependenceKind = ParsedLifetimeDependenceKind::Default;
+
+    if (!isInSILMode()) {
+      // consume dependsOn
+      consumeToken();
+    } else {
+      lifetimeDependenceKind = getSILLifetimeDependenceKind(Tok);
+      // consume _inherit or _scope
+      consumeToken();
+    }
 
     if (!Tok.isFollowingLParen()) {
       diagnose(Tok, diag::expected_lparen_after_lifetime_dependence);
@@ -5093,6 +5095,16 @@ ParserStatus Parser::parseLifetimeDependenceSpecifiers(
     }
     // consume the l_paren
     auto lParenLoc = consumeToken();
+
+    if (!isInSILMode()) {
+      // look for optional "scoped"
+      if (Tok.isContextualKeyword("scoped")) {
+        lifetimeDependenceKind = ParsedLifetimeDependenceKind::Scope;
+        // consume scoped
+        consumeToken();
+      }
+    }
+
     SourceLoc rParenLoc;
     bool foundParamId = false;
     status = parseList(
@@ -5108,7 +5120,7 @@ ParserStatus Parser::parseLifetimeDependenceSpecifiers(
             specifierList.push_back(
                 LifetimeDependenceSpecifier::
                     getNamedLifetimeDependenceSpecifier(
-                        paramLoc, *lifetimeDependenceKind, paramName));
+                        paramLoc, lifetimeDependenceKind, paramName));
             break;
           }
           case tok::integer_literal: {
@@ -5123,14 +5135,14 @@ ParserStatus Parser::parseLifetimeDependenceSpecifiers(
             specifierList.push_back(
                 LifetimeDependenceSpecifier::
                     getOrderedLifetimeDependenceSpecifier(
-                        paramLoc, *lifetimeDependenceKind, paramNum));
+                        paramLoc, lifetimeDependenceKind, paramNum));
             break;
           }
           case tok::kw_self: {
             auto paramLoc = consumeToken(tok::kw_self);
             specifierList.push_back(
                 LifetimeDependenceSpecifier::getSelfLifetimeDependenceSpecifier(
-                    paramLoc, *lifetimeDependenceKind));
+                    paramLoc, lifetimeDependenceKind));
             break;
           }
           default:
@@ -5465,7 +5477,7 @@ ParserStatus Parser::ParsedTypeAttributeList::slowParse(Parser &P) {
       continue;
     }
 
-    if (Tok.isLifetimeDependenceToken(P.isInSILMode())) {
+    if (P.isLifetimeDependenceToken()) {
       if (!P.Context.LangOpts.hasFeature(Feature::NonescapableTypes)) {
         P.diagnose(Tok, diag::requires_experimental_feature,
                    "lifetime dependence specifier", false,
@@ -7772,6 +7784,7 @@ static void diagnoseRedundantAccessors(Parser &P, SourceLoc loc,
 static bool isAllowedWhenParsingLimitedSyntax(AccessorKind kind, bool forSIL) {
   switch (kind) {
   case AccessorKind::Get:
+  case AccessorKind::DistributedGet:
   case AccessorKind::Set:
     return true;
 

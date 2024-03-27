@@ -503,9 +503,26 @@ static bool varIsSafeAcrossActors(const ModuleDecl *fromModule,
                                   VarDecl *var,
                                   const ActorIsolation &varIsolation,
                                   ActorReferenceResult::Options &options) {
-  // must be immutable
-  if (!var->isLet())
+
+  bool accessWithinModule =
+      (fromModule == var->getDeclContext()->getParentModule());
+
+  if (!var->isLet()) {
+    ASTContext &ctx = var->getASTContext();
+    if (ctx.LangOpts.hasFeature(Feature::GlobalActorIsolatedTypesUsability)) {
+      // A mutable storage of a value type accessed from within the module is
+      // okay.
+      if (dyn_cast_or_null<StructDecl>(var->getDeclContext()->getAsDecl()) &&
+          !var->isStatic() && 
+          var->hasStorage() &&
+          var->getTypeInContext()->isSendableType() &&
+          accessWithinModule) {
+        return true;
+      }
+    }
+    // Otherwise, must be immutable.
     return false;
+  }
 
   switch (varIsolation) {
   case ActorIsolation::Nonisolated:
@@ -537,9 +554,6 @@ static bool varIsSafeAcrossActors(const ModuleDecl *fromModule,
       if (nominalParent->isDistributedActor())
         return false;
     }
-
-    bool accessWithinModule =
-        (fromModule == var->getDeclContext()->getParentModule());
 
     // If the type is not 'Sendable', it's unsafe
     if (!var->getTypeInContext()->isSendableType()) {
@@ -5262,6 +5276,14 @@ bool HasIsolatedSelfRequest::evaluate(
 
   // For accessors, consider the storage declaration.
   if (auto accessor = dyn_cast<AccessorDecl>(value)) {
+    // distributed thunks are nonisolated, although the attached to storage
+    // will be 'distributed var' and therefore isolated to the distributed
+    // actor. Therefore, if we're a thunk, don't look at the storage for
+    // deciding about isolation of this function.
+    if (accessor->isDistributedThunk()) {
+      return false;
+    }
+
     value = accessor->getStorage();
   }
 
@@ -6050,6 +6072,7 @@ swift::isDispatchQueueOperationName(StringRef name) {
       .Case("sync", DispatchQueueOperation::Normal)
       .Case("async", DispatchQueueOperation::Sendable)
       .Case("asyncAndWait", DispatchQueueOperation::Normal)
+      .Case("asyncUnsafe", DispatchQueueOperation::Normal)
       .Case("asyncAfter", DispatchQueueOperation::Sendable)
       .Case("concurrentPerform", DispatchQueueOperation::Sendable)
       .Default(std::nullopt);
@@ -6147,8 +6170,7 @@ static AnyFunctionType *applyUnsafeConcurrencyToFunctionType(
     // @MainActor occurs in concurrency contexts or those where we have an
     // application.
     bool addSendable = knownUnsafeParams && inConcurrencyContext;
-    bool addMainActor =
-        (isMainDispatchQueue && knownUnsafeParams) &&
+    bool addMainActor = isMainDispatchQueue &&
         (inConcurrencyContext || numApplies >= 1);
     Type newParamType = param.getPlainType();
     if (addSendable || addMainActor) {
@@ -6391,8 +6413,8 @@ bool swift::isPotentiallyIsolatedActor(
 
 /// Determine the actor isolation used when we are referencing the given
 /// declaration.
-static ActorIsolation getActorIsolationForReference(
-    ValueDecl *decl, const DeclContext *fromDC) {
+static ActorIsolation getActorIsolationForReference(ValueDecl *decl,
+                                                    const DeclContext *fromDC) {
   auto declIsolation = getActorIsolation(decl);
 
   // If the isolation is preconcurrency global actor, adjust it based on

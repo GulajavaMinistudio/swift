@@ -258,9 +258,13 @@ bool OwnershipUseVisitor<Impl>::visitInnerBorrow(Operand *borrowingOperand) {
     return false;
 
   return BorrowingOperand(borrowingOperand)
-    .visitScopeEndingUses([&](Operand *borrowEnd) {
-      return visitInnerBorrowScopeEnd(borrowEnd);
-    });
+    .visitScopeEndingUses(
+      [&](Operand *borrowEnd) {
+        return visitInnerBorrowScopeEnd(borrowEnd);
+      },
+      [&](Operand *unknownUse) {
+        return asImpl().handlePointerEscape(unknownUse);
+      });
 }
 
 template <typename Impl>
@@ -387,6 +391,11 @@ bool OwnershipUseVisitor<Impl>::visitGuaranteedUse(Operand *use) {
     return true;
 
   case OperandOwnership::PointerEscape:
+    // TODO: Change ProjectBox ownership to InteriorPointer and allow them to
+    // take owned values.
+    if (isa<ProjectBoxInst>(use->getUser())) {
+      return visitInteriorPointerUses(use);
+    }
     if (!asImpl().handlePointerEscape(use))
       return false;
 
@@ -439,7 +448,8 @@ bool OwnershipUseVisitor<Impl>::visitGuaranteedUse(Operand *use) {
 
 template <typename Impl>
 bool OwnershipUseVisitor<Impl>::visitInteriorPointerUses(Operand *use) {
-  assert(use->getOperandOwnership() == OperandOwnership::InteriorPointer);
+  assert(use->getOperandOwnership() == OperandOwnership::InteriorPointer ||
+         isa<ProjectBoxInst>(use->getUser()));
 
   if (auto scopedAddress = ScopedAddressValue::forUse(use)) {
     // e.g. client may need to insert end_borrow if scopedAddress is a store_borrow.
