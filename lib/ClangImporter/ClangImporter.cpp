@@ -4837,6 +4837,7 @@ TinyPtrVector<ValueDecl *> CXXNamespaceMemberLookup::evaluate(
   auto &ctx = namespaceDecl->getASTContext();
 
   TinyPtrVector<ValueDecl *> result;
+  llvm::SmallPtrSet<clang::NamedDecl *, 8> importedDecls;
   for (auto redecl : clangNamespaceDecl->redecls()) {
     auto allResults = evaluateOrDefault(
         ctx.evaluator, ClangDirectLookupRequest({namespaceDecl, redecl, name}),
@@ -4844,6 +4845,11 @@ TinyPtrVector<ValueDecl *> CXXNamespaceMemberLookup::evaluate(
 
     for (auto found : allResults) {
       auto clangMember = found.get<clang::NamedDecl *>();
+      auto it = importedDecls.insert(clangMember);
+      // Skip over members already found during lookup in
+      // prior redeclarations.
+      if (!it.second)
+        continue;
       if (auto import =
               ctx.getClangModuleLoader()->importDeclDirectly(clangMember))
         result.push_back(cast<ValueDecl>(import));
@@ -6105,8 +6111,13 @@ ClangCategoryLookupRequest::evaluate(Evaluator &evaluator,
     llvm::TinyPtrVector<Decl *> results;
     results.push_back(const_cast<ClassDecl *>(CD));
 
+    auto importer =
+       static_cast<ClangImporter *>(CD->getASTContext().getClangModuleLoader());
+    ClangImporter::Implementation &impl = importer->Impl;
+
     for (auto clangExt : clangClass->known_extensions()) {
-      results.push_back(importCategory(clangExt));
+      if (impl.getClangSema().isVisible(clangExt))
+        results.push_back(importCategory(clangExt));
     }
 
     return results;

@@ -43,6 +43,7 @@
 #include "clang/AST/Attr.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/AttributeCommonInfo.h"
+#include "clang/Index/USRGeneration.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
@@ -873,7 +874,11 @@ ProtocolConformanceDeserializer::readInheritedProtocolConformance(
   InheritedProtocolConformanceLayout::readRecord(scratch, conformanceID,
                                                  conformingTypeID);
 
-  Type conformingType = MF.getType(conformingTypeID);
+  auto conformingTypeOrError =
+    MF.getTypeChecked(conformingTypeID);
+  if (!conformingTypeOrError)
+    return conformingTypeOrError.takeError();
+  Type conformingType = conformingTypeOrError.get();
 
   PrettyStackTraceType trace(ctx, "reading inherited conformance for",
                              conformingType);
@@ -2425,12 +2430,35 @@ giveUpFastPath:
       }
 
       if (!privateDiscriminator.empty()) {
-        ModuleDecl *searchModule = M;
-        if (!searchModule)
-          searchModule = nominal->getModuleContext();
-        searchModule->lookupMember(values, nominal, memberName,
-                                   privateDiscriminator);
-
+        if (importedFromClang) {
+          // This is a clang imported class template, that's
+          // serialized using original template name, and
+          // its USR that denotes the specific specialization.
+          auto members = nominal->lookupDirect(memberName);
+          for (const auto &m : members) {
+            if (!m->hasClangNode())
+              continue;
+            if (auto *ctd =
+                    dyn_cast<clang::ClassTemplateDecl>(m->getClangDecl())) {
+              for (const auto *spec : ctd->specializations()) {
+                llvm::SmallString<128> buffer;
+                clang::index::generateUSRForDecl(spec, buffer);
+                if (privateDiscriminator.str() == buffer) {
+                  if (auto import = getContext()
+                                        .getClangModuleLoader()
+                                        ->importDeclDirectly(spec))
+                    values.push_back(cast<ValueDecl>(import));
+                }
+              }
+            }
+          }
+        } else {
+          ModuleDecl *searchModule = M;
+          if (!searchModule)
+            searchModule = nominal->getModuleContext();
+          searchModule->lookupMember(values, nominal, memberName,
+                                     privateDiscriminator);
+        }
       } else {
         auto members = nominal->lookupDirect(memberName);
         values.append(members.begin(), members.end());
@@ -3465,7 +3493,10 @@ public:
       }
     }
 
-    auto DC = MF.getDeclContext(contextID);
+    auto DCOrError = MF.getDeclContextChecked(contextID);
+    if (!DCOrError)
+      return DCOrError.takeError();
+    auto DC = DCOrError.get();
     if (declOrOffset.isComplete())
       return declOrOffset;
 
@@ -3806,14 +3837,22 @@ public:
       AddAttribute(new (ctx) HasStorageAttr(/*isImplicit:*/true));
 
     if (opaqueReturnTypeID) {
+      auto opaqueReturnType = MF.getDeclChecked(opaqueReturnTypeID);
+      if (!opaqueReturnType)
+        return opaqueReturnType.takeError();
+
       ctx.evaluator.cacheOutput(
           OpaqueResultTypeRequest{var},
-          cast<OpaqueTypeDecl>(MF.getDecl(opaqueReturnTypeID)));
+          cast<OpaqueTypeDecl>(opaqueReturnType.get()));
     }
 
     // If this is a lazy property, record its backing storage.
     if (lazyStorageID) {
-      VarDecl *storage = cast<VarDecl>(MF.getDecl(lazyStorageID));
+      auto lazyStorageDecl = MF.getDeclChecked(lazyStorageID);
+      if (!lazyStorageDecl)
+        return lazyStorageDecl.takeError();
+
+      VarDecl *storage = cast<VarDecl>(lazyStorageDecl.get());
       ctx.evaluator.cacheOutput(
           LazyStoragePropertyRequest{var}, std::move(storage));
     }
@@ -6112,13 +6151,15 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
       case decls_block::ObjCImplementation_DECL_ATTR: {
         bool isImplicit;
         bool isCategoryNameInvalid;
+        bool isEarlyAdopter;
         uint64_t categoryNameID;
         serialization::decls_block::ObjCImplementationDeclAttrLayout::
             readRecord(scratch, isImplicit, isCategoryNameInvalid,
-                       categoryNameID);
+                       isEarlyAdopter, categoryNameID);
         Identifier categoryName = MF.getIdentifier(categoryNameID);
         Attr = new (ctx) ObjCImplementationAttr(categoryName, SourceLoc(),
-                                                SourceRange(), isImplicit,
+                                                SourceRange(), isEarlyAdopter,
+                                                isImplicit,
                                                 isCategoryNameInvalid);
         break;
       }

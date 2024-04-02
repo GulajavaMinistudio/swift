@@ -2073,7 +2073,10 @@ static ValueDecl *getWithUnsafeContinuation(ASTContext &ctx,
   auto *fnTy = FunctionType::get(params, voidTy, extInfo);
 
   builder.addParameter(makeConcrete(fnTy));
-  builder.setResult(makeGenericParam());
+
+  auto resultTy = makeGenericParam();
+  builder.addConformanceRequirement(resultTy, KnownProtocolKind::Escapable);
+  builder.setResult(resultTy);
 
   builder.setAsync();
   if (throws)
@@ -2134,6 +2137,15 @@ static ValueDecl *getInjectEnumTag(ASTContext &ctx, Identifier id) {
   builder.addParameter(makeGenericParam(), ParamSpecifier::InOut);
   builder.addParameter(makeConcrete(BuiltinIntegerType::get(32, ctx)));
   builder.setResult(makeConcrete(TupleType::getEmpty(ctx)));
+
+  return builder.build(id);
+}
+
+static ValueDecl *getAddressOfRawLayout(ASTContext &ctx, Identifier id) {
+  BuiltinFunctionBuilder builder(ctx, /* genericParamCount */ 1);
+
+  builder.addParameter(makeGenericParam(), ParamSpecifier::Borrowing);
+  builder.setResult(makeConcrete(ctx.TheRawPointerType));
 
   return builder.build(id);
 }
@@ -3211,6 +3223,9 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
 
   case BuiltinValueKind::DistributedActorAsAnyActor:
     return getDistributedActorAsAnyActor(Context, Id);
+
+  case BuiltinValueKind::AddressOfRawLayout:
+    return getAddressOfRawLayout(Context, Id);
   }
 
   llvm_unreachable("bad builtin value!");

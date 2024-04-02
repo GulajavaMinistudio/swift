@@ -399,6 +399,7 @@ std::optional<LifetimeDependenceInfo>
 LifetimeDependenceInfo::infer(AbstractFunctionDecl *afd, Type resultType) {
   auto *dc = afd->getDeclContext();
   auto &ctx = dc->getASTContext();
+  auto *mod = afd->getModuleContext();
 
   if (!ctx.LangOpts.hasFeature(Feature::NonescapableTypes)) {
     return std::nullopt;
@@ -426,15 +427,24 @@ LifetimeDependenceInfo::infer(AbstractFunctionDecl *afd, Type resultType) {
   if (cd && cd->isImplicit()) {
     if (cd->getParameters()->size() == 0) {
       return std::nullopt;
-    } else {
-      diags.diagnose(cd->getLoc(),
-                     diag::lifetime_dependence_cannot_infer_implicit_init);
-      return std::nullopt;
     }
   }
 
   if (afd->getKind() != DeclKind::Constructor && afd->hasImplicitSelfDecl()) {
     Type selfTypeInContext = dc->getSelfTypeInContext();
+    if (selfTypeInContext->isEscapable()) {
+      if (ctx.LangOpts.hasFeature(Feature::BitwiseCopyable)) {
+        auto *bitwiseCopyableProtocol =
+            ctx.getProtocol(KnownProtocolKind::BitwiseCopyable);
+        if (bitwiseCopyableProtocol &&
+            mod->checkConformance(selfTypeInContext, bitwiseCopyableProtocol)) {
+          diags.diagnose(
+              returnLoc,
+              diag::lifetime_dependence_method_escapable_bitwisecopyable_self);
+          return std::nullopt;
+        }
+      }
+    }
     auto kind = getLifetimeDependenceKindFromType(selfTypeInContext);
     auto selfOwnership = afd->getImplicitSelfDecl()->getValueOwnership();
     if (!isLifetimeDependenceCompatibleWithOwnership(kind, selfOwnership,
@@ -471,9 +481,16 @@ LifetimeDependenceInfo::infer(AbstractFunctionDecl *afd, Type resultType) {
       continue;
     }
     if (candidateParam) {
-      diags.diagnose(
-          returnLoc,
-          diag::lifetime_dependence_cannot_infer_ambiguous_candidate);
+      if (afd->getKind() == DeclKind::Constructor && afd->isImplicit()) {
+        diags.diagnose(
+            returnLoc,
+            diag::lifetime_dependence_cannot_infer_ambiguous_candidate,
+            "on implicit initializer");
+        return std::nullopt;
+      }
+      diags.diagnose(returnLoc,
+                     diag::lifetime_dependence_cannot_infer_ambiguous_candidate,
+                     "");
       return std::nullopt;
     }
     candidateParam = param;
@@ -482,17 +499,15 @@ LifetimeDependenceInfo::infer(AbstractFunctionDecl *afd, Type resultType) {
   }
 
   if (!candidateParam && !hasParamError) {
-    // Explicitly turn off error messages for builtins, since some of are
-    // ~Escapable currently.
-    // TODO: rdar://123555720: Remove this check after another round of
-    // surveying builtins
-    if (auto *fd = dyn_cast<FuncDecl>(afd)) {
-      if (fd->isImplicit() && fd->getModuleContext()->isBuiltinModule()) {
-        return std::nullopt;
-      }
+    if (afd->getKind() == DeclKind::Constructor && afd->isImplicit()) {
+      diags.diagnose(returnLoc,
+                     diag::lifetime_dependence_cannot_infer_no_candidates,
+                     "on implicit initializer");
+      return std::nullopt;
     }
     diags.diagnose(returnLoc,
-                   diag::lifetime_dependence_cannot_infer_no_candidates);
+                   diag::lifetime_dependence_cannot_infer_no_candidates,
+                   "");
     return std::nullopt;
   }
   return lifetimeDependenceInfo;
