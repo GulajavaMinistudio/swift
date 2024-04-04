@@ -458,7 +458,7 @@ static bool clangSupportsPragmaAttributeWithSwiftAttr() {
 
 static inline bool isPCHFilenameExtension(StringRef path) {
   return llvm::sys::path::extension(path)
-    .endswith(file_types::getExtension(file_types::TY_PCH));
+    .ends_with(file_types::getExtension(file_types::TY_PCH));
 }
 
 void importer::getNormalInvocationArguments(
@@ -541,7 +541,7 @@ void importer::getNormalInvocationArguments(
         *clang::LangStandard::getLangStandardForName(CLANG_DEFAULT_STD_CXX);
 #else
         clang::LangStandard::getLangStandardForKind(
-            clang::LangStandard::lang_gnucxx14);
+            clang::LangStandard::lang_gnucxx17);
 #endif
 
     const clang::LangStandard &stdc =
@@ -799,8 +799,19 @@ importer::addCommonInvocationArguments(
   }
 
   if (!importerOpts.TargetCPU.empty()) {
-    invocationArgStrs.push_back("-mcpu=" + importerOpts.TargetCPU);
-
+    switch (triple.getArch()) {
+    case llvm::Triple::x86:
+    case llvm::Triple::x86_64:
+      // `-mcpu` is deprecated and an alias for `-mtune`. We need to pass
+      // `-march` and `-mtune` to behave identically to the `apple-a\d+` cases
+      // below.
+      invocationArgStrs.push_back("-march=" + importerOpts.TargetCPU);
+      invocationArgStrs.push_back("-mtune=" + importerOpts.TargetCPU);
+      break;
+    default:
+      invocationArgStrs.push_back("-mcpu=" + importerOpts.TargetCPU);
+      break;
+    }
   } else if (triple.isOSDarwin()) {
     // Special case CPU based on known deployments:
     //   - arm64 deploys to apple-a7
@@ -7034,7 +7045,7 @@ bool ClangImporter::isUnsafeCXXMethod(const FuncDecl *func) {
   if (!func->hasName())
     return false;
   auto id = func->getBaseName().userFacingName();
-  return id.starts_with("__") && id.endswith("Unsafe");
+  return id.starts_with("__") && id.ends_with("Unsafe");
 }
 
 bool ClangImporter::isAnnotatedWith(const clang::CXXMethodDecl *method,

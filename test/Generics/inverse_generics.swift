@@ -1,4 +1,7 @@
-// RUN: %target-typecheck-verify-swift -enable-experimental-feature NoncopyableGenerics -enable-experimental-feature NonescapableTypes
+// RUN: %target-typecheck-verify-swift \
+// RUN: -enable-experimental-feature NoncopyableGenerics \
+// RUN: -enable-experimental-feature NonescapableTypes \
+// RUN: -enable-experimental-feature SuppressedAssociatedTypes
 
 
 
@@ -109,7 +112,7 @@ struct NeverCopyableDeinit<T: ~Copyable>: ~Copyable {
 }
 
 protocol Test: ~Copyable {
-  init?() // expected-error {{noncopyable types cannot have failable initializers yet}}
+  init?()
 }
 
 struct NoncopyableAndSendable: ~Copyable, Sendable {}

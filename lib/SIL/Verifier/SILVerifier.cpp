@@ -556,6 +556,17 @@ struct ImmutableAddressUseVerifier {
     return false;
   }
 
+  /// Handle instructions that move a value from one address into another
+  /// address.
+  bool isConsumingOrMutatingMoveAddrUse(Operand *use) {
+    assert(use->getUser()->getNumOperands() == 2);
+    auto opIdx = use->getOperandNumber();
+    if (opIdx == CopyLikeInstruction::Dest)
+      return true;
+    assert(opIdx == CopyLikeInstruction::Src);
+    return false;
+  }
+
   bool isAddrCastToNonConsuming(SingleValueInstruction *i) {
     // Check if any of our uses are consuming. If none of them are consuming, we
     // are good to go.
@@ -685,6 +696,12 @@ struct ImmutableAddressUseVerifier {
         }
         return true;
       }
+      case SILInstructionKind::UnconditionalCheckedCastAddrInst:
+      case SILInstructionKind::UncheckedRefCastAddrInst:
+        if (isConsumingOrMutatingMoveAddrUse(use)) {
+          return true;
+        }
+        break;
       case SILInstructionKind::CheckedCastAddrBranchInst:
         switch (cast<CheckedCastAddrBranchInst>(inst)->getConsumptionKind()) {
         case CastConsumptionKind::BorrowAlways:
@@ -5233,9 +5250,8 @@ public:
   void checkSwitchValueInst(SwitchValueInst *SVI) {
     // TODO: Type should be either integer or function
     auto Ty = SVI->getOperand()->getType();
-    require(Ty.is<BuiltinIntegerType>() || Ty.is<SILFunctionType>(),
-            "switch_value operand should be either of an integer "
-            "or function type");
+    require(Ty.is<BuiltinIntegerType>(),
+            "switch_value operand should be an integer");
 
     auto ult = [](const SILValue &a, const SILValue &b) { 
       return a == b || a < b; 
@@ -7019,7 +7035,7 @@ public:
               "package-external function definition must be serialized");
       break;
     case SILLinkage::HiddenExternal:
-      require(F->isExternalDeclaration(),
+      require(F->isExternalDeclaration() || embedded,
               "hidden-external function cannot have a body");
       break;
     }

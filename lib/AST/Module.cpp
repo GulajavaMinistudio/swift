@@ -1179,9 +1179,7 @@ ASTNode SourceFile::getMacroExpansion() const {
   if (Kind != SourceFileKind::MacroExpansion)
     return nullptr;
 
-  auto genInfo =
-      *getASTContext().SourceMgr.getGeneratedSourceInfo(*getBufferID());
-  return ASTNode::getFromOpaqueValue(genInfo.astNode);
+  return getNodeInEnclosingSourceFile();
 }
 
 SourceRange SourceFile::getMacroInsertionRange() const {
@@ -1231,6 +1229,16 @@ SourceFile *SourceFile::getEnclosingSourceFile() const {
       *getASTContext().SourceMgr.getGeneratedSourceInfo(*getBufferID());
   auto sourceLoc = genInfo.originalSourceRange.getStart();
   return getParentModule()->getSourceFileContainingLocation(sourceLoc);
+}
+
+ASTNode SourceFile::getNodeInEnclosingSourceFile() const {
+  if (Kind != SourceFileKind::MacroExpansion &&
+      Kind != SourceFileKind::DefaultArgument)
+    return nullptr;
+
+  auto genInfo =
+      *getASTContext().SourceMgr.getGeneratedSourceInfo(*getBufferID());
+  return ASTNode::getFromOpaqueValue(genInfo.astNode);
 }
 
 void ModuleDecl::lookupClassMember(ImportPath::Access accessPath,
@@ -2570,6 +2578,38 @@ void
 SourceFile::setImports(ArrayRef<AttributedImport<ImportedModule>> imports) {
   assert(!Imports && "Already computed imports");
   Imports = getASTContext().AllocateCopy(imports);
+}
+
+std::optional<AttributedImport<ImportedModule>>
+SourceFile::findImport(const ModuleDecl *module) const {
+  return evaluateOrDefault(getASTContext().evaluator,
+                           ImportDeclRequest{this, module}, std::nullopt);
+}
+
+std::optional<AttributedImport<ImportedModule>>
+ImportDeclRequest::evaluate(Evaluator &evaluator, const SourceFile *sf,
+                            const ModuleDecl *module) const {
+  auto &ctx = sf->getASTContext();
+  auto imports = sf->getImports();
+
+  // Look to see if the owning module was directly imported.
+  for (const auto &import : imports) {
+    if (import.module.importedModule == module)
+      return import;
+  }
+
+  // Now look for transitive imports.
+  auto &importCache = ctx.getImportCache();
+  for (const auto &import : imports) {
+    auto &importSet = importCache.getImportSet(import.module.importedModule);
+    for (const auto &transitive : importSet.getTransitiveImports()) {
+      if (transitive.importedModule == module) {
+        return import;
+      }
+    }
+  }
+
+  return std::nullopt;
 }
 
 bool SourceFile::hasImportUsedPreconcurrency(
