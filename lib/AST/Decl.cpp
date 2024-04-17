@@ -187,12 +187,23 @@ DescriptiveDeclKind Decl::getDescriptiveKind() const {
               : DescriptiveDeclKind::Struct;
 
    case DeclKind::Class: {
-     bool isActor = cast<ClassDecl>(this)->isActor();
-     return cast<ClassDecl>(this)->getGenericParams()
-                ? (isActor ? DescriptiveDeclKind::GenericActor
-                           : DescriptiveDeclKind::GenericClass)
-                : (isActor ? DescriptiveDeclKind::Actor
-                           : DescriptiveDeclKind::Class);
+     auto clazz = cast<ClassDecl>(this);
+     bool isAnyActor = clazz->isAnyActor();
+     bool isGeneric = clazz->getGenericParams();
+
+     auto kind = isGeneric ? DescriptiveDeclKind::GenericClass
+                           : DescriptiveDeclKind::Class;
+
+     if (isAnyActor) {
+       if (clazz->isDistributedActor()) {
+         kind = isGeneric ? DescriptiveDeclKind::GenericDistributedActor
+                          : DescriptiveDeclKind::DistributedActor;
+       } else {
+         kind = isGeneric ? DescriptiveDeclKind::GenericActor
+                          : DescriptiveDeclKind::Actor;
+       }
+     }
+     return kind;
    }
 
    case DeclKind::Var: {
@@ -332,11 +343,13 @@ StringRef Decl::getDescriptiveKindName(DescriptiveDeclKind K) {
   ENTRY(Struct, "struct");
   ENTRY(Class, "class");
   ENTRY(Actor, "actor");
+  ENTRY(DistributedActor, "distributed actor");
   ENTRY(Protocol, "protocol");
   ENTRY(GenericEnum, "generic enum");
   ENTRY(GenericStruct, "generic struct");
   ENTRY(GenericClass, "generic class");
   ENTRY(GenericActor, "generic actor");
+  ENTRY(GenericDistributedActor, "generic distributed actor");
   ENTRY(GenericType, "generic type");
   ENTRY(Subscript, "subscript");
   ENTRY(StaticSubscript, "static subscript");
@@ -554,6 +567,15 @@ std::optional<llvm::VersionTuple>
 Decl::getBackDeployedBeforeOSVersion(ASTContext &Ctx) const {
   if (auto *attr = getAttrs().getBackDeployed(Ctx)) {
     auto version = attr->Version;
+    StringRef ignoredPlatformString;
+    AvailabilityInference::updateBeforePlatformForFallback(
+        attr, getASTContext(), ignoredPlatformString, version);
+
+    // If the remap for fallback resulted in 1.0, then the
+    // backdeployment prior to that is not meaningful.
+    if (version == clang::VersionTuple(1, 0, 0, 0))
+      return std::nullopt;
+
     return version;
   }
 
@@ -3701,10 +3723,12 @@ bool ValueDecl::isSemanticallyFinal() const {
       return true;
   }
 
-  // As are members of actor types.
-  if (auto classDecl = getDeclContext()->getSelfClassDecl()) {
-    if (classDecl->isAnyActor())
-      return true;
+  // As are methods/accessors of actor types.
+  if (!isa<TypeDecl>(this)) {
+    if (auto classDecl = getDeclContext()->getSelfClassDecl()) {
+      if (classDecl->isAnyActor())
+        return true;
+    }
   }
 
   // For everything else, the same as 'final'.
@@ -10005,6 +10029,18 @@ void AbstractFunctionDecl::addDerivativeFunctionConfiguration(
   DerivativeFunctionConfigs->insert(config);
 }
 
+std::optional<LifetimeDependenceInfo>
+AbstractFunctionDecl::getLifetimeDependenceInfo() const {
+  if (!isa<FuncDecl>(this) && !isa<ConstructorDecl>(this)) {
+    return std::nullopt;
+  }
+
+  return evaluateOrDefault(
+      getASTContext().evaluator,
+      LifetimeDependenceInfoRequest{const_cast<AbstractFunctionDecl *>(this)},
+      std::nullopt);
+}
+
 void FuncDecl::setResultInterfaceType(Type type) {
   getASTContext().evaluator.cacheOutput(ResultTypeRequest{this},
                                         std::move(type));
@@ -11368,6 +11404,10 @@ ActorIsolation::forActorInstanceSelf(ValueDecl *decl) {
 
   auto *dc = decl->getDeclContext();
   return ActorIsolation(ActorInstance, dc->getSelfNominalTypeDecl(), 0);
+}
+
+ActorIsolation ActorIsolation::forActorInstanceSelf(NominalTypeDecl *selfDecl) {
+  return ActorIsolation(ActorInstance, selfDecl, 0);
 }
 
 NominalTypeDecl *ActorIsolation::getActor() const {

@@ -1,7 +1,7 @@
-// RUN: %target-swift-frontend -disable-availability-checking -enable-experimental-feature StrictConcurrency -emit-sil -o /dev/null -verify %s
-// RUN: %target-swift-frontend -disable-availability-checking -enable-experimental-feature StrictConcurrency=complete -emit-sil -o /dev/null -verify %s
-// RUN: %target-swift-frontend -disable-availability-checking -enable-upcoming-feature StrictConcurrency -emit-sil -o /dev/null -verify %s
-// RUN: %target-swift-frontend -disable-availability-checking -enable-upcoming-feature StrictConcurrency -emit-sil -o /dev/null -verify -verify-additional-prefix region-isolation- -enable-upcoming-feature RegionBasedIsolation %s
+// RUN: %target-swift-frontend -disable-availability-checking -enable-experimental-feature StrictConcurrency -emit-sil -o /dev/null -verify %s -disable-region-based-isolation-with-strict-concurrency
+// RUN: %target-swift-frontend -disable-availability-checking -enable-experimental-feature StrictConcurrency=complete -emit-sil -o /dev/null -verify %s -disable-region-based-isolation-with-strict-concurrency
+// RUN: %target-swift-frontend -disable-availability-checking -enable-upcoming-feature StrictConcurrency -emit-sil -o /dev/null -verify %s -disable-region-based-isolation-with-strict-concurrency
+// RUN: %target-swift-frontend -disable-availability-checking -enable-upcoming-feature StrictConcurrency -emit-sil -o /dev/null -verify -verify-additional-prefix region-isolation- %s
 
 // REQUIRES: concurrency
 // REQUIRES: asserts
@@ -31,7 +31,7 @@ func iterate(stream: AsyncStream<Int>) async {
   // FIXME: Region isolation should consider a value from a 'nonisolated(unsafe)'
   // declaration to be in a disconnected region
 
-  // expected-region-isolation-warning @+3 {{transferring 'it' may cause a race}}
+  // expected-region-isolation-warning @+3 {{transferring 'it' may cause a data race}}
   // expected-region-isolation-note @+2 {{transferring disconnected 'it' to nonisolated callee could cause races in between callee nonisolated and local main actor-isolated uses}}
   // expected-region-isolation-note @+1 {{use here could race}}
   while let element = await it.next() {

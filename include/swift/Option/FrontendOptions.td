@@ -1343,4 +1343,19 @@ def disable_experimental_parser_round_trip : Flag<["-"],
   "disable-experimental-parser-round-trip">,
   HelpText<"Disable round trip through the new swift parser">;
 
+def disable_strict_concurrency_region_based_isolation : Flag<["-"],
+  "disable-region-based-isolation-with-strict-concurrency">,
+  HelpText<"Disable region based isolation when running with strict concurrency enabled. Only enabled with asserts">,
+  Flags<[HelpHidden]>;
+
+def no_scanner_module_validation: Flag<["-"], "no-scanner-module-validation">,
+    HelpText<"Do not validate binary modules in scanner and delegate the validation to swift-frontend">;
+def module_load_mode: Separate<["-"], "module-load-mode">,
+    MetaVarName<"only-interface|prefer-interface|prefer-serialized|only-serialized">,
+    HelpText<"Module loading mode">;
+
+def platform_availability_inheritance_map_path
+  : Separate<["-"], "platform-availability-inheritance-map-path">, MetaVarName<"<path>">,
+    HelpText<"Path of the platform inheritance platform map">;
+
 } // end let Flags = [FrontendOption, NoDriverOption, HelpHidden]

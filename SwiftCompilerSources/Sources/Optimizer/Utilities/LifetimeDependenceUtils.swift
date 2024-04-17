@@ -222,7 +222,7 @@ extension LifetimeDependence {
     if value.isEscapable {
       return nil
     }
-    if (value.definingInstruction as! FullApplySite).hasResultDependence {
+    if (value.definingInstructionOrTerminator as! FullApplySite).hasResultDependence {
       return nil
     }
     assert(value.ownership == .owned, "apply result must be owned")
@@ -381,15 +381,14 @@ extension LifetimeDependence.Scope {
   }
 
   private init?(guaranteed base: Value, _ context: some Context) {
-    var introducers = Stack<BeginBorrowValue>(context)
-    gatherBorrowIntroducers(for: base, in: &introducers, context)
     // If introducers is empty, then the dependence is on a trivial value, so
     // there is no dependence scope.
     //
     // TODO: Add a SIL verifier check that a mark_dependence [nonescaping]
     // base is never a guaranteed phi.
-    guard let beginBorrow = introducers.pop() else { return nil }
-    assert(introducers.isEmpty,
+    var iter = base.getBorrowIntroducers(context).makeIterator()
+    guard let beginBorrow = iter.next() else { return nil }
+    assert(iter.next() == nil,
            "guaranteed phis not allowed when diagnosing lifetime dependence")
     switch beginBorrow {
     case .beginBorrow, .loadBorrow:
@@ -766,11 +765,12 @@ extension LifetimeDependenceUseDefWalker {
 
 /// Walk down dependent values.
 ///
-/// Delegates value def-use walking to the ForwardingUseDefWalker and
-/// overrides copy, move, borrow, and mark_dependence.
+/// First classifies all values using OwnershipUseVisitor. Delegates forwarding uses to the ForwardingUseDefWalker.
+/// Transitively follows OwnershipTransitionInstructions (copy, move, borrow, and mark_dependence).  Transitively
+/// follows interior pointers using AddressUseVisitor. Handles stores to and loads from local variables using
+/// LocalVariableReachabilityCache.
 ///
-/// Ignores trivial values (~Escapable types are never
-/// trivial. Escapable types may only be lifetime-depenent values if
+/// Ignores trivial values (~Escapable types are never trivial. Escapable types may only be lifetime-depenent values if
 /// they are non-trivial).
 ///
 /// Skips uses within nested borrow scopes.

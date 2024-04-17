@@ -954,7 +954,7 @@ Type TypeBase::stripConcurrency(bool recurse, bool dropGlobalActor) {
         // If it's a Sendable requirement, skip it.
         const auto &req = requirements[reqIdx];
         if (req.getKind() == RequirementKind::Conformance &&
-            req.getSecondType()->castTo<ProtocolType>()->getDecl()
+            req.getProtocolDecl()
               ->isSpecificProtocol(KnownProtocolKind::Sendable))
           continue;
 
@@ -3895,6 +3895,15 @@ Type AnyFunctionType::getThrownError() const {
   }
 }
 
+bool AnyFunctionType::isSendable() const {
+  auto &ctx = getASTContext();
+  if (ctx.LangOpts.hasFeature(Feature::GlobalActorIsolatedTypesUsability)) {
+    // Global-actor-isolated function types are implicitly Sendable.
+    return getExtInfo().isSendable() || getIsolation().isGlobalActor();
+  }
+  return getExtInfo().isSendable();
+}
+
 Type AnyFunctionType::getGlobalActor() const {
   switch (getKind()) {
   case TypeKind::Function:
@@ -4455,11 +4464,8 @@ case TypeKind::Id:
     auto sig = opaque->getDecl()->getGenericSignature();
     auto newSubMap =
       SubstitutionMap::get(sig,
-       [&](SubstitutableType *t) -> Type {
-         auto index = sig->getGenericParamOrdinal(cast<GenericTypeParamType>(t));
-         return newSubs[index];
-       },
-       LookUpConformanceInModule(opaque->getDecl()->getModuleContext()));
+        QueryReplacementTypeArray{sig, newSubs},
+        LookUpConformanceInModule(opaque->getDecl()->getModuleContext()));
     return OpaqueTypeArchetypeType::get(opaque->getDecl(),
                                         opaque->getInterfaceType(),
                                         newSubMap);
@@ -5352,23 +5358,6 @@ Type TypeBase::openAnyExistentialType(OpenedArchetypeType *&opened,
   opened = OpenedArchetypeType::get(getCanonicalType(),
                                     parentSig.getCanonicalSignature());
   return opened;
-}
-
-CanType swift::substOpaqueTypesWithUnderlyingTypes(CanType ty,
-                                                   TypeExpansionContext context,
-                                                   bool allowLoweredTypes) {
-  if (!context.shouldLookThroughOpaqueTypeArchetypes() ||
-      !ty->hasOpaqueArchetype())
-    return ty;
-
-  ReplaceOpaqueTypesWithUnderlyingTypes replacer(
-      context.getContext(), context.getResilienceExpansion(),
-      context.isWholeModuleContext());
-  SubstOptions flags = SubstFlags::SubstituteOpaqueArchetypes;
-  if (allowLoweredTypes)
-    flags =
-        SubstFlags::SubstituteOpaqueArchetypes | SubstFlags::AllowLoweredTypes;
-  return ty.subst(replacer, replacer, flags)->getCanonicalType();
 }
 
 AnyFunctionType *AnyFunctionType::getWithoutDifferentiability() const {

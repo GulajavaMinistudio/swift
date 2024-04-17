@@ -305,6 +305,10 @@ void CompilerInvocation::setRuntimeResourcePath(StringRef Path) {
   updateRuntimeLibraryPaths(SearchPathOpts, FrontendOpts, LangOpts);
 }
 
+void CompilerInvocation::setPlatformAvailabilityInheritanceMapPath(StringRef Path) {
+  SearchPathOpts.PlatformAvailabilityInheritanceMapPath = Path.str();
+}
+
 void CompilerInvocation::setTargetTriple(StringRef Triple) {
   setTargetTriple(llvm::Triple(Triple));
 }
@@ -1060,6 +1064,16 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   if (Opts.StrictConcurrencyLevel == StrictConcurrency::Complete) {
     Opts.enableFeature(Feature::IsolatedDefaultValues);
     Opts.enableFeature(Feature::GlobalConcurrency);
+
+    // If asserts are enabled, allow for region based isolation to be disabled
+    // with a flag. This is intended only to be used with tests.
+    bool enableRegionIsolation = true;
+#ifndef NDEBUG
+    enableRegionIsolation =
+        !Args.hasArg(OPT_disable_strict_concurrency_region_based_isolation);
+#endif
+    if (enableRegionIsolation)
+      Opts.enableFeature(Feature::RegionBasedIsolation);
   }
 
   Opts.WarnImplicitOverrides =
@@ -1169,6 +1183,24 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   if (const Arg *A = Args.getLastArg(OPT_target)) {
     Target = llvm::Triple(A->getValue());
     TargetArg = A->getValue();
+
+    const bool targetNeedsRemapping = Target.isXROS();
+    if (targetNeedsRemapping && Target.getOSMajorVersion() == 0) {
+      // FIXME(xrOS): Work around an LLVM-ism until we have something
+      // akin to Target::get*Version for this platform. The Clang driver
+      // also has to pull version numbers up to 1.0.0 when a triple for an
+      // unknown platform with no explicit version number is passed.
+      if (Target.getEnvironmentName().empty()) {
+        Target = llvm::Triple(Target.getArchName(),
+                              Target.getVendorName(),
+                              Target.getOSName() + "1.0");
+      } else {
+        Target = llvm::Triple(Target.getArchName(),
+                              Target.getVendorName(),
+                              Target.getOSName() + "1.0",
+                              Target.getEnvironmentName());
+      }
+    }
 
     // Backward compatibility hack: infer "simulator" environment for x86
     // iOS/tvOS/watchOS. The driver takes care of this for the frontend
@@ -1503,7 +1535,10 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     }
   }
 
-#ifndef NDEBUG
+  Opts.DisableDynamicActorIsolation |=
+      Args.hasArg(OPT_disable_dynamic_actor_isolation);
+
+#if SWIFT_ENABLE_EXPERIMENTAL_PARSER_VALIDATION
   /// Enable round trip parsing via the new swift parser unless it is disabled
   /// explicitly. The new Swift parser can have mismatches with C++ parser -
   /// rdar://118013482 Use this flag to disable round trip through the new
@@ -1870,8 +1905,7 @@ static bool validateSwiftModuleFileArgumentAndAdd(const std::string &swiftModule
   return false;
 }
 
-static bool ParseSearchPathArgs(SearchPathOptions &Opts,
-                                ArgList &Args,
+static bool ParseSearchPathArgs(SearchPathOptions &Opts, ArgList &Args,
                                 DiagnosticEngine &Diags,
                                 StringRef workingDirectory) {
   using namespace options;
@@ -1999,6 +2033,9 @@ static bool ParseSearchPathArgs(SearchPathOptions &Opts,
   if (const Arg *A = Args.getLastArg(OPT_const_gather_protocols_file))
     Opts.ConstGatherProtocolListFilePath = A->getValue();
 
+  if (const Arg *A = Args.getLastArg(OPT_platform_availability_inheritance_map_path))
+    Opts.PlatformAvailabilityInheritanceMapPath = A->getValue();
+
   for (auto A : Args.getAllArgValues(options::OPT_serialized_path_obfuscate)) {
     auto SplitMap = StringRef(A).split('=');
     Opts.DeserializedPathRecoverer.addMapping(SplitMap.first, SplitMap.second);
@@ -2006,6 +2043,31 @@ static bool ParseSearchPathArgs(SearchPathOptions &Opts,
   for (StringRef Opt : Args.getAllArgValues(OPT_scanner_prefix_map)) {
     Opts.ScannerPrefixMapper.push_back(Opt.str());
   }
+
+  Opts.NoScannerModuleValidation |=
+      Args.hasArg(OPT_no_scanner_module_validation);
+
+  std::optional<std::string> forceModuleLoadingMode;
+  if (auto *A = Args.getLastArg(OPT_module_load_mode))
+    forceModuleLoadingMode = A->getValue();
+  else if (auto Env = llvm::sys::Process::GetEnv("SWIFT_FORCE_MODULE_LOADING"))
+    forceModuleLoadingMode = Env;
+  if (forceModuleLoadingMode) {
+    if (*forceModuleLoadingMode == "prefer-interface" ||
+        *forceModuleLoadingMode == "prefer-parseable")
+      Opts.ModuleLoadMode = ModuleLoadingMode::PreferInterface;
+    else if (*forceModuleLoadingMode == "prefer-serialized")
+      Opts.ModuleLoadMode = ModuleLoadingMode::PreferSerialized;
+    else if (*forceModuleLoadingMode == "only-interface" ||
+             *forceModuleLoadingMode == "only-parseable")
+      Opts.ModuleLoadMode = ModuleLoadingMode::OnlyInterface;
+    else if (*forceModuleLoadingMode == "only-serialized")
+      Opts.ModuleLoadMode = ModuleLoadingMode::OnlySerialized;
+    else
+      Diags.diagnose(SourceLoc(), diag::unknown_forced_module_loading_mode,
+                     *forceModuleLoadingMode);
+  }
+
   // Opts.RuntimeIncludePath is set by calls to
   // setRuntimeIncludePath() or setMainExecutablePath().
   // Opts.RuntimeImportPath is set by calls to

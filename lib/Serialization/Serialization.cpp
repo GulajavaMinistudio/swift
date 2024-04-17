@@ -1321,21 +1321,25 @@ void Serializer::writeInputBlock() {
     time_t importedHeaderModTime = 0;
     std::string contents;
     auto importedHeaderPath = Options.ImportedHeader;
+    std::string pchIncludeTree;
     // We do not want to serialize the explicitly-specified .pch path if one was
     // provided. Instead we write out the path to the original header source so
     // that clients can consume it.
     if (Options.ExplicitModuleBuild &&
         llvm::sys::path::extension(importedHeaderPath)
-            .ends_with(file_types::getExtension(file_types::TY_PCH)))
-      importedHeaderPath = clangImporter->getClangInstance()
-                               .getASTReader()
-                               ->getModuleManager()
-                               .lookupByFileName(importedHeaderPath)
-                               ->OriginalSourceFileName;
+            .ends_with(file_types::getExtension(file_types::TY_PCH))) {
+      auto *pch = clangImporter->getClangInstance()
+                      .getASTReader()
+                      ->getModuleManager()
+                      .lookupByFileName(importedHeaderPath);
+      pchIncludeTree = pch->IncludeTreeID;
+      importedHeaderPath = pch->OriginalSourceFileName;
+    }
 
     if (!importedHeaderPath.empty()) {
       contents = clangImporter->getBridgingHeaderContents(
-          importedHeaderPath, importedHeaderSize, importedHeaderModTime);
+          importedHeaderPath, importedHeaderSize, importedHeaderModTime,
+          pchIncludeTree);
     }
     assert(publicImportSet.count(bridgingHeaderImport));
     ImportedHeader.emit(ScratchRecord,
@@ -2552,10 +2556,7 @@ void Serializer::writeASTBlockEntity(const DeclContext *DC) {
 }
 
 void Serializer::writeLifetimeDependenceInfo(
-    LifetimeDependenceInfo lifetimeDependenceInfo, bool skipImplicit) {
-  if (skipImplicit && !lifetimeDependenceInfo.isExplicitlySpecified()) {
-    return;
-  }
+    LifetimeDependenceInfo lifetimeDependenceInfo) {
   using namespace decls_block;
   SmallVector<bool> paramIndices;
   lifetimeDependenceInfo.getConcatenatedData(paramIndices);
@@ -4569,8 +4570,7 @@ public:
     if (fnType) {
       if (auto *lifetimeDependenceInfo =
               fnType->getLifetimeDependenceInfoOrNull()) {
-        S.writeLifetimeDependenceInfo(*lifetimeDependenceInfo,
-                                      /*skipImplicit*/ true);
+        S.writeLifetimeDependenceInfo(*lifetimeDependenceInfo);
       }
     }
 
@@ -4697,8 +4697,7 @@ public:
     if (fnType) {
       if (auto *lifetimeDependenceInfo =
               fnType->getLifetimeDependenceInfoOrNull()) {
-        S.writeLifetimeDependenceInfo(*lifetimeDependenceInfo,
-                                      /*skipImplicit*/ true);
+        S.writeLifetimeDependenceInfo(*lifetimeDependenceInfo);
       }
     }
 
@@ -4868,8 +4867,7 @@ public:
     if (fnType) {
       if (auto *lifetimeDependenceInfo =
               fnType->getLifetimeDependenceInfoOrNull()) {
-        S.writeLifetimeDependenceInfo(*lifetimeDependenceInfo,
-                                      /*skipImplicit*/ true);
+        S.writeLifetimeDependenceInfo(*lifetimeDependenceInfo);
       }
     }
 

@@ -2624,9 +2624,23 @@ namespace {
       return MacroWalking::Expansion;
     }
 
+    PreWalkResult<Pattern *> walkToPatternPre(Pattern *pattern) override {
+      // Walking into patterns leads to nothing good because then we
+      // end up visiting the AccessorDecls of a top-level
+      // PatternBindingDecl twice.
+      return Action::SkipNode(pattern);
+    }
+
     PreWalkAction walkToDeclPre(Decl *decl) override {
+      // Don't walk into local types because nothing in them can
+      // change the outcome of our analysis, and we don't want to
+      // assume things there have been type checked yet.
+      if (isa<TypeDecl>(decl)) {
+        return Action::SkipChildren();
+      }
+
       if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
-        if (func->isLocalContext()) {
+        if (func->getDeclContext()->isLocalContext()) {
           checkLocalCaptures(func);
         }
 
@@ -4181,15 +4195,21 @@ bool ActorIsolationChecker::mayExecuteConcurrentlyWith(
     if (useIsolation == defIsolation)
       return false;
 
+    auto &ctx = useContext->getASTContext();
+    bool regionIsolationEnabled =
+        ctx.LangOpts.hasFeature(Feature::RegionBasedIsolation);
+    
+    // Globally-isolated closures may never be executed concurrently.
+    if (ctx.LangOpts.hasFeature(Feature::GlobalActorIsolatedTypesUsability) &&
+        regionIsolationEnabled && useIsolation.isGlobalActor())
+      return false;
+
     // If the local function is not Sendable, its isolation differs
     // from that of the context, and both contexts are actor isolated,
     // then capturing non-Sendable values allows the closure to stash
     // those values into actor isolated state. The original context
     // may also stash those values into isolated state, enabling concurrent
     // access later on.
-    auto &ctx = useContext->getASTContext();
-    bool regionIsolationEnabled =
-        ctx.LangOpts.hasFeature(Feature::RegionBasedIsolation);
     isolatedStateMayEscape =
         (!regionIsolationEnabled &&
         useIsolation.isActorIsolated() && defIsolation.isActorIsolated());
@@ -4243,7 +4263,9 @@ void swift::checkFunctionActorIsolation(AbstractFunctionDecl *decl) {
   ActorIsolationChecker checker(decl);
   if (auto body = decl->getBody()) {
     body->walk(checker);
-    if(ctx.LangOpts.hasFeature(Feature::GroupActorErrors)){ checker.diagnoseIsolationErrors(); }
+    if (ctx.LangOpts.hasFeature(Feature::GroupActorErrors)) {
+      checker.diagnoseIsolationErrors();
+    }
   }
   if (auto ctor = dyn_cast<ConstructorDecl>(decl)) {
     if (auto superInit = ctor->getSuperInitCall())
@@ -5369,11 +5391,9 @@ DefaultInitializerIsolation::evaluate(Evaluator &evaluator,
       return ActorIsolation::forUnspecified();
 
     auto i = pbd->getPatternEntryIndexForVarDecl(var);
-    if (!pbd->isInitializerChecked(i))
-      TypeChecker::typeCheckPatternBinding(pbd, i);
 
     dc = cast<Initializer>(pbd->getInitContext(i));
-    initExpr = pbd->getInit(i);
+    initExpr = pbd->getCheckedAndContextualizedInit(i);
     enclosingIsolation = getActorIsolation(var);
   } else if (auto *param = dyn_cast<ParamDecl>(var)) {
     // If this parameter corresponds to a stored property for a

@@ -630,6 +630,8 @@ struct ASTContext::Implementation {
   /// The scratch context used to allocate intrinsic data on behalf of \c swift::IntrinsicInfo
   std::unique_ptr<llvm::LLVMContext> IntrinsicScratchContext;
 
+  mutable std::optional<std::unique_ptr<clang::DarwinSDKInfo>> SDKInfo;
+
   /// Memory allocation arena for the term rewriting system.
   std::unique_ptr<rewriting::RewriteContext> TheRewriteContext;
 
@@ -5866,18 +5868,6 @@ ASTContext::getOpenedExistentialSignature(Type type, GenericSignature parentSig)
   assert(parentSig || !constraint->hasTypeParameter() &&
          "Interface type here requires a parent signature");
 
-  // The opened archetype signature for a protocol type is identical
-  // to the protocol's own canonical generic signature if there aren't any
-  // outer generic parameters to worry about.
-  if (parentSig.isNull()) {
-    if (const auto protoTy = dyn_cast<ProtocolType>(constraint)) {
-      return protoTy->getDecl()->getGenericSignature().getCanonicalSignature();
-    }
-  }
-
-  // Otherwise we need to build a generic signature that captures any outer
-  // generic parameters. This ensures that we keep e.g. generic superclass
-  // existentials contained in a well-formed generic context.
   auto canParentSig = parentSig.getCanonicalSignature();
   auto key = std::make_pair(constraint, canParentSig.getPointer());
   auto found = getImpl().ExistentialSignatures.find(key);
@@ -5885,7 +5875,7 @@ ASTContext::getOpenedExistentialSignature(Type type, GenericSignature parentSig)
     return found->second;
 
   auto genericParam = OpenedArchetypeType::getSelfInterfaceTypeFromContext(
-      canParentSig, type->getASTContext())
+      canParentSig, *this)
     ->castTo<GenericTypeParamType>();
   Requirement requirement(RequirementKind::Conformance, genericParam,
                           constraint);
@@ -6381,6 +6371,44 @@ bool ASTContext::isASCIIString(StringRef s) const {
     }
   }
   return true;
+}
+
+clang::DarwinSDKInfo *ASTContext::getDarwinSDKInfo() const {
+  if (!getImpl().SDKInfo) {
+    auto SDKInfoOrErr = clang::parseDarwinSDKInfo(
+            *llvm::vfs::getRealFileSystem(),
+            SearchPathOpts.SDKPath);
+    if (!SDKInfoOrErr) {
+      llvm::handleAllErrors(SDKInfoOrErr.takeError(),
+                            [](const llvm::ErrorInfoBase &) {
+                              // Ignore the error for now..
+                            });
+      getImpl().SDKInfo.emplace();
+    } else if (!*SDKInfoOrErr) {
+      getImpl().SDKInfo.emplace();
+    } else {
+      getImpl().SDKInfo.emplace(std::make_unique<clang::DarwinSDKInfo>(**SDKInfoOrErr));
+    }
+  }
+
+  return getImpl().SDKInfo->get();
+}
+
+const clang::DarwinSDKInfo::RelatedTargetVersionMapping
+*ASTContext::getAuxiliaryDarwinPlatformRemapInfo(clang::DarwinSDKInfo::OSEnvPair Kind) const {
+  if (SearchPathOpts.PlatformAvailabilityInheritanceMapPath) {
+    auto SDKInfoOrErr = clang::parseDarwinSDKInfo(
+            *llvm::vfs::getRealFileSystem(),
+            *SearchPathOpts.PlatformAvailabilityInheritanceMapPath);
+    if (!SDKInfoOrErr || !*SDKInfoOrErr) {
+      llvm::handleAllErrors(SDKInfoOrErr.takeError(),
+                            [](const llvm::ErrorInfoBase &) {
+        // Ignore the error for now..
+      });
+    }
+    return (*SDKInfoOrErr)->getVersionMapping(Kind);
+  }
+  return nullptr;
 }
 
 /// The special Builtin.TheTupleType, which parents tuple extensions and

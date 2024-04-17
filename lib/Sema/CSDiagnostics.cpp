@@ -6187,7 +6187,39 @@ bool InaccessibleMemberFailure::diagnoseAsError() {
 
   auto loc = nameLoc.isValid() ? nameLoc.getStartLoc() : ::getLoc(anchor);
   auto accessLevel = Member->getFormalAccessScope().accessLevelForDiagnostics();
-  if (auto *CD = dyn_cast<ConstructorDecl>(Member)) {
+  bool suppressDeclHereNote = false;
+  if (accessLevel == AccessLevel::Public &&
+      !Member->findImport(getDC())) {
+    auto definingModule = Member->getDeclContext()->getParentModule();
+    emitDiagnosticAt(loc, diag::candidate_from_missing_import,
+                     Member->getDescriptiveKind(), Member->getName(),
+                     definingModule->getName());
+
+    SourceLoc bestLoc =
+        getBestAddImportFixItLocation(Member, getDC()->getParentSourceFile());
+    if (bestLoc.isValid()) {
+      llvm::SmallString<64> importText;
+
+      // @_spi imports.
+      if (Member->isSPI()) {
+        auto spiGroups = Member->getSPIGroups();
+        if (!spiGroups.empty()) {
+          importText += "@_spi(";
+          importText += spiGroups[0].str();
+          importText += ") ";
+        }
+      }
+
+      importText += "import ";
+      importText += definingModule->getName().str();
+      importText += "\n";
+      emitDiagnosticAt(bestLoc, diag::candidate_add_import,
+                       definingModule->getName())
+        .fixItInsert(bestLoc, importText);
+    }
+
+    suppressDeclHereNote = true;
+  } else if (auto *CD = dyn_cast<ConstructorDecl>(Member)) {
     emitDiagnosticAt(loc, diag::init_candidate_inaccessible,
                      CD->getResultInterfaceType(), accessLevel)
         .highlight(nameLoc.getSourceRange());
@@ -6197,7 +6229,8 @@ bool InaccessibleMemberFailure::diagnoseAsError() {
         .highlight(nameLoc.getSourceRange());
   }
 
-  emitDiagnosticAt(Member, diag::decl_declared_here, Member);
+  if (!suppressDeclHereNote)
+    emitDiagnosticAt(Member, diag::decl_declared_here, Member);
   return true;
 }
 

@@ -449,10 +449,8 @@ static bool usesFeatureMoveOnlyEnumDeinits(Decl *decl) {
 
 UNINTERESTING_FEATURE(MoveOnlyTuples)
 
-static bool usesFeatureMoveOnlyPartialConsumption(Decl *decl) {
-  // Partial consumption does not affect declarations directly.
-  return false;
-}
+// Partial consumption does not affect declarations directly.
+UNINTERESTING_FEATURE(MoveOnlyPartialConsumption)
 
 UNINTERESTING_FEATURE(MoveOnlyPartialReinitialization)
 
@@ -505,6 +503,7 @@ static bool usesFeatureRawLayout(Decl *decl) {
 }
 
 UNINTERESTING_FEATURE(Embedded)
+UNINTERESTING_FEATURE(Volatile)
 UNINTERESTING_FEATURE(SuppressedAssociatedTypes)
 
 static bool usesFeatureNoncopyableGenerics(Decl *decl) {
@@ -646,29 +645,7 @@ static bool usesFeatureTransferringArgsAndResults(Decl *decl) {
   return false;
 }
 
-static bool usesFeatureDynamicActorIsolation(Decl *decl) {
-  auto usesPreconcurrencyConformance = [&](const InheritedTypes &inherited) {
-    return llvm::any_of(
-        inherited.getEntries(),
-        [](const InheritedEntry &entry) { return entry.isPreconcurrency(); });
-  };
-
-  if (auto *T = dyn_cast<TypeDecl>(decl))
-    return usesPreconcurrencyConformance(T->getInherited());
-
-  if (auto *E = dyn_cast<ExtensionDecl>(decl)) {
-    // If type has `@preconcurrency` conformance(s) all of its
-    // extensions have to be guarded by the flag too.
-    if (auto *T = dyn_cast<TypeDecl>(E->getExtendedNominal())) {
-      if (usesPreconcurrencyConformance(T->getInherited()))
-        return true;
-    }
-
-    return usesPreconcurrencyConformance(E->getInherited());
-  }
-
-  return false;
-}
+UNINTERESTING_FEATURE(DynamicActorIsolation)
 
 UNINTERESTING_FEATURE(BorrowingSwitch)
 
@@ -683,6 +660,7 @@ static bool usesFeatureIsolatedAny(Decl *decl) {
   });
 }
 
+UNINTERESTING_FEATURE(ExtensionImportVisibility)
 UNINTERESTING_FEATURE(IsolatedAny2)
 
 static bool usesFeatureGlobalActorIsolatedTypesUsability(Decl *decl) {
@@ -691,6 +669,10 @@ static bool usesFeatureGlobalActorIsolatedTypesUsability(Decl *decl) {
 
 UNINTERESTING_FEATURE(ObjCImplementation)
 UNINTERESTING_FEATURE(CImplementation)
+
+static bool usesFeatureSensitive(Decl *decl) {
+  return decl->getAttrs().hasAttribute<SensitiveAttr>();
+}
 
 // ----------------------------------------------------------------------------
 // MARK: - FeatureSet

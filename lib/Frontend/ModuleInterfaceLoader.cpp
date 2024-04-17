@@ -1372,7 +1372,8 @@ std::error_code ModuleInterfaceLoader::findModuleFilesInDirectory(
 }
 
 std::vector<std::string>
-ModuleInterfaceCheckerImpl::getCompiledModuleCandidatesForInterface(StringRef moduleName, StringRef interfacePath) {
+ModuleInterfaceCheckerImpl::getCompiledModuleCandidatesForInterface(
+    StringRef moduleName, StringRef interfacePath) {
   // Derive .swiftmodule path from the .swiftinterface path.
   auto interfaceExt = file_types::getExtension(file_types::TY_SwiftModuleInterfaceFile);
   auto newExt = file_types::getExtension(file_types::TY_SwiftModuleFile);
@@ -1392,17 +1393,32 @@ ModuleInterfaceCheckerImpl::getCompiledModuleCandidatesForInterface(StringRef mo
 
   ModuleInterfaceLoaderImpl Impl(Ctx, modulePath, interfacePath, moduleName,
                                  CacheDir, PrebuiltCacheDir, BackupInterfaceDir,
-                                 SourceLoc(), Opts,
-                                 RequiresOSSAModules,
-                                 nullptr,
-                                 ModuleLoadingMode::PreferSerialized);
+                                 SourceLoc(), Opts, RequiresOSSAModules,
+                                 nullptr, Ctx.SearchPathOpts.ModuleLoadMode);
   std::vector<std::string> results;
-  auto pair = Impl.getCompiledModuleCandidates();
-  // Add compiled module candidates only when they are non-empty.
-  if (!pair.first.empty())
-    results.push_back(pair.first);
-  if (!pair.second.empty())
-    results.push_back(pair.second);
+  std::string adjacentMod, prebuiltMod;
+  std::tie(adjacentMod, prebuiltMod) = Impl.getCompiledModuleCandidates();
+
+  auto validateModule = [&](StringRef modulePath) {
+    // Legacy behavior do not validate module.
+    if (Ctx.SearchPathOpts.NoScannerModuleValidation)
+      return true;
+
+    // If we picked the other module already, no need to validate this one since
+    // it should not be used anyway.
+    if (!results.empty())
+      return false;
+    SmallVector<FileDependency, 16> deps;
+    std::unique_ptr<llvm::MemoryBuffer> moduleBuffer;
+    return Impl.upToDateChecker.swiftModuleIsUpToDate(
+        modulePath, Impl.rebuildInfo, deps, moduleBuffer);
+  };
+
+  // Add compiled module candidates only when they are non-empty and up-to-date.
+  if (!adjacentMod.empty() && validateModule(adjacentMod))
+    results.push_back(adjacentMod);
+  if (!prebuiltMod.empty() && validateModule(prebuiltMod))
+    results.push_back(prebuiltMod);
   return results;
 }
 
@@ -1674,6 +1690,12 @@ void InterfaceSubContextDelegateImpl::inheritOptionsForBuildingInterface(
     genericSubInvocation.setSDKPath(SearchPathOpts.getSDKPath().str());
   }
 
+  if (SearchPathOpts.PlatformAvailabilityInheritanceMapPath) {
+    GenericArgs.push_back("-platform-availability-inheritance-map-path");
+    GenericArgs.push_back(ArgSaver.save(*SearchPathOpts.PlatformAvailabilityInheritanceMapPath));
+    genericSubInvocation.setPlatformAvailabilityInheritanceMapPath(*SearchPathOpts.PlatformAvailabilityInheritanceMapPath);
+  }
+
   genericSubInvocation.getFrontendOptions().InputMode
       = FrontendOptions::ParseInputMode::SwiftModuleInterface;
   if (!SearchPathOpts.RuntimeResourcePath.empty()) {
@@ -1861,6 +1883,12 @@ InterfaceSubContextDelegateImpl::InterfaceSubContextDelegateImpl(
   // Load plugin libraries for macro expression as default arguments
   genericSubInvocation.getSearchPathOptions().PluginSearchOpts =
       searchPathOpts.PluginSearchOpts;
+
+  // Get module loading behavior options.
+  genericSubInvocation.getSearchPathOptions().NoScannerModuleValidation =
+      searchPathOpts.NoScannerModuleValidation;
+  genericSubInvocation.getSearchPathOptions().ModuleLoadMode =
+      searchPathOpts.ModuleLoadMode;
 
   auto &subClangImporterOpts = genericSubInvocation.getClangImporterOptions();
   // Respect the detailed-record preprocessor setting of the parent context.
