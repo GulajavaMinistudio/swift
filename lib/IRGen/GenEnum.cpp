@@ -2668,7 +2668,8 @@ namespace {
         if (Refcounting == ReferenceCounting::Custom) {
           Explosion e;
           e.add(ptr);
-          getPayloadTypeInfo().as<ClassTypeInfo>().strongRetain(IGF, e, IGF.getDefaultAtomicity());
+          getPayloadTypeInfo().as<ClassTypeInfo>().strongCustomRetain(
+              IGF, e, /*needsNullCheck*/ true);
           return;
         }
 
@@ -2704,7 +2705,8 @@ namespace {
         if (Refcounting == ReferenceCounting::Custom) {
           Explosion e;
           e.add(ptr);
-          getPayloadTypeInfo().as<ClassTypeInfo>().strongRelease(IGF, e, IGF.getDefaultAtomicity());
+          getPayloadTypeInfo().as<ClassTypeInfo>().strongCustomRelease(
+              IGF, e, /*needsNullCheck*/ true);
           return;
         }
 
@@ -3283,10 +3285,7 @@ namespace {
                             bool zeroizeIfSensitive) const override {
       if (!ElementsAreABIAccessible) {
         emitInitializeWithTakeCall(IGF, T, dest, src);
-      } else if (isOutlined || T.hasParameterizedExistential() ||
-                 (getPayloadTypeInfo().isFixedSize() && // can use memcpy
-                  getPayloadTypeInfo().
-                  isBitwiseTakable(ResilienceExpansion::Maximal))) {
+      } else if (isOutlined || T.hasParameterizedExistential()) {
         emitIndirectInitialize(IGF, dest, src, T, IsTake, isOutlined);
       } else {
         callOutlinedCopy(IGF, dest, src, T, IsInitialization, IsTake);
