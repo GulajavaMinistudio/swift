@@ -5013,13 +5013,17 @@ ActorIsolation ActorIsolationRequest::evaluate(
         }
         if (var->isLet()) {
           auto type = var->getInterfaceType();
-          if (!type->isSendableType()) {
-            diagVar->diagnose(diag::shared_immutable_state_decl,
-                              diagVar, type)
-                .warnUntilSwiftVersion(6);
+          bool diagnosed = diagnoseIfAnyNonSendableTypes(
+              type, SendableCheckContext(var->getDeclContext()),
+              /*inDerivedConformance=*/Type(), /*typeLoc=*/SourceLoc(),
+              /*diagnoseLoc=*/var->getLoc(),
+              diag::shared_immutable_state_decl, diagVar);
+
+          // If we diagnosed this 'let' as non-Sendable, tack on a note
+          // to suggest a course of action.
+          if (diagnosed)
             diagVar->diagnose(diag::shared_immutable_state_decl_note,
                               diagVar, type);
-          }
         } else {
           diagVar->diagnose(diag::shared_mutable_state_decl, diagVar)
               .warnUntilSwiftVersion(6);
@@ -6055,7 +6059,7 @@ ProtocolConformance *swift::deriveImplicitSendableConformance(
   }
 
   // A non-protocol type with a global actor is implicitly Sendable.
-  if (nominal->getGlobalActorAttr()) {
+  if (getActorIsolation(nominal).isGlobalActor()) {
     // Form the implicit conformance to Sendable.
     return formConformance(nullptr);
   }

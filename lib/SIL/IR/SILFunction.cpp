@@ -16,6 +16,7 @@
 #include "swift/AST/Availability.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/GenericEnvironment.h"
+#include "swift/AST/IRGenOptions.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/Stmt.h"
 #include "swift/Basic/OptimizationMode.h"
@@ -251,6 +252,7 @@ void SILFunction::init(
   this->Bare = isBareSILFunction;
   this->Transparent = isTrans;
   this->Serialized = isSerialized;
+  this->SerializedForPackage = false;
   this->Thunk = isThunk;
   this->ClassSubclassScope = unsigned(classSubclassScope);
   this->GlobalInitFlag = false;
@@ -523,10 +525,20 @@ ResilienceExpansion SILFunction::getResilienceExpansion() const {
   // source and is never used outside of its package;
   // Even if the module is built resiliently, return
   // maximal expansion here so aggregate types can be
-  // loadable in the same resilient domain (from a client
-  // module in the same package.
+  // treated as loadable in the same resilient domain
+  // (across modules in the same package).
   if (getModule().getSwiftModule()->serializePackageEnabled() &&
       getModule().getSwiftModule()->isResilient())
+    return ResilienceExpansion::Maximal;
+
+  // If a function definition is in another module, and
+  // it was serialized due to package serialization opt,
+  // a new attribute [serialized_for_package] is added
+  // to the definition site. During deserialization, this
+  // attribute is preserved if the current module is in
+  // the same package, thus should be in the same resilience
+  // domain.
+  if (isSerializedForPackage() == IsSerializedForPackage)
     return ResilienceExpansion::Maximal;
 
   return (isSerialized()
@@ -958,6 +970,17 @@ bool SILFunction::shouldBePreservedForDebugger() const {
   // Only preserve for the debugger at Onone.
   if (getEffectiveOptimizationMode() != OptimizationMode::NoOptimization)
     return false;
+
+  if (getModule().getASTContext().LangOpts.hasFeature(Feature::Embedded))
+    return false;
+
+  if (const IRGenOptions *options = getModule().getIRGenOptionsOrNull()) {
+    if (options->WitnessMethodElimination ||
+        options->VirtualFunctionElimination ||
+        options->LLVMLTOKind != IRGenLLVMLTOKind::None) {
+      return false;
+    }
+  }
 
   if (isAvailableExternally())
     return false;
