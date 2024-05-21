@@ -3898,7 +3898,7 @@ getAnyFunctionRefInterfaceType(TypeConverter &TC,
           .withAsync(funcType->isAsync())
           .withIsolation(funcType->getIsolation())
           .withLifetimeDependenceInfo(funcType->getLifetimeDependenceInfo())
-          .withTransferringResult(funcType->hasTransferringResult())
+          .withSendingResult(funcType->hasSendingResult())
           .build();
 
   return CanAnyFunctionType::get(
@@ -4104,10 +4104,25 @@ TypeConverter::getGenericSignatureWithCapturedEnvironments(SILDeclRef c) {
         vd->getDeclContext()->getGenericSignatureOfContext());
   case SILDeclRef::Kind::EntryPoint:
   case SILDeclRef::Kind::AsyncEntryPoint:
-    llvm_unreachable("Doesn't have generic signature");
+    return GenericSignatureWithCapturedEnvironments();
   }
 
   llvm_unreachable("Unhandled SILDeclRefKind in switch.");
+}
+
+SubstitutionMap
+TypeConverter::getSubstitutionMapWithCapturedEnvironments(
+    SILDeclRef constant, const CaptureInfo &captureInfo,
+    SubstitutionMap subs) {
+  auto sig = getGenericSignatureWithCapturedEnvironments(constant);
+  if (!sig.genericSig) {
+    assert(!sig.baseGenericSig);
+    assert(sig.capturedEnvs.empty());
+    return SubstitutionMap();
+  }
+
+  return buildSubstitutionMapWithCapturedEnvironments(
+      subs, sig.genericSig, sig.capturedEnvs);
 }
 
 GenericEnvironment *
@@ -4116,17 +4131,15 @@ TypeConverter::getConstantGenericEnvironment(SILDeclRef c) {
       .genericSig.getGenericEnvironment();
 }
 
-std::pair<GenericEnvironment *, SubstitutionMap>
+std::tuple<GenericEnvironment *, ArrayRef<GenericEnvironment *>, SubstitutionMap>
 TypeConverter::getForwardingSubstitutionsForLowering(SILDeclRef constant) {
   auto sig = getGenericSignatureWithCapturedEnvironments(constant);
 
-  GenericEnvironment *genericEnv = nullptr;
+  auto *genericEnv = sig.baseGenericSig.getGenericEnvironment();
   SubstitutionMap forwardingSubs;
 
-  if (sig.baseGenericSig) {
-    genericEnv = sig.baseGenericSig.getGenericEnvironment();
+  if (sig.baseGenericSig)
     forwardingSubs = genericEnv->getForwardingSubstitutionMap();
-  }
 
   if (!sig.capturedEnvs.empty()) {
     assert(sig.genericSig && !sig.genericSig->isEqual(sig.baseGenericSig));
@@ -4135,7 +4148,7 @@ TypeConverter::getForwardingSubstitutionsForLowering(SILDeclRef constant) {
         forwardingSubs, sig.genericSig, sig.capturedEnvs);
   }
 
-  return std::make_pair(genericEnv, forwardingSubs);
+  return std::make_tuple(genericEnv, sig.capturedEnvs, forwardingSubs);
 }
 
 SILType TypeConverter::getSubstitutedStorageType(TypeExpansionContext context,

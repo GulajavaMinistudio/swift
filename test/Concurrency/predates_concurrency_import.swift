@@ -16,20 +16,57 @@
 @preconcurrency import OtherActors
 // expected-warning@-1{{'@preconcurrency' attribute on module 'OtherActors' has no effect}}{{1-17=}}
 
+@preconcurrency
+class MyPredatesConcurrencyClass { }
+
+enum EnumWithPredatesConcurrencyValue {
+  case stored(MyPredatesConcurrencyClass)
+}
+
 func acceptSendable<T: Sendable>(_: T) { }
 
 @available(SwiftStdlib 5.1, *)
 func test(
   ss: StrictStruct, ns: NonStrictClass, oma: OtherModuleActor,
-  ssc: SomeSendableClass
+  ssOpt: StrictStruct?, nsOpt: NonStrictClass?,
+  ssc: SomeSendableClass,
+  mpcc: MyPredatesConcurrencyClass
 ) async {
   acceptSendable(ss) // expected-warning{{type 'StrictStruct' does not conform to the 'Sendable' protocol}}
   acceptSendable(ns) // silence issue entirely
+  acceptSendable(ssOpt) // expected-warning{{type 'StrictStruct' does not conform to the 'Sendable' protocol}}
+  acceptSendable(nsOpt) // silence issue entirely
   acceptSendable(oma) // okay
   acceptSendable(ssc) // okay
+  acceptSendable(mpcc)
 }
 
 let nonStrictGlobal = NonStrictClass() // no warning
 
 let strictGlobal = StrictStruct() // expected-warning{{let 'strictGlobal' is not concurrency-safe because non-'Sendable' type 'StrictStruct' may have shared mutable state}}
-// expected-note@-1{{isolate 'strictGlobal' to a global actor, or conform 'StrictStruct' to 'Sendable'}}
+// expected-note@-1{{restrict 'strictGlobal' to the main actor if it will only be accessed from the main thread}}
+// expected-note@-2{{unsafely mark 'strictGlobal' as concurrency-safe if all accesses are protected by an external synchronization mechanism}}
+
+extension NonStrictClass {
+  @Sendable func f() { }
+}
+
+extension StrictStruct {
+  @Sendable func f() { } // expected-warning{{instance method of non-Sendable type 'StrictStruct' cannot be marked as '@Sendable'}}
+}
+
+
+struct HasStatics {
+  nonisolated static let ns: NonStrictClass = NonStrictClass()
+
+  nonisolated static let ss: StrictStruct = StrictStruct()
+  // expected-warning@-1{{'nonisolated' can not be applied to variable with non-'Sendable' type 'StrictStruct'}}
+  // expected-warning@-2{{static property 'ss' is not concurrency-safe because non-'Sendable' type 'StrictStruct' may have shared mutable state}}
+  // expected-note@-3{{restrict 'ss' to the main actor if it will only be accessed from the main thread}}
+  // expected-note@-4{{unsafely mark 'ss' as concurrency-safe if all accesses are protected by an external synchronization mechanism}}
+}
+
+extension NonStrictClass2: @retroactive MySendableProto { }
+
+extension NonStrictClass3: @retroactive Sendable { }
+// expected-warning@-1{{conformance to 'Sendable' must occur in the same source file as class 'NonStrictClass3'; use '@unchecked Sendable' for retroactive conformance}}

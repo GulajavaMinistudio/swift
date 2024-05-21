@@ -506,6 +506,9 @@ validateCxxInteropCompatibilityMode(StringRef mode) {
   // Swift 5 is the default language version.
   if (mode == "swift-5.9")
     return {CxxCompatMode::enabled, version::Version({5})};
+  // Note: If this is updated, corresponding code in
+  // InterfaceSubContextDelegateImpl::InterfaceSubContextDelegateImpl needs
+  // to be updated also.
   return {CxxCompatMode::invalid, {}};
 }
 
@@ -633,6 +636,9 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   Opts.DisableImplicitStringProcessingModuleImport |=
     Args.hasArg(OPT_disable_implicit_string_processing_module_import);
+
+  Opts.DisableImplicitCxxModuleImport |=
+    Args.hasArg(OPT_disable_implicit_cxx_module_import);
 
   Opts.DisableImplicitBacktracingModuleImport =
     Args.hasFlag(OPT_disable_implicit_backtracing_module_import,
@@ -1062,6 +1068,34 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 #endif
     if (enableRegionIsolation)
       Opts.enableFeature(Feature::RegionBasedIsolation);
+  }
+
+  // Enable TransferringArgsAndResults/SendingArgsAndResults whenever
+  // RegionIsolation is enabled.
+  if (Opts.hasFeature(Feature::RegionBasedIsolation)) {
+    bool enableTransferringArgsAndResults = true;
+    bool enableSendingArgsAndResults = true;
+#ifndef NDEBUG
+    enableTransferringArgsAndResults = !Args.hasArg(
+        OPT_disable_transferring_args_and_results_with_region_isolation);
+    enableSendingArgsAndResults = !Args.hasArg(
+        OPT_disable_sending_args_and_results_with_region_isolation);
+#endif
+    if (enableTransferringArgsAndResults)
+      Opts.enableFeature(Feature::TransferringArgsAndResults);
+    if (enableSendingArgsAndResults)
+      Opts.enableFeature(Feature::SendingArgsAndResults);
+  }
+
+  // Enable SendingArgsAndResults whenever TransferringArgsAndResults is
+  // enabled.
+  //
+  // The reason that we are doing this is we want to phase out transferring in
+  // favor of sending and this ensures that if we output 'sending' instead of
+  // 'transferring' (for instance when emitting suppressed APIs), we know that
+  // the compiler will be able to handle sending as well.
+  if (Opts.hasFeature(Feature::TransferringArgsAndResults)) {
+    Opts.enableFeature(Feature::SendingArgsAndResults);
   }
 
   Opts.WarnImplicitOverrides =
@@ -2062,6 +2096,12 @@ static bool ParseSearchPathArgs(SearchPathOptions &Opts, ArgList &Args,
       Diags.diagnose(SourceLoc(), diag::unknown_forced_module_loading_mode,
                      *forceModuleLoadingMode);
   }
+
+  for (auto *A : Args.filtered(OPT_swift_module_cross_import))
+    Opts.CrossImportInfo[A->getValue(0)].push_back(A->getValue(1));
+
+  Opts.DisableCrossImportOverlaySearch |=
+      Args.hasArg(OPT_disable_cross_import_overlay_search);
 
   // Opts.RuntimeIncludePath is set by calls to
   // setRuntimeIncludePath() or setMainExecutablePath().
