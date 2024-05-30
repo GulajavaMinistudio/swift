@@ -5,6 +5,156 @@
 
 ## Swift 6.0
 
+* [SE-0423][]:
+  You can now use `@preconcurrency` attribute to replace static actor isolation
+  checking with dynamic checks for witnesses of synchronous nonisolated protocol
+  requirements when the witness is isolated. This is common when Swift programs
+  need to interoperate with frameworks written in C/C++/Objective-C whose
+  implementations cannot participate in static data race safety.
+
+  ```swift
+  public protocol ViewDelegateProtocol {
+    func respondToUIEvent()
+  }
+  ```
+
+  It's now possible for a `@MainActor`-isolated type to conform to
+  `ViewDelegateProtocol` by marking conformance declaration as `@preconcurrency`:
+
+  ```swift
+  @MainActor
+  class MyViewController: ViewDelegateProtocol {
+    func respondToUIEvent() {
+      // implementation...
+    }
+  }
+  ```
+
+  The compiler would emit dynamic checks into the `respondToUIEvent()` witness
+  to make sure that it's always executed in `@MainActor` isolated context.
+
+  Additionally, the compiler would emit dynamic actor isolation checks for:
+
+  - `@objc` thunks of synchronous actor-isolated members of classes.
+
+  - Synchronous actor-isolated function values passed to APIs that
+    erase actor isolation and haven't yet adopted strict concurrency checking.
+
+  - Call-sites of synchronous actor-isolated functions imported from Swift 6 libraries.
+
+  The dynamic actor isolation checks can be disabled using the flag
+  `-disable-dynamic-actor-isolation`.
+
+* [SE-0418][]:
+
+  The compiler would now automatically employ `Sendable` on functions
+  and key path literal expressions that cannot capture non-Sendable values.
+
+  This includes partially-applied and unapplied instance methods of `Sendable`
+  types, as well as non-local functions. Additionally, it is now disallowed
+  to utilize `@Sendable` on instance methods of non-Sendable types.
+
+  Let's use the following type to illustrate the new inference rules:
+
+  ```swift
+  public struct User {
+    var name: String
+
+    func getAge() -> Int { ... }
+  }
+  ```
+
+  Key path `\User.name` would be inferred as `WritableKeyPath<User, String> & Sendable`
+  because it doesn't capture any non-Sendable values.
+
+  The same applies to keypath-as-function conversions:
+
+  ```swift
+  let _: @Sendable (User) -> String = \User.name // Ok
+  ```
+
+  A function value produced by an un-applied reference to `getAge`
+  would be marked as `@Sendable` because `User` is a `Sendable` struct:
+
+  ```swift
+  let _ = User.getAge // Inferred as `@Sendable (User) -> @Sendable () -> Int`
+
+  let user = User(...)
+  user.getAge // Inferred as `@Sendable () -> Int`
+  ```
+
+* [SE-0432][]:
+  Noncopyable enums can be pattern-matched with switches without consuming the
+  value you switch over:
+
+  ```swift
+  enum Lunch: ~Copyable {
+    case soup
+    case salad
+    case sandwich
+  }
+  
+  func isSoup(_ lunch: borrowing Lunch) -> Bool {
+    switch lunch {
+      case .soup: true
+      default: false
+    }
+  }
+  ```
+
+
+* [SE-0429][]:
+  The noncopyable fields of certain types can now be consumed individually:
+
+  ```swift
+  struct Token: ~Copyable {}
+
+  struct Authentication: ~Copyable {
+    let id: Token
+    let name: String
+
+    mutating func exchange(_ new: consuming Token) -> Token {
+      let old = self.id  // <- partial consumption of 'self'
+      self = .init(id: new, name: self.name)
+      return old
+    } 
+  }
+  ```
+
+* [SE-0427][]:
+  You can now suppress `Copyable` on protocols, generic parameters, 
+  and existentials:
+
+  ```swift
+  // Protocol does not require conformers to be Copyable.
+  protocol Flower: ~Copyable {
+    func bloom()
+  }
+
+  // Noncopyable type
+  struct Marigold: Flower, ~Copyable {
+    func bloom() { print("Marigold blooming!") }
+  }
+
+  // Copyable type
+  struct Hibiscus: Flower {
+    func bloom() { print("Hibiscus blooming!") }
+  }
+
+  func startSeason(_ flower: borrowing some Flower & ~Copyable) {
+    flower.bloom()
+  }
+
+  startSeason(Marigold())
+  startSeason(Hibiscus())
+  ```
+
+  By writing `~Copyable` on a generic type, you're suppressing a default
+  `Copyable` constraint that would otherwise appear on that type. This permits
+  noncopyable types, which have no `Copyable` conformance, to conform to such 
+  protocols and be substituted for those generic types. Full functionality of this
+  feature requires the newer Swift 6 runtime.
+
 * Since its introduction in Swift 5.1 the @TaskLocal property wrapper was used to   
   create and access task-local value bindings. Property wrappers introduce mutable storage,
   which was now properly flagged as potential source of concurrency unsafety.
@@ -10252,6 +10402,11 @@ using the `.dynamicType` member to retrieve the type of an expression should mig
 [SE-0412]: https://github.com/apple/swift-evolution/blob/main/proposals/0412-strict-concurrency-for-global-variables.md
 [SE-0413]: https://github.com/apple/swift-evolution/blob/main/proposals/0413-typed-throws.md
 [SE-0422]: https://github.com/apple/swift-evolution/blob/main/proposals/0422-caller-side-default-argument-macro-expression.md
+[SE-0427]: https://github.com/apple/swift-evolution/blob/main/proposals/0427-noncopyable-generics.md
+[SE-0429]: https://github.com/apple/swift-evolution/blob/main/proposals/0429-partial-consumption.md
+[SE-0432]: https://github.com/apple/swift-evolution/blob/main/proposals/0432-noncopyable-switch.md
+[SE-0418]: https://github.com/apple/swift-evolution/blob/main/proposals/0418-inferring-sendable-for-methods.md
+[SE-0423]: https://github.com/apple/swift-evolution/blob/main/proposals/0423-dynamic-actor-isolation.md
 [#64927]: <https://github.com/apple/swift/issues/64927>
 [#42697]: <https://github.com/apple/swift/issues/42697>
 [#42728]: <https://github.com/apple/swift/issues/42728>
