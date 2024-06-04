@@ -148,9 +148,9 @@ struct BadBuffer: ~Copyable {
 
 // CHECK-LABEL: @"$s{{[A-Za-z0-9_]*}}19CellThatMovesAsLikeVWV" = {{.*}} %swift.vwtable
 // initializeWithTake
-// CHECK-SAME:  , ptr @"$s10raw_layout19CellThatMovesAsLikeVwtk"
+// CHECK-SAME:  , ptr @"$s10raw_layout19CellThatMovesAsLikeVwtk
 // assignWithTake
-// CHECK-SAME:  , ptr @"$s10raw_layout19CellThatMovesAsLikeVwta"
+// CHECK-SAME:  , ptr @"$s10raw_layout19CellThatMovesAsLikeVwta
 // size
 // CHECK-SAME:  , {{i64|i32}} 0
 // stride
@@ -162,9 +162,9 @@ struct CellThatMovesAsLike<T>: ~Copyable {}
 
 // CHECK-LABEL: @"$s{{[A-Za-z0-9_]*}}18ConcreteMoveAsLikeVWV" = {{.*}} %swift.vwtable
 // initializeWithTake
-// CHECK-SAME:  , ptr @"$s10raw_layout18ConcreteMoveAsLikeVwtk"
+// CHECK-SAME:  , ptr @"$s10raw_layout18ConcreteMoveAsLikeVwtk
 // assignWithTake
-// CHECK-SAME:  , ptr @"$s10raw_layout18ConcreteMoveAsLikeVwta"
+// CHECK-SAME:  , ptr @"$s10raw_layout18ConcreteMoveAsLikeVwta
 // size
 // CHECK-SAME:  , {{i64|i32}} 1
 // stride
@@ -262,11 +262,11 @@ entry(%0 : $*Cell<T>):
 // CHECK-LABEL: define {{.*}} ptr @"$s10raw_layout18ConcreteMoveAsLikeVwtk"(ptr {{.*}} %dest, ptr {{.*}} %src, ptr %ConcreteMoveAsLike)
 // CHECK: [[DEST_CELL:%.*]] = getelementptr inbounds %T10raw_layout18ConcreteMoveAsLikeV, ptr %dest, i32 0, i32 0
 // CHECK: [[SRC_CELL:%.*]] = getelementptr inbounds %T10raw_layout18ConcreteMoveAsLikeV, ptr %src, i32 0, i32 0
-// CHECK: {{invoke void|call ptr}} @{{.*}}(ptr [[DEST_CELL]], ptr [[SRC_CELL]])
+// CHECK: {{invoke void|invoke ptr|call ptr}} @{{.*}}(ptr [[DEST_CELL]], ptr [[SRC_CELL]])
 
 // ConcreteMoveAsLike assignWithTake
 
 // CHECK-LABEL: define {{.*}} ptr @"$s10raw_layout18ConcreteMoveAsLikeVwta"(ptr {{.*}} %dest, ptr {{.*}} %src, ptr %ConcreteMoveAsLike)
 // CHECK: [[DEST_CELL:%.*]] = getelementptr inbounds %T10raw_layout18ConcreteMoveAsLikeV, ptr %dest, i32 0, i32 0
 // CHECK: [[SRC_CELL:%.*]] = getelementptr inbounds %T10raw_layout18ConcreteMoveAsLikeV, ptr %src, i32 0, i32 0
-// CHECK: {{invoke void|call ptr}} @{{.*}}(ptr [[DEST_CELL]], ptr [[SRC_CELL]])
+// CHECK: {{invoke void|invoke ptr|call ptr}} @{{.*}}(ptr [[DEST_CELL]], ptr [[SRC_CELL]])
