@@ -2314,7 +2314,7 @@ bool VarDecl::isLayoutExposedToClients() const {
   auto nominalAccess =
     parent->getFormalAccessScope(/*useDC=*/nullptr,
                                  /*treatUsableFromInlineAsPublic=*/true);
-  if (!nominalAccess.isPublicOrPackage()) return false;
+  if (!nominalAccess.isPublic()) return false;
 
   if (!parent->getAttrs().hasAttribute<FrozenAttr>() &&
       !parent->getAttrs().hasAttribute<FixedLayoutAttr>())
@@ -4680,10 +4680,8 @@ bool ValueDecl::isMoreVisibleThan(ValueDecl *other) const {
 
   if (scope.isPublic())
     return !otherScope.isPublic();
-  else if (scope.isPackage())
-    return !otherScope.isPublicOrPackage();
   else if (scope.isInternal())
-    return !otherScope.isPublicOrPackage() && !otherScope.isInternal();
+    return !otherScope.isPublic() && !otherScope.isInternal();
   else
     return false;
 }
@@ -8665,7 +8663,7 @@ AnyFunctionType::Param ParamDecl::toFunctionParam(Type type) const {
   auto flags = ParameterTypeFlags::fromParameterType(
       type, isVariadic(), isAutoClosure(), isNonEphemeral(), getSpecifier(),
       isIsolated(), /*isNoDerivative*/ false, isCompileTimeConst(),
-      hasResultDependsOn(), isSending());
+      isSending());
   return AnyFunctionType::Param(type, label, flags, internalLabel);
 }
 
