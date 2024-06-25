@@ -16,6 +16,7 @@
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/SemanticAttrs.h"
+#include "swift/Basic/Assertions.h"
 #include "swift/Basic/Debug.h"
 #include "swift/Basic/Defer.h"
 #include "swift/Basic/FrozenMultiMap.h"
@@ -168,16 +169,6 @@ void MoveOnlyChecker::completeObjectLifetimes(
             LifetimeCompletion::WasCompleted) {
           madeChange = true;
         }
-      }
-    }
-    for (SILArgument *arg : block->getArguments()) {
-      assert(!arg->isReborrow() && "reborrows not legal at this SIL stage");
-      if (!transitiveValues.isVisited(arg))
-        continue;
-      if (completion.completeOSSALifetime(
-              arg, OSSALifetimeCompletion::Boundary::Availability) ==
-          LifetimeCompletion::WasCompleted) {
-        madeChange = true;
       }
     }
   }

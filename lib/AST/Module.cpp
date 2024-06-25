@@ -42,6 +42,7 @@
 #include "swift/AST/SynthesizedFileUnit.h"
 #include "swift/AST/Type.h"
 #include "swift/AST/TypeCheckRequests.h"
+#include "swift/Basic/Assertions.h"
 #include "swift/Basic/Compiler.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/Statistic.h"
@@ -2668,9 +2669,11 @@ ImportDeclRequest::evaluate(Evaluator &evaluator, const SourceFile *sf,
   auto &ctx = sf->getASTContext();
   auto imports = sf->getImports();
 
+  auto mutModule = const_cast<ModuleDecl *>(module);
   // Look to see if the owning module was directly imported.
   for (const auto &import : imports) {
-    if (import.module.importedModule == module)
+    if (import.module.importedModule
+            ->isSameModuleLookingThroughOverlays(mutModule))
       return import;
   }
 
@@ -2679,7 +2682,8 @@ ImportDeclRequest::evaluate(Evaluator &evaluator, const SourceFile *sf,
   for (const auto &import : imports) {
     auto &importSet = importCache.getImportSet(import.module.importedModule);
     for (const auto &transitive : importSet.getTransitiveImports()) {
-      if (transitive.importedModule == module) {
+      if (transitive.importedModule
+              ->isSameModuleLookingThroughOverlays(mutModule)) {
         return import;
       }
     }
@@ -2716,6 +2720,26 @@ void SourceFile::registerAccessLevelUsingImport(
     ImportsUseAccessLevel[mod] = accessLevel;
   else
     ImportsUseAccessLevel[mod] = std::max(accessLevel, known->second);
+
+  // Also register modules triggering the import of cross-import overlays.
+  auto declaringMod = mod->getDeclaringModuleIfCrossImportOverlay();
+  if (!declaringMod)
+    return;
+
+  SmallVector<Identifier, 1> bystanders;
+  auto bystandersValid =
+    mod->getRequiredBystandersIfCrossImportOverlay(declaringMod, bystanders);
+  if (!bystandersValid)
+    return;
+
+  for (auto &otherImport : *Imports) {
+    auto otherImportMod = otherImport.module.importedModule;
+    auto otherImportModName = otherImportMod->getName();
+    if (otherImportMod == declaringMod ||
+        llvm::find(bystanders, otherImportModName) != bystanders.end()) {
+      registerAccessLevelUsingImport(otherImport, accessLevel);
+    }
+  }
 }
 
 bool HasImportsMatchingFlagRequest::evaluate(Evaluator &evaluator,

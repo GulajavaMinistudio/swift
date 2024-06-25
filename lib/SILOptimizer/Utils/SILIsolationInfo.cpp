@@ -14,6 +14,7 @@
 
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/Expr.h"
+#include "swift/Basic/Assertions.h"
 #include "swift/SIL/AddressWalker.h"
 #include "swift/SIL/ApplySite.h"
 #include "swift/SIL/InstructionUtils.h"
@@ -393,6 +394,7 @@ SILIsolationInfo SILIsolationInfo::get(SILInstruction *inst) {
         // TODO: We really should be doing this based off of an Operand. Then
         // we would get the SILValue() for the first element. Today this can
         // only mess up isolation history.
+
         return SILIsolationInfo::getActorInstanceIsolated(
             SILValue(), isolatedOp->get(), nomDecl);
       }
@@ -538,14 +540,16 @@ SILIsolationInfo SILIsolationInfo::get(SILInstruction *inst) {
       //
       auto *func = fri->getReferencedFunction();
       auto funcType = func->getLoweredFunctionType();
-      auto selfParam = funcType->getSelfInstanceType(
-          fri->getModule(), func->getTypeExpansionContext());
-      if (auto *nomDecl = selfParam->getNominalOrBoundGenericNominal()) {
-        auto isolation = swift::getActorIsolation(nomDecl);
-        if (isolation.isGlobalActor()) {
-          return SILIsolationInfo::getGlobalActorIsolated(
-                     fri, isolation.getGlobalActor())
+      if (funcType->hasSelfParam()) {
+        auto selfParam = funcType->getSelfInstanceType(
+            fri->getModule(), func->getTypeExpansionContext());
+        if (auto *nomDecl = selfParam->getNominalOrBoundGenericNominal()) {
+          auto isolation = swift::getActorIsolation(nomDecl);
+          if (isolation.isGlobalActor()) {
+            return SILIsolationInfo::getGlobalActorIsolated(
+                fri, isolation.getGlobalActor())
               .withUnsafeNonIsolated(true);
+          }
         }
       }
     }
@@ -1095,6 +1099,30 @@ bool SILIsolationInfo::isNonSendableType(SILType type, SILFunction *fn) {
 
   // Otherwise, delegate to seeing if type conforms to the Sendable protocol.
   return !type.isSendable(fn);
+}
+
+//===----------------------------------------------------------------------===//
+//                            MARK: ActorInstance
+//===----------------------------------------------------------------------===//
+
+SILValue ActorInstance::lookThroughInsts(SILValue value) {
+  if (!value)
+    return value;
+
+  while (auto *svi = dyn_cast<SingleValueInstruction>(value)) {
+    if (isa<EndInitLetRefInst>(svi) || isa<CopyValueInst>(svi) ||
+        isa<MoveValueInst>(svi) || isa<ExplicitCopyValueInst>(svi) ||
+        isa<BeginBorrowInst>(svi) ||
+        isa<CopyableToMoveOnlyWrapperValueInst>(svi) ||
+        isa<MoveOnlyWrapperToCopyableValueInst>(svi)) {
+      value = lookThroughInsts(svi->getOperand(0));
+      continue;
+    }
+
+    break;
+  }
+
+  return value;
 }
 
 //===----------------------------------------------------------------------===//

@@ -26,6 +26,7 @@
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/AST/TypeResolutionStage.h"
 #include "swift/AST/Types.h"
+#include "swift/Basic/Assertions.h"
 #include "swift/Basic/Defer.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -814,6 +815,25 @@ GenericSignatureRequest::evaluate(Evaluator &evaluator,
     collectAdditionalExtensionRequirements(ext->getExtendedType(), extraReqs);
 
     auto *extendedNominal = ext->getExtendedNominal();
+
+    // Avoid building a generic signature if we have an unconstrained protocol
+    // extension of a protocol that does not suppress conformance to ~Copyable
+    // or ~Escapable. This avoids a request cycle when referencing a protocol
+    // extension type alias via an unqualified name from a `where` clause on
+    // the protocol.
+    if (auto *proto = dyn_cast<ProtocolDecl>(extendedNominal)) {
+      if (extraReqs.empty() &&
+          !ext->getTrailingWhereClause()) {
+        InvertibleProtocolSet protos;
+        for (auto *inherited : proto->getAllInheritedProtocols()) {
+          if (auto kind = inherited->getInvertibleProtocolKind())
+            protos.insert(*kind);
+        }
+
+        if (protos == InvertibleProtocolSet::allKnown())
+          return extendedNominal->getGenericSignatureOfContext();
+      }
+    }
 
     if (isa<BuiltinTupleDecl>(extendedNominal)) {
       genericParams = ext->getGenericParams();

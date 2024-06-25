@@ -18,6 +18,7 @@
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/Type.h"
+#include "swift/Basic/Assertions.h"
 #include "swift/Basic/FrozenMultiMap.h"
 #include "swift/Basic/ImmutablePointerSet.h"
 #include "swift/Basic/SmallBitVector.h"
@@ -1858,10 +1859,22 @@ public:
     translateSILMultiAssign(applyResults, pai->getOperandValues());
   }
 
+  void translateCreateAsyncTask(BuiltinInst *bi) {
+    if (auto value = tryToTrackValue(bi->getOperand(1))) {
+      builder.addRequire(value->getRepresentative().getValue());
+      builder.addTransfer(value->getRepresentative().getValue(),
+                          &bi->getAllOperands()[1]);
+    }
+  }
+
   void translateSILBuiltin(BuiltinInst *bi) {
     if (auto kind = bi->getBuiltinKind()) {
       if (kind == BuiltinValueKind::StartAsyncLetWithLocalBuffer) {
         return translateAsyncLetStart(bi);
+      }
+
+      if (kind == BuiltinValueKind::CreateAsyncTask) {
+        return translateCreateAsyncTask(bi);
       }
     }
 

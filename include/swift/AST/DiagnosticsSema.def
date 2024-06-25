@@ -830,6 +830,9 @@ ERROR(serialization_failed,none,
       "serialization of module %0 failed due to the errors above",
       (const ModuleDecl *))
 
+WARNING(can_import_invalid_swiftmodule,none,
+        "canImport() evaluated to false due to invalid swiftmodule: %0", (StringRef))
+
 ERROR(serialization_load_failed,Fatal,
       "failed to load module '%0'", (StringRef))
 ERROR(module_interface_build_failed,Fatal,
@@ -3648,7 +3651,8 @@ ERROR(decl_from_hidden_module,none,
       "cannot use %kind0 %select{here|as property wrapper here|"
       "as result builder here|"
       "in an extension with public or '@usableFromInline' members|"
-      "in an extension with conditional conformances}1; "
+      "in an extension with conditional conformances|"
+      "in a public or '@usableFromInline' conformance}1; "
       "%select{%2 has been imported as implementation-only|"
       "it is an SPI imported from %2|"
       "it is SPI|"
@@ -3662,7 +3666,8 @@ ERROR(typealias_desugars_to_type_from_hidden_module,none,
       "as property wrapper here|"
       "as result builder here|"
       "in an extension with public or '@usableFromInline' members|"
-      "in an extension with conditional conformances}3 "
+      "in an extension with conditional conformance|"
+      "in a public or '@usableFromInline' conformance}3 "
       "because %select{%4 has been imported as implementation-only|"
       "it is an SPI imported from %4|"
       "<<ERROR>>|"
@@ -3675,7 +3680,8 @@ ERROR(conformance_from_implementation_only_module,none,
       "cannot use conformance of %0 to %1 %select{here|as property wrapper here|"
       "as result builder here|"
       "in an extension with public or '@usableFromInline' members|"
-      "in an extension with conditional conformances}2; "
+      "in an extension with conditional conformances|"
+      "<<ERROR>>}2; "
       "%select{%3 has been imported as implementation-only|"
       "the conformance is declared as SPI in %3|"
       "the conformance is declared as SPI|"
@@ -5296,14 +5302,22 @@ ERROR(tryless_throwing_call_in_nonexhaustive_catch,none,
 ERROR(throw_in_nonexhaustive_catch,none,
       "error is not handled because the enclosing catch is not exhaustive", ())
 
+#define EFFECTS_CONTEXT_KIND \
+  "%select{<<ERROR>>|" \
+  "a default argument|" \
+  "a property wrapper initializer|" \
+  "a property initializer|" \
+  "a global variable initializer|" \
+  "a lazy variable initializer|" \
+  "an enum case raw value|" \
+  "a catch pattern|" \
+  "a catch guard expression|" \
+  "a defer body}" \
+
 ERROR(throwing_op_in_illegal_context,none,
-      "%1 can throw, but errors cannot be thrown out of "
-      "%select{<<ERROR>>|a default argument|a property wrapper initializer|a property initializer|a global variable initializer|an enum case raw value|a catch pattern|a catch guard expression|a defer body}0",
-      (unsigned, StringRef))
+      "%1 can throw, but errors cannot be thrown out of " EFFECTS_CONTEXT_KIND "0", (unsigned, StringRef))
 ERROR(throw_in_illegal_context,none,
-      "errors cannot be thrown out of "
-      "%select{<<ERROR>>|a default argument|a property wrapper initializer|a property initializer|a global variable initializer|an enum case raw value|a catch pattern|a catch guard expression|a defer body}0",
-      (unsigned))
+      "errors cannot be thrown out of " EFFECTS_CONTEXT_KIND "0", (unsigned))
 
 ERROR(throwing_operator_without_try,none,
       "operator can throw but expression is not marked with 'try'", ())
@@ -5398,17 +5412,6 @@ ERROR(async_let_no_variables,none,
       "'async let' requires at least one named variable", ())
 NOTE(async_let_without_await,none,
       "reference to async let %0 is 'async'", (const ValueDecl *))
-
-#define EFFECTS_CONTEXT_KIND \
-  "%select{<<ERROR>>|" \
-  "a default argument|" \
-  "a property wrapper initializer|" \
-  "a property initializer|" \
-  "a global variable initializer|" \
-  "an enum case raw value|" \
-  "a catch pattern|" \
-  "a catch guard expression|" \
-  "a defer body}" \
 
 ERROR(async_call_in_illegal_context,none,
       "'async' call cannot occur in " EFFECTS_CONTEXT_KIND "0",
@@ -5664,8 +5667,6 @@ ERROR(isolated_parameter_combined_nonisolated,none,
 ERROR(isolated_parameter_isolated_attr_type,none,
       "function with 'isolated' parameter cannot also be '@isolated(%0)'",
       (StringRef))
-ERROR(isolated_any_experimental,none,
-      "attribute requires '-enable-experimental-feature IsolatedAny'", ())
 ERROR(isolated_attr_global_actor_type,none,
       "function type cannot have both a global actor and '@isolated(%0)'",
       (StringRef))
@@ -7994,6 +7995,19 @@ ERROR(sending_only_on_parameters_and_results, none,
       "'sending' may only be used on parameters and results", ())
 ERROR(sending_cannot_be_applied_to_tuple_elt, none,
       "'sending' cannot be applied to tuple elements", ())
+ERROR(sending_function_wrong_sending,none,
+      "converting a value of type %0 to type %1 risks causing data races",
+      (Type, Type))
+NOTE(sending_function_param_with_sending_param_note, none,
+     "converting a function typed value with a sending parameter to one "
+     "without risks allowing actor-isolated values to escape their isolation "
+     "domain as an argument to an invocation of value",
+     ())
+NOTE(sending_function_result_with_sending_param_note, none,
+     "converting a function typed value without a sending result as one with "
+     "risks allowing actor-isolated values to escape their "
+     "isolation domain through a result of an invocation of value",
+     ())
 
 #define UNDEFINE_DIAGNOSTIC_MACROS
 #include "DefineDiagnosticMacros.h"

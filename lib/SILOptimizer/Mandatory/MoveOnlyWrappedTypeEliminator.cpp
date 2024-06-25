@@ -23,6 +23,7 @@
 
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/Types.h"
+#include "swift/Basic/Assertions.h"
 #include "swift/Basic/Defer.h"
 #include "swift/SIL/ApplySite.h"
 #include "swift/SIL/BasicBlockBits.h"
@@ -180,6 +181,7 @@ struct SILMoveOnlyWrappedTypeEliminatorVisitor
   NO_UPDATE_NEEDED(MarkDependence)
   NO_UPDATE_NEEDED(DestroyAddr)
   NO_UPDATE_NEEDED(DeallocStack)
+  NO_UPDATE_NEEDED(DeallocBox)
   NO_UPDATE_NEEDED(Branch)
   NO_UPDATE_NEEDED(ExplicitCopyAddr)
   NO_UPDATE_NEEDED(CopyAddr)
