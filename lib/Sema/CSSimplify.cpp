@@ -3239,9 +3239,8 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
   // () -> sending T can be a subtype of () -> T... but not vis-a-versa.
   if (func1->hasSendingResult() != func2->hasSendingResult() &&
       (!func1->hasSendingResult() || kind < ConstraintKind::Subtype)) {
-    auto *fix = AllowSendingMismatch::create(
-        *this, getConstraintLocator(locator), func1, func2,
-        AllowSendingMismatch::Kind::Result);
+    auto *fix = AllowSendingMismatch::create(*this, func1, func2,
+                                             getConstraintLocator(locator));
     if (recordFix(fix))
       return getTypeMatchFailure(locator);
   }
@@ -3681,8 +3680,7 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
       if (func1Param.getParameterFlags().isSending() &&
           !func2Param.getParameterFlags().isSending()) {
         auto *fix = AllowSendingMismatch::create(
-            *this, getConstraintLocator(argumentLocator), func1, func2,
-            AllowSendingMismatch::Kind::Parameter);
+            *this, func1, func2, getConstraintLocator(argumentLocator));
         if (recordFix(fix))
           return getTypeMatchFailure(argumentLocator);
       }
@@ -11115,7 +11113,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyMemberConstraint(
 
       auto instanceTy = baseObjTy->getMetatypeInstanceType();
 
-      auto impact = 2;
+      auto impact = 4;
       // Impact is higher if the base type is any function type
       // because function types can't have any members other than self
       if (instanceTy->is<AnyFunctionType>()) {
@@ -13392,7 +13390,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyApplicableFnConstraint(
     // Let's make this fix as high impact so if there is a function or member
     // overload with e.g. argument-to-parameter type mismatches it would take
     // a higher priority.
-    return recordFix(fix, /*impact=*/10) ? SolutionKind::Error
+    return recordFix(fix, /*impact=*/3) ? SolutionKind::Error
                                          : SolutionKind::Solved;
   }
 

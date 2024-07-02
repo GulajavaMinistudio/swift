@@ -48,11 +48,19 @@ using namespace swift::PartitionPrimitives;
 using namespace swift::PatternMatch;
 using namespace swift::regionanalysisimpl;
 
-static llvm::cl::opt<bool> AbortOnUnknownPatternMatchError(
+#ifndef NDEBUG
+
+bool swift::regionanalysisimpl::AbortOnUnknownPatternMatchError = false;
+
+static llvm::cl::opt<bool, true> AbortOnUnknownPatternMatchErrorCmdLine(
     "sil-region-isolation-assert-on-unknown-pattern",
     llvm::cl::desc("Abort if SIL region isolation detects an unknown pattern. "
                    "Intended only to be used when debugging the compiler!"),
-    llvm::cl::init(false), llvm::cl::Hidden);
+    llvm::cl::Hidden,
+    llvm::cl::location(
+        swift::regionanalysisimpl::AbortOnUnknownPatternMatchError));
+
+#endif
 
 //===----------------------------------------------------------------------===//
 //                              MARK: Utilities
@@ -1590,6 +1598,10 @@ public:
     SmallVector<SILValue, 8> assignOperands;
     SmallVector<SILValue, 8> assignResults;
 
+    // A helper we use to emit an unknown patten error if our merge is
+    // invalid. This ensures we guarantee that if we find an actor merge error,
+    // the compiler halts. Importantly this lets our users know 100% that if the
+    // compiler exits successfully, actor merge errors could not have happened.
     std::optional<SILDynamicMergedIsolationInfo> mergedInfo;
     if (resultIsolationInfoOverride) {
       mergedInfo = resultIsolationInfoOverride;
@@ -1600,12 +1612,26 @@ public:
     for (SILValue src : sourceValues) {
       if (auto value = tryToTrackValue(src)) {
         assignOperands.push_back(value->getRepresentative().getValue());
-        mergedInfo = mergedInfo->merge(value->getIsolationRegionInfo());
+        auto originalMergedInfo = mergedInfo;
+        (void)originalMergedInfo;
+        if (mergedInfo)
+          mergedInfo = mergedInfo->merge(value->getIsolationRegionInfo());
 
         // If we fail to merge, then we have an incompatibility in between some
         // of our arguments (consider isolated to different actors) or with the
         // isolationInfo we specified. Emit an unknown patten error.
         if (!mergedInfo) {
+          LLVM_DEBUG(
+              llvm::dbgs() << "Merge Failure!\n"
+                           << "Original Info: ";
+              if (originalMergedInfo)
+                  originalMergedInfo->printForDiagnostics(llvm::dbgs());
+              else llvm::dbgs() << "nil";
+              llvm::dbgs() << "\nValue: "
+                           << value->getRepresentative().getValue();
+              llvm::dbgs() << "Value Info: ";
+              value->getIsolationRegionInfo().printForDiagnostics(llvm::dbgs());
+              llvm::dbgs() << "\n");
           builder.addUnknownPatternError(src);
           continue;
         }
@@ -1614,7 +1640,7 @@ public:
 
     for (SILValue result : resultValues) {
       // If we had isolation info explicitly passed in... use our
-      // mergedInfo. Otherwise, we want to infer.
+      // resultIsolationInfoError. Otherwise, we want to infer.
       if (resultIsolationInfoOverride) {
         // We only get back result if it is non-Sendable.
         if (auto nonSendableValue =
@@ -1657,9 +1683,10 @@ public:
       // derived, introduce a fake element so we just propagate the actor
       // region.
       //
-      // NOTE: Here we check if we have mergedInfo rather than isolationInfo
-      // since we want to do this regardless of whether or not we passed in a
-      // specific isolation info unlike earlier when processing actual results.
+      // NOTE: Here we check if we have resultIsolationInfoOverride rather than
+      // isolationInfo since we want to do this regardless of whether or not we
+      // passed in a specific isolation info unlike earlier when processing
+      // actual results.
       if (assignOperands.size() && resultIsolationInfoOverride) {
         builder.addActorIntroducingInst(assignOperands.back(),
                                         resultIsolationInfoOverride);
@@ -3456,6 +3483,14 @@ RegionAnalysisValueMap::initializeTrackableValue(
 
   // If we did not insert, just return the already stored value.
   self->stateIndexToEquivalenceClass[iter.first->second.getID()] = value;
+
+  // Before we do anything, see if we have a Sendable value.
+  if (!SILIsolationInfo::isNonSendableType(value->getType(), fn)) {
+    iter.first->getSecond().addFlag(TrackableValueFlag::isSendable);
+    return {{iter.first->first, iter.first->second}, true};
+  }
+
+  // Otherwise, we have a non-Sendable type... so wire up the isolation.
   iter.first->getSecond().setIsolationRegionInfo(newInfo);
 
   return {{iter.first->first, iter.first->second}, true};
