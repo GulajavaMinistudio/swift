@@ -353,11 +353,6 @@ PrintOptions PrintOptions::printSwiftInterfaceFile(ModuleDecl *ModuleToPrint,
         }
       }
 
-      if (auto *accessor = dyn_cast<AccessorDecl>(D)) {
-        if (accessor->isInitAccessor() && !options.PrintForSIL)
-          return false;
-      }
-
       return ShouldPrintChecker::shouldPrint(D, options);
     }
   };
@@ -4285,15 +4280,13 @@ void PrintAST::visitConstructorDecl(ConstructorDecl *decl) {
     // Protocol extension initializers are modeled as convenience initializers,
     // but they're not written that way in source. Check if we're actually
     // printing onto a class.
-    bool isClassContext;
-    if (CurrentType) {
-      isClassContext = CurrentType->getClassOrBoundGenericClass() != nullptr;
-    } else {
-      const DeclContext *dc = decl->getDeclContext();
-      isClassContext = dc->getSelfClassDecl() != nullptr;
-    }
-    if (isClassContext) {
-      Printer.printKeyword("convenience", Options, " ");
+    ClassDecl *classDecl = CurrentType
+                               ? CurrentType->getClassOrBoundGenericClass()
+                               : decl->getDeclContext()->getSelfClassDecl();
+    if (classDecl) {
+      // Convenience intializers are also unmarked on actors.
+      if (!classDecl->isActor())
+        Printer.printKeyword("convenience", Options, " ");
     } else {
       assert(decl->getDeclContext()->getExtendedProtocolDecl() &&
              "unexpected convenience initializer");
@@ -7184,7 +7177,7 @@ public:
       }
 
       // Print based on the type.
-      Printer << "some ";
+      Printer.printKeyword("some", Options, /*Suffix=*/" ");
       auto archetypeType = decl->getDeclContext()->mapTypeIntoContext(
           decl->getDeclaredInterfaceType())->castTo<ArchetypeType>();
       auto constraintType = archetypeType->getExistentialType();

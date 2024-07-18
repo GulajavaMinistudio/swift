@@ -31,12 +31,16 @@ DEFINE_SIMPLE_CONVERSION_FUNCTIONS(DependencyScanningTool, swiftscan_scanner_t)
 //=== Private Cleanup Functions -------------------------------------------===//
 void swiftscan_macro_dependency_dispose(
     swiftscan_macro_dependency_set_t *macro) {
+  if (!macro)
+    return;
+
   for (unsigned i = 0; i < macro->count; ++i) {
     swiftscan_string_dispose(macro->macro_dependencies[i]->moduleName);
     swiftscan_string_dispose(macro->macro_dependencies[i]->libraryPath);
     swiftscan_string_dispose(macro->macro_dependencies[i]->executablePath);
     delete macro->macro_dependencies[i];
   }
+  delete[] macro->macro_dependencies;
   delete macro;
 }
 
@@ -126,11 +130,13 @@ void swiftscan_dependency_info_dispose(swiftscan_dependency_info_t info) {
 }
 
 void swiftscan_dependency_set_dispose(swiftscan_dependency_set_t *set) {
-  for (size_t i = 0; i < set->count; ++i) {
-    swiftscan_dependency_info_dispose(set->modules[i]);
+  if (set) {
+    for (size_t i = 0; i < set->count; ++i) {
+      swiftscan_dependency_info_dispose(set->modules[i]);
+    }
+    delete[] set->modules;
+    delete set;
   }
-  delete[] set->modules;
-  delete set;
 }
 
 //=== Scanner Cache Operations --------------------------------------------===//
@@ -753,11 +759,13 @@ void swiftscan_diagnostic_dispose(swiftscan_diagnostic_info_t diagnostic) {
 
 void
 swiftscan_diagnostics_set_dispose(swiftscan_diagnostic_set_t* diagnostics){
-  for (size_t i = 0; i < diagnostics->count; ++i) {
-    swiftscan_diagnostic_dispose(diagnostics->diagnostics[i]);
+  if (diagnostics) {
+    for (size_t i = 0; i < diagnostics->count; ++i) {
+      swiftscan_diagnostic_dispose(diagnostics->diagnostics[i]);
+    }
+    delete[] diagnostics->diagnostics;
+    delete diagnostics;
   }
-  delete[] diagnostics->diagnostics;
-  delete diagnostics;
 }
 
 //=== Source Location -----------------------------------------------------===//

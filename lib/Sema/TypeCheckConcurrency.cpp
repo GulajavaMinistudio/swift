@@ -2105,7 +2105,8 @@ void swift::introduceUnsafeInheritExecutorReplacements(
 
   auto isReplaceable = [&](ValueDecl *decl) {
     return isa<FuncDecl>(decl) && inConcurrencyModule(decl->getDeclContext()) &&
-        decl->getDeclContext()->isModuleScopeContext();
+        decl->getDeclContext()->isModuleScopeContext() &&
+        cast<FuncDecl>(decl)->hasAsync();
   };
 
   // Make sure at least some of the entries are functions in the _Concurrency
@@ -2160,7 +2161,8 @@ void swift::introduceUnsafeInheritExecutorReplacements(
     return;
 
   auto isReplaceable = [&](ValueDecl *decl) {
-    return isa<FuncDecl>(decl) && inConcurrencyModule(decl->getDeclContext());
+    return isa<FuncDecl>(decl) && inConcurrencyModule(decl->getDeclContext()) &&
+      cast<FuncDecl>(decl)->hasAsync();
   };
 
   // Make sure at least some of the entries are functions in the _Concurrency
@@ -2794,6 +2796,25 @@ namespace {
         if (capture.isOpaqueValue())
           continue;
 
+        auto *closure = localFunc.getAbstractClosureExpr();
+
+        // Diagnose a `self` capture inside an escaping `sending`
+        // `@Sendable` closure in a deinit, which almost certainly
+        // means `self` would escape deinit at runtime.
+        auto *explicitClosure = dyn_cast_or_null<ClosureExpr>(closure);
+        auto *dc = getDeclContext();
+        if (explicitClosure && isa<DestructorDecl>(dc) &&
+            !explicitClosure->getType()->isNoEscape() &&
+            (explicitClosure->isPassedToSendingParameter() ||
+             explicitClosure->isSendable())) {
+          auto var = dyn_cast_or_null<VarDecl>(capture.getDecl());
+          if (var && var->isSelfParameter()) {
+            ctx.Diags.diagnose(explicitClosure->getLoc(),
+                               diag::self_capture_deinit_task)
+                .warnUntilSwiftVersion(6);
+          }
+        }
+
         // If the closure won't execute concurrently with the context in
         // which the declaration occurred, it's okay.
         auto decl = capture.getDecl();
@@ -2818,7 +2839,6 @@ namespace {
         if (type->hasError())
           continue;
 
-        auto *closure = localFunc.getAbstractClosureExpr();
         if (closure && closure->isImplicit()) {
           auto *patternBindingDecl = getTopPatternBindingDecl();
           if (patternBindingDecl && patternBindingDecl->isAsyncLet()) {
@@ -4094,10 +4114,13 @@ namespace {
           return false;
         }
 
-        if (auto param =  dyn_cast<ParamDecl>(value)){
-          if(param->isInOut()){
-              ctx.Diags.diagnose(loc, diag::concurrent_access_of_inout_param, param->getName());
-              return true;
+        if (auto param = dyn_cast<ParamDecl>(value)) {
+          if (param->isInOut()) {
+            ctx.Diags
+                .diagnose(loc, diag::concurrent_access_of_inout_param,
+                          param->getName())
+                .limitBehaviorUntilSwiftVersion(limit, 6);
+            return true;
           }
         }
 
@@ -4873,6 +4896,8 @@ getIsolationFromWitnessedRequirements(ValueDecl *value) {
 /// are directly specified on the type.
 static std::optional<ActorIsolation>
 getIsolationFromConformances(NominalTypeDecl *nominal) {
+  auto &ctx = nominal->getASTContext();
+
   if (isa<ProtocolDecl>(nominal))
     return std::nullopt;
 
@@ -4886,8 +4911,13 @@ getIsolationFromConformances(NominalTypeDecl *nominal) {
     // If the superclass has opted out of global actor inference, such as
     // by conforming to the protocol in an extension, then the subclass should
     // not infer isolation from the protocol.
-    if (conformance->getKind() == ProtocolConformanceKind::Inherited)
+    //
+    // Gate this change behind an upcoming feature flag; isolation inference
+    // changes can break source in language modes < 6.
+    if (conformance->getKind() == ProtocolConformanceKind::Inherited &&
+        ctx.LangOpts.hasFeature(Feature::GlobalActorIsolatedTypesUsability)) {
       continue;
+    }
 
     auto *proto = conformance->getProtocol();
     switch (auto protoIsolation = getActorIsolation(proto)) {
@@ -6217,8 +6247,9 @@ bool swift::checkSendableConformance(
         return false;
     }
 
-    nominal->diagnose(diag::restate_unchecked_sendable,
-                      nominal->getName());
+    auto diag =
+        nominal->diagnose(diag::restate_unchecked_sendable, nominal->getName());
+    addSendableFixIt(nominal, diag, /*unchecked=*/true);
     return false;
   }
 
@@ -6413,8 +6444,16 @@ ProtocolConformance *swift::deriveImplicitSendableConformance(
 
   // Local function to form the implicit conformance.
   auto formConformance = [&](const DeclAttribute *attrMakingUnavailable)
-        -> NormalProtocolConformance * {
+        -> ProtocolConformance * {
     DeclContext *conformanceDC = nominal;
+
+    // FIXME: @_nonSendable should be a builtin extension macro. This behavior
+    // of explanding the unavailable conformance during implicit Sendable
+    // derivation means that clients can unknowingly ignore unavailable Sendable
+    // Sendable conformances from the original module added via @_nonSendable
+    // because they are not expanded if an explicit conformance is found via
+    // conformance lookup. So, if a retroactive, unchecked Sendable conformance
+    // is written, no redundant conformance warning is emitted.
     if (attrMakingUnavailable) {
       // Conformance availability is currently tied to the declaring extension.
       // FIXME: This is a hack--we should give conformances real availability.
@@ -6442,6 +6481,18 @@ ProtocolConformance *swift::deriveImplicitSendableConformance(
         file->getOrCreateSynthesizedFile().addTopLevelDecl(extension);
 
       conformanceDC = extension;
+
+      // Let the conformance lookup table register the conformance
+      // from the extension. Otherwise, we'll end up with redundant
+      // conformances between the explicit conformance from the extension
+      // and the conformance synthesized below.
+      SmallVector<ProtocolConformance *, 2> conformances;
+      nominal->lookupConformance(proto, conformances);
+      for (auto conformance : conformances) {
+        if (conformance->getDeclContext() == conformanceDC) {
+          return conformance;
+        }
+      }
     }
 
     auto conformance = ctx.getNormalConformance(
@@ -6463,9 +6514,6 @@ ProtocolConformance *swift::deriveImplicitSendableConformance(
       auto inheritedConformance = ModuleDecl::checkConformance(
           classDecl->mapTypeIntoContext(superclass),
           proto, /*allowMissing=*/false);
-      if (inheritedConformance.hasUnavailableConformance())
-        inheritedConformance = ProtocolConformanceRef::forInvalid();
-
       if (inheritedConformance) {
         inheritedConformance = inheritedConformance
             .mapConformanceOutOfContext();
