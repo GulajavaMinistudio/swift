@@ -21,6 +21,7 @@
 #include "TypeCheckType.h"
 #include "swift/Strings.h"
 #include "swift/AST/ASTWalker.h"
+#include "swift/AST/DistributedDecl.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/ImportCache.h"
 #include "swift/AST/Initializer.h"
@@ -2438,7 +2439,7 @@ namespace {
             if (fn->getOverriddenDecl())
               return false;
 
-            fn->diagnose(diag::add_globalactor_to_function,
+            fn->diagnose(diag::add_globalactor_to_decl,
                          globalActor->getWithoutParens().getString(),
                          fn, globalActor)
                 .fixItInsert(fn->getAttributeInsertionLoc(false),
@@ -3967,6 +3968,20 @@ namespace {
       return nullptr;
     }
 
+    /// Check whether there are _unsafeInheritExecutor_ workarounds in the
+    /// given _Concurrency module.
+    static bool hasUnsafeInheritExecutorWorkarounds(
+        DeclContext *dc, SourceLoc loc
+      ) {
+      ASTContext &ctx = dc->getASTContext();
+      Identifier name =
+          ctx.getIdentifier("_unsafeInheritExecutor_withUnsafeContinuation");
+      NameLookupOptions lookupOptions = defaultUnqualifiedLookupOptions;
+      LookupResult lookup = TypeChecker::lookupUnqualified(
+          dc, DeclNameRef(name), loc, lookupOptions);
+      return !lookup.empty();
+    }
+
     void recordCurrentContextIsolation(
         CurrentContextIsolationExpr *isolationExpr) {
       // If an actor has already been assigned, we're done.
@@ -3987,6 +4002,12 @@ namespace {
                                        diag::isolation_in_inherits_executor,
                                        inDefaultArgument);
         diag.limitBehaviorIf(inConcurrencyModule, DiagnosticBehavior::Warning);
+
+        if (!inConcurrencyModule &&
+            !hasUnsafeInheritExecutorWorkarounds(func, func->getLoc())) {
+          diag.limitBehavior(DiagnosticBehavior::Warning);
+        }
+
         replaceUnsafeInheritExecutorWithDefaultedIsolationParam(func, diag);
       }
 
@@ -5415,7 +5436,7 @@ ActorIsolation ActorIsolationRequest::evaluate(
 
   // Diagnose global state that is not either immutable plus Sendable or
   // isolated to a global actor.
-  auto checkGlobalIsolation = [var = dyn_cast<VarDecl>(value)](
+  auto checkGlobalIsolation = [var = dyn_cast<VarDecl>(value), &ctx](
                                   ActorIsolation isolation) {
     // Diagnose only declarations in the same module.
     //
@@ -5459,10 +5480,14 @@ ActorIsolation ActorIsolationRequest::evaluate(
             }
           }
 
-          diagVar->diagnose(diag::shared_state_main_actor_node,
-                            diagVar)
-              .fixItInsert(diagVar->getAttributeInsertionLoc(false),
-                           "@MainActor ");
+          auto mainActor = ctx.getMainActorType();
+          if (mainActor) {
+            diagVar->diagnose(diag::add_globalactor_to_decl,
+                              mainActor->getWithoutParens().getString(),
+                              diagVar, mainActor)
+                .fixItInsert(diagVar->getAttributeInsertionLoc(false),
+                             diag::insert_globalactor_attr, mainActor);
+          }
           diagVar->diagnose(diag::shared_state_nonisolated_unsafe,
                             diagVar)
               .fixItInsert(diagVar->getAttributeInsertionLoc(true),
@@ -6198,7 +6223,11 @@ bool swift::checkSendableConformance(
     return false;
 
   // If this is an always-unavailable conformance, there's nothing to check.
-  if (auto ext = dyn_cast<ExtensionDecl>(conformanceDC)) {
+  // We always use the root conformance for this check, because inherited
+  // conformances need to walk back to the original declaration for the
+  // superclass conformance to find an unavailable attribute.
+  if (auto ext = dyn_cast<ExtensionDecl>(
+          conformance->getRootConformance()->getDeclContext())) {
     if (AvailableAttr::isUnavailable(ext))
       return false;
   }
@@ -6883,6 +6912,23 @@ VarDecl *swift::getReferencedParamOrCapture(
   // corresponds to the isolation of the given code.
   if (isa<CurrentContextIsolationExpr>(expr))
     return getCurrentIsolatedVar();
+
+  // Distributed:
+  // If we're referring to a member, it may be the special 'self.asLocalActor'
+  // of an actor that is the result of #isolation of distributed actors.
+  // the result of the value should be considered equal to the "self" isolation
+  // as it only transforms the DistributedActor self to an "any Actor" self
+  // used for isolation purposes.
+  if (auto memberRef = dyn_cast<MemberRefExpr>(expr)) {
+    if (auto refDecl = expr->getReferencedDecl(/*stopAtParenExpr=*/true)) {
+      if (auto decl = dyn_cast_or_null<VarDecl>(refDecl.getDecl())) {
+        if (isDistributedActorAsLocalActorComputedProperty(decl)) {
+          return getCurrentIsolatedVar();
+        }
+      }
+    }
+  }
+
 
   return nullptr;
 }
