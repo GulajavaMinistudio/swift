@@ -602,6 +602,8 @@ CONSTANT_OWNERSHIP_BUILTIN(None, TSanInoutAccess)
 CONSTANT_OWNERSHIP_BUILTIN(None, PoundAssert)
 CONSTANT_OWNERSHIP_BUILTIN(None, TypePtrAuthDiscriminator)
 CONSTANT_OWNERSHIP_BUILTIN(None, TargetOSVersionAtLeast)
+CONSTANT_OWNERSHIP_BUILTIN(None, TargetVariantOSVersionAtLeast)
+CONSTANT_OWNERSHIP_BUILTIN(None, TargetOSVersionOrVariantOSVersionAtLeast)
 CONSTANT_OWNERSHIP_BUILTIN(None, GlobalStringTablePointer)
 CONSTANT_OWNERSHIP_BUILTIN(None, GetCurrentAsyncTask)
 CONSTANT_OWNERSHIP_BUILTIN(None, CancelAsyncTask)
@@ -723,7 +725,7 @@ namespace swift::test {
 // - SILValue: value
 // Dumps:
 // - message
-static FunctionTest GetOwnershipKind("get-ownership-kind", [](auto &function,
+static FunctionTest GetOwnershipKind("get_ownership_kind", [](auto &function,
                                                               auto &arguments,
                                                               auto &test) {
   SILValue value = arguments.takeValue();
