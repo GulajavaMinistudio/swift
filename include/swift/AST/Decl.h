@@ -1206,6 +1206,9 @@ public:
 
   std::optional<unsigned> getSourceOrder() const;
 
+  /// Get the declaration that actually provides a doc comment for another.
+  const Decl *getDocCommentProvidingDecl() const;
+
   /// \returns The brief comment attached to this declaration, or the brief
   /// comment attached to the comment providing decl.
   StringRef getSemanticBriefComment() const;
@@ -2969,6 +2972,14 @@ public:
   /// Returns \c true if this value decl is inlinable with attributes
   /// \c \@usableFromInline, \c \@inlinalbe, and \c \@_alwaysEmitIntoClient
   bool isUsableFromInline() const;
+
+  /// Treat as public and allow skipping access checks if the following conditions
+  /// are met:
+  /// - This decl has a package access level,
+  /// - Has a @usableFromInline (or other inlinable) attribute,
+  /// - And is defined in a module built from a public or private
+  ///   interface that does not contain package-name.
+  bool isInterfacePackageEffectivelyPublic() const;
 
   /// Returns \c true if this declaration is *not* intended to be used directly
   /// by application developers despite the visibility.
