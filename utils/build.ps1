@@ -114,6 +114,7 @@ param(
   [string] $ProductVersion = "0.0.0",
   [string] $PinnedBuild = "",
   [string] $PinnedSHA256 = "",
+  [string] $PinnedVersion = "",
   [string] $PythonVersion = "3.9.10",
   [string] $AndroidNDKVersion = "r26b",
   [string] $WinSDKVersion = "",
@@ -171,6 +172,9 @@ $CustomWinSDKRoot = $null # Overwritten if we download a Windows SDK from nuget
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $VSInstallRoot = & $vswhere -nologo -latest -products "*" -all -prerelease -property installationPath
 $msbuild = "$VSInstallRoot\MSBuild\Current\Bin\$BuildArchName\MSBuild.exe"
+
+# Hoist to global scope as this is used in two sites.
+$WiXVersion = "4.0.5"
 
 # Avoid $env:ProgramFiles in case this script is running as x86
 $UnixToolsBinDir = "$env:SystemDrive\Program Files\Git\usr\bin"
@@ -621,10 +625,12 @@ function Fetch-Dependencies {
   }
 
   function Extract-ZipFile {
-    param (
+    param
+    (
         [string]$ZipFileName,
         [string]$BinaryCache,
-        [string]$ExtractPath
+        [string]$ExtractPath,
+        [bool]$CreateExtractPath = $true
     )
 
     $source = Join-Path -Path $BinaryCache -ChildPath $ZipFileName
@@ -641,13 +647,17 @@ function Fetch-Dependencies {
         }
     }
 
+    $destination = if ($CreateExtractPath) { $destination } else { $BinaryCache }
+
     Write-Output "Extracting '$ZipFileName' ..."
     New-Item -ItemType Directory -ErrorAction Ignore -Path $BinaryCache | Out-Null
     Expand-Archive -Path $source -DestinationPath $destination -Force
   }
 
+
   function Extract-Toolchain {
-    param (
+    param
+    (
         [string]$InstallerExeName,
         [string]$BinaryCache,
         [string]$ToolchainName
@@ -669,21 +679,23 @@ function Fetch-Dependencies {
     Write-Output "Extracting '$ToolchainName' ..."
 
     # The new runtime MSI is built to expand files into the immediate directory. So, setup the installation location.
-    New-Item -ItemType Directory -ErrorAction Ignore $BinaryCache\toolchains\$PinnedToolchain\LocalApp\Programs\Swift\Runtimes\0.0.0\usr\bin | Out-Null
+    New-Item -ItemType Directory -ErrorAction Ignore $BinaryCache\toolchains\$PinnedToolchain\LocalApp\Programs\Swift\Runtimes\$(Get-PinnedToolchainVersion)\usr\bin | Out-Null
     Invoke-Program $BinaryCache\WiX-$WiXVersion\tools\net6.0\any\wix.exe -- burn extract $BinaryCache\$ToolchainName.exe -out $BinaryCache\toolchains\ -outba $BinaryCache\toolchains\
     Get-ChildItem "$BinaryCache\toolchains\WixAttachedContainer" -Filter "*.msi" | % {
       $LogFile = [System.IO.Path]::ChangeExtension($_.Name, "log")
-      $TARGETDIR = if ($_.Name -eq "rtl.msi") { "$BinaryCache\toolchains\$ToolchainName\LocalApp\Programs\Swift\Runtimes\5.10.1\usr\bin" } else { "$BinaryCache\toolchains\$ToolchainName" }
+      $TARGETDIR = if ($_.Name -eq "rtl.msi") { "$BinaryCache\toolchains\$ToolchainName\LocalApp\Programs\Swift\Runtimes\$(Get-PinnedToolchainVersion)\usr\bin" } else { "$BinaryCache\toolchains\$ToolchainName" }
     Invoke-Program -OutNull msiexec.exe /lvx! $BinaryCache\toolchains\$LogFile /qn /a $BinaryCache\toolchains\WixAttachedContainer\$_ ALLUSERS=0 TARGETDIR=$TARGETDIR
     }
   }
 
-  $WiXVersion = "4.0.4"
-  $WiXURL = "https://www.nuget.org/api/v2/package/wix/$WiXVersion"
-  $WiXHash = "A9CA12214E61BB49430A8C6E5E48AC5AE6F27DC82573B5306955C4D35F2D34E2"
-  DownloadAndVerify $WixURL "$BinaryCache\WiX-$WiXVersion.zip" $WiXHash
+  if ($SkipBuild -and $SkipPackaging) { return }
 
+  $WiXURL = "https://www.nuget.org/api/v2/package/wix/$WiXVersion"
+  $WiXHash = "DF9BDB347183716F82EFE2CECB8C54BB3554AA907A69F47A41741D6FA4D0A754"
+  DownloadAndVerify $WixURL "$BinaryCache\WiX-$WiXVersion.zip" $WiXHash
   Extract-ZipFile WiX-$WiXVersion.zip $BinaryCache WiX-$WiXVersion
+
+  if ($SkipBuild) { return }
 
   DownloadAndVerify $PinnedBuild "$BinaryCache\$PinnedToolchain.exe" $PinnedSHA256
 
@@ -719,7 +731,7 @@ function Fetch-Dependencies {
     $NDKHash = "A478D43D4A45D0D345CDA6BE50D79642B92FB175868D9DC0DFC86181D80F691E"
     DownloadAndVerify $NDKURL "$BinaryCache\android-ndk-$AndroidNDKVersion-windows.zip" $NDKHash
 
-    Extract-ZipFile -ZipFileName "android-ndk-$AndroidNDKVersion-windows.zip" -BinaryCache $BinaryCache -ExtractPath "android-ndk-$AndroidNDKVersion"
+    Extract-ZipFile -ZipFileName "android-ndk-$AndroidNDKVersion-windows.zip" -BinaryCache $BinaryCache -ExtractPath "android-ndk-$AndroidNDKVersion" -CreateExtractPath $false
   }
 
   if ($WinSDKVersion) {
@@ -750,22 +762,22 @@ function Fetch-Dependencies {
 }
 
 function Get-PinnedToolchainTool() {
-  if (Test-Path "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Toolchains\5.10.1+Asserts\usr\bin") {
-    return "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Toolchains\5.10.1+Asserts\usr\bin"
+  if (Test-Path "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Toolchains\$(Get-PinnedToolchainVersion)+Asserts\usr\bin") {
+    return "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Toolchains\$(Get-PinnedToolchainVersion)+Asserts\usr\bin"
   }
   return "$BinaryCache\toolchains\${PinnedToolchain}\Library\Developer\Toolchains\unknown-Asserts-development.xctoolchain\usr\bin"
 }
 
 function Get-PinnedToolchainSDK() {
-  if (Test-Path "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Platforms\5.10.1\Windows.platform\Developer\SDKs\Windows.sdk") {
-    return "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Platforms\5.10.1\Windows.platform\Developer\SDKs\Windows.sdk"
+  if (Test-Path "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Platforms\$(Get-PinnedToolchainVersion)\Windows.platform\Developer\SDKs\Windows.sdk") {
+    return "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Platforms\$(Get-PinnedToolchainVersion)\Windows.platform\Developer\SDKs\Windows.sdk"
   }
   return "$BinaryCache\toolchains\${PinnedToolchain}\Library\Developer\Platforms\Windows.platform\Developer\SDKs\Windows.sdk"
 }
 
 function Get-PinnedToolchainRuntime() {
-  if (Test-Path "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Runtimes\5.10.1\usr\bin\swiftCore.dll") {
-    return "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Runtimes\5.10.1\usr\bin"
+  if (Test-Path "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Runtimes\$(Get-PinnedToolchainVersion)\usr\bin\swiftCore.dll") {
+    return "$BinaryCache\toolchains\${PinnedToolchain}\LocalApp\Programs\Swift\Runtimes\$(Get-PinnedToolchainVersion)\usr\bin"
   }
   return "$BinaryCache\toolchains\${PinnedToolchain}\PFiles64\Swift\runtime-development\usr\bin"
 }
@@ -774,7 +786,7 @@ function Get-PinnedToolchainVersion() {
   if (Test-Path variable:PinnedVersion) {
     return $PinnedVersion
   }
-  return "5.10.1"
+  throw "PinnedVersion must be set"
 }
 
 function TryAdd-KeyValue([hashtable]$Hashtable, [string]$Key, [string]$Value) {
@@ -1745,7 +1757,7 @@ function Build-FoundationMacros() {
 
   $SwiftSDK = $null
   if ($Build) {
-    $SwiftSDK = $HostArch.SDKInstallRoot
+    $SwiftSDK = $BuildArch.SDKInstallRoot
   }
 
   $Targets = if ($Build) {
@@ -1759,6 +1771,12 @@ function Build-FoundationMacros() {
     $InstallDir = "$($Arch.ToolchainInstallRoot)\usr"
   }
 
+  $SwiftSyntaxCMakeModules = if ($Build -and $HostArch -ne $BuildArch) {
+    Get-BuildProjectCMakeModules Compilers
+  } else {
+    Get-HostProjectCMakeModules Compilers
+  }
+
   Build-CMakeProject `
     -Src $SourceCache\swift-foundation\Sources\FoundationMacros `
     -Bin $FoundationMacrosBinaryCache `
@@ -1769,7 +1787,7 @@ function Build-FoundationMacros() {
     -SwiftSDK:$SwiftSDK `
     -BuildTargets $Targets `
     -Defines @{
-      SwiftSyntax_DIR = (Get-HostProjectCMakeModules Compilers);
+      SwiftSyntax_DIR = $SwiftSyntaxCMakeModules;
     }
 }
 
@@ -2376,15 +2394,13 @@ function Stage-BuildArtifacts($Arch) {
   } else {
     New-Item -Type Directory -Path "$($Arch.BinaryCache)\installer\$($Arch.VSName)\" -ErrorAction Ignore | Out-Null
   }
-  Invoke-Program "$BinaryCache\wix-4.0.4\tools\net6.0\any\wix.exe" -- burn detach "$($Arch.BinaryCache)\installer\Release\$($Arch.VSName)\installer.exe" -engine "$Stage\installer-engine.exe" -intermediateFolder "$($Arch.BinaryCache)\installer\$($Arch.VSName)\"
+  Invoke-Program "$BinaryCache\wix-$WiXVersion\tools\net6.0\any\wix.exe" -- burn detach "$($Arch.BinaryCache)\installer\Release\$($Arch.VSName)\installer.exe" -engine "$Stage\installer-engine.exe" -intermediateFolder "$($Arch.BinaryCache)\installer\$($Arch.VSName)\"
 }
 
 #-------------------------------------------------------------------
 try {
 
-if (-not $SkipBuild) {
-  Fetch-Dependencies
-}
+Fetch-Dependencies
 
 if (-not $SkipBuild) {
   Invoke-BuildStep Build-CMark $BuildArch

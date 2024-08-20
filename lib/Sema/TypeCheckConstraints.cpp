@@ -637,7 +637,7 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
 
   // Find and open all of the generic parameters used by the parameter
   // and replace them with type variables.
-  auto contextualTy = paramInterfaceTy.transform([&](Type type) -> Type {
+  auto contextualTy = paramInterfaceTy.transformRec([&](Type type) -> std::optional<Type> {
     assert(!type->is<UnboundGenericType>());
 
     if (auto *GP = type->getAs<GenericTypeParamType>()) {
@@ -648,7 +648,7 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
       return cs.openGenericParameter(DC->getParent(), GP, genericParameters,
                                      locator);
     }
-    return type;
+    return std::nullopt;
   });
 
   auto containsTypes = [&](Type type, OpenedTypeMap &toFind) {
@@ -1007,10 +1007,9 @@ static Type replaceArchetypesWithTypeVariables(ConstraintSystem &cs,
         return found->second;
 
       if (auto archetypeType = dyn_cast<ArchetypeType>(origType)) {
-        auto root = archetypeType->getRoot();
-        // For other nested types, fail here so the default logic in subst()
+        // For nested types, fail here so the default logic in subst()
         // for nested types applies.
-        if (root != archetypeType)
+        if (!archetypeType->getInterfaceType()->is<GenericTypeParamType>())
           return Type();
 
         auto locator = cs.getConstraintLocator({});

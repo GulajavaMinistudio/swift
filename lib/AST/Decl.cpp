@@ -3477,12 +3477,12 @@ static Type mapSignatureFunctionType(ASTContext &ctx, Type type,
 
 /// Map a type within the signature of a declaration.
 static Type mapSignatureType(ASTContext &ctx, Type type) {
-  return type.transform([&](Type type) -> Type {
+  return type.transformRec([&](Type type) -> std::optional<Type> {
       if (type->is<FunctionType>()) {
         return mapSignatureFunctionType(ctx, type, false, false, false, 1);
       }
 
-      return type;
+      return std::nullopt;
     });
 }
 
@@ -6583,6 +6583,11 @@ bool EnumDecl::hasOnlyCasesWithoutAssociatedValues() const {
   return !hasAssociatedValues;
 }
 
+bool EnumDecl::treatAsExhaustiveForDiags(const DeclContext *useDC) const {
+  return isFormallyExhaustive(useDC) ||
+         (useDC && getModuleContext()->inSamePackage(useDC->getParentModule()));
+}
+
 bool EnumDecl::isFormallyExhaustive(const DeclContext *useDC) const {
   // Enums explicitly marked frozen are exhaustive.
   if (getAttrs().hasAttribute<FrozenAttr>())
@@ -6600,13 +6605,9 @@ bool EnumDecl::isFormallyExhaustive(const DeclContext *useDC) const {
     return true;
 
   // Non-public, non-versioned enums are always exhaustive.
-  AccessScope accessScope = getFormalAccessScope(/*useDC*/nullptr,
-                                                 /*respectVersioned*/true);
-  // Both public and package enums should behave the same unless
-  // package enum is optimized with bypassing resilience checks.
+  AccessScope accessScope = getFormalAccessScope(/*useDC*/ nullptr,
+                                                 /*respectVersioned*/ true);
   if (!accessScope.isPublicOrPackage())
-    return true;
-  if (useDC && bypassResilienceInPackage(useDC->getParentModule()))
     return true;
 
   // All other checks are use-site specific; with no further information, the
@@ -6639,11 +6640,13 @@ bool EnumDecl::isEffectivelyExhaustive(ModuleDecl *M,
   if (isObjC())
     return false;
 
-  // Otherwise, the only non-exhaustive cases are those that don't have a fixed
-  // layout.
-  assert(isFormallyExhaustive(M) == !isResilient(M,ResilienceExpansion::Maximal)
-         && "ignoring the effects of @inlinable, @testable, and @objc, "
-            "these should match up");
+  // Otherwise, the only non-exhaustive enums are those that don't have
+  // a fixed layout; however, they are treated as exhaustive if package
+  // optimization is enabled.
+  assert((isFormallyExhaustive(M) || bypassResilienceInPackage(M)) ==
+             !isResilient(M, ResilienceExpansion::Maximal) &&
+         "ignoring the effects of @inlinable, @testable, and @objc, "
+         "these should match up");
   return !isResilient(M, expansion);
 }
       
@@ -8391,8 +8394,9 @@ void VarDecl::emitLetToVarNoteIfSimple(DeclContext *UseDC) const {
       }
 
       auto &d = getASTContext().Diags;
+      auto descriptiveKindName = Decl::getDescriptiveKindName(FD->getDescriptiveKind());
       auto diags = d.diagnose(FD->getFuncLoc(), diag::change_to_mutating,
-                              isa<AccessorDecl>(FD));
+                              isa<AccessorDecl>(FD), descriptiveKindName);
       if (auto nonmutatingAttr =
               FD->getAttrs().getAttribute<NonMutatingAttr>()) {
         diags.fixItReplace(nonmutatingAttr->getLocation(), "mutating");
