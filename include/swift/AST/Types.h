@@ -185,7 +185,10 @@ public:
     /// Contains a PackArchetypeType. Also implies HasPrimaryArchetype.
     HasPackArchetype = 0x20000,
 
-    Last_Property = HasPackArchetype
+    /// Whether this type contains an unsafe type.
+    IsUnsafe = 0x040000,
+
+    Last_Property = IsUnsafe
   };
   enum { BitWidth = countBitsUsed(Property::Last_Property) };
 
@@ -265,6 +268,8 @@ public:
   bool hasPack() const { return Bits & HasPack; }
 
   bool hasPackArchetype() const { return Bits & HasPackArchetype; }
+
+  bool isUnsafe() const { return Bits & IsUnsafe; }
 
   /// Does a type with these properties structurally contain a
   /// parameterized existential type?
@@ -431,12 +436,12 @@ protected:
     NumProtocols : 16
   );
 
-  SWIFT_INLINE_BITFIELD_FULL(TypeVariableType, TypeBase, 7+29,
+  SWIFT_INLINE_BITFIELD_FULL(TypeVariableType, TypeBase, 7+28,
     /// Type variable options.
     Options : 7,
     : NumPadBits,
     /// The unique number assigned to this type variable.
-    ID : 29
+    ID : 28
   );
 
   SWIFT_INLINE_BITFIELD_FULL(ErrorUnionType, TypeBase, 32,
@@ -709,6 +714,11 @@ public:
     return getRecursiveProperties().hasPackArchetype();
   }
 
+  /// Whether the type contains an @unsafe type in it anywhere.
+  bool isUnsafe() const {
+    return getRecursiveProperties().isUnsafe();
+  }
+
   /// Determine whether the type involves a primary, pack or local archetype.
   ///
   /// FIXME: Replace all remaining callers with a more precise check.
@@ -910,10 +920,6 @@ public:
   /// Determines whether this type is an existential type with a class protocol
   /// bound.
   bool isClassExistentialType();
-
-  /// Opens an existential instance or meta-type and returns the opened type.
-  Type openAnyExistentialType(OpenedArchetypeType *&opened,
-                              GenericSignature parentSig);
 
   /// Break an existential down into a set of constraints.
   ExistentialLayout getExistentialLayout();
@@ -6637,7 +6643,8 @@ private:
                        GenericEnvironment *GenericEnv,
                        Type InterfaceType,
                        ArrayRef<ProtocolDecl *> ConformsTo,
-                       Type Superclass, LayoutConstraint Layout);
+                       Type Superclass, LayoutConstraint Layout,
+                       RecursiveTypeProperties Properties);
 };
 BEGIN_CAN_TYPE_WRAPPER(PrimaryArchetypeType, ArchetypeType)
 END_CAN_TYPE_WRAPPER(PrimaryArchetypeType, ArchetypeType)
@@ -6671,10 +6678,6 @@ public:
 
   /// Retrieve the set of substitutions applied to the opaque type.
   SubstitutionMap getSubstitutions() const;
-
-  /// Compute the canonical interface type within the environment of this
-  /// opaque type archetype.
-  CanType getCanonicalInterfaceType(Type interfaceType);
 
   static bool classof(const TypeBase *T) {
     return T->getKind() == TypeKind::OpaqueTypeArchetype;
@@ -6810,27 +6813,21 @@ public:
   /// of an existential value.
   ///
   /// \param existential The existential type to open.
-  /// \param parentSig The generic signature of the context opening
-  /// this existential.
-  ///
   /// \param knownID When non-empty, the known ID of the archetype. When empty,
   /// a fresh archetype with a unique ID will be opened.
   static CanTypeWrapper<OpenedArchetypeType>
-  get(CanType existential, GenericSignature parentSig,
-      std::optional<UUID> knownID = std::nullopt);
+  get(CanType existential, std::optional<UUID> knownID = std::nullopt);
 
   /// Get or create an archetype that represents the opened type
   /// of an existential value.
   ///
   /// \param existential The existential type to open.
   /// \param interfaceType The interface type represented by this archetype.
-  /// \param parentSig The generic signature of the context opening
-  /// this existential.
   ///
   /// \param knownID When non-empty, the known ID of the archetype. When empty,
   /// a fresh archetype with a unique ID will be opened.
   static CanTypeWrapper<OpenedArchetypeType>
-  get(CanType existential, Type interfaceType, GenericSignature parentSig,
+  get(CanType existential, Type interfaceType,
       std::optional<UUID> knownID = std::nullopt);
 
   /// Create a new archetype that represents the opened type
@@ -6842,10 +6839,7 @@ public:
   ///
   /// \param existential The existential type or existential metatype to open.
   /// \param interfaceType The interface type represented by this archetype.
-  /// \param parentSig The generic signature of the context opening
-  /// this existential.
-  static CanType getAny(CanType existential, Type interfaceType,
-                        GenericSignature parentSig);
+  static Type getAny(Type existential, Type interfaceType);
 
   /// Create a new archetype that represents the opened type
   /// of an existential value.
@@ -6855,9 +6849,7 @@ public:
   /// will unwrap any existential metatype containers.
   ///
   /// \param existential The existential type or existential metatype to open.
-  /// \param parentSig The generic signature of the context opening
-  /// this existential.
-  static CanType getAny(CanType existential, GenericSignature parentSig);
+  static Type getAny(Type existential);
 
   /// Retrieve the ID number of this opened existential.
   UUID getOpenedExistentialID() const;
@@ -6874,8 +6866,10 @@ public:
   
 private:
   OpenedArchetypeType(GenericEnvironment *environment, Type interfaceType,
-                      ArrayRef<ProtocolDecl *> conformsTo, Type superclass,
-                      LayoutConstraint layout);
+                      ArrayRef<ProtocolDecl *> conformsTo,
+                      Type superclass,
+                      LayoutConstraint layout,
+                      RecursiveTypeProperties properties);
 };
 BEGIN_CAN_TYPE_WRAPPER(OpenedArchetypeType, LocalArchetypeType)
   CanOpenedArchetypeType getRoot() const {
@@ -6918,7 +6912,8 @@ public:
 private:
   PackArchetypeType(const ASTContext &Ctx, GenericEnvironment *GenericEnv,
                     Type InterfaceType, ArrayRef<ProtocolDecl *> ConformsTo,
-                    Type Superclass, LayoutConstraint Layout, PackShape Shape);
+                    Type Superclass, LayoutConstraint Layout, PackShape Shape,
+                    RecursiveTypeProperties properties);
 };
 BEGIN_CAN_TYPE_WRAPPER(PackArchetypeType, ArchetypeType)
 END_CAN_TYPE_WRAPPER(PackArchetypeType, ArchetypeType)
