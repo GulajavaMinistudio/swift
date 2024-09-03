@@ -5404,10 +5404,6 @@ public:
   /// and folding sequence expressions.
   static bool preCheckTarget(SyntacticElementTarget &target);
 
-  /// Pre-check the expression, validating any types that occur in the
-  /// expression and folding sequence expressions.
-  static bool preCheckExpression(Expr *&expr, DeclContext *dc);
-
   /// Solve the system of constraints generated from provided target.
   ///
   /// \param target The target that we'll generate constraints from, which
@@ -5608,8 +5604,6 @@ public:
     auto range = isAlreadyTooComplex.second;
     return range.isValid() ? range : std::optional<SourceRange>();
   }
-
-  bool isPartialApplication(ConstraintLocator *locator);
 
   bool isTooComplex(size_t solutionMemory) {
     if (isAlreadyTooComplex.first)
@@ -6558,6 +6552,11 @@ Type getPatternTypeOfSingleUnlabeledPackExpansionTuple(Type type);
 /// Check whether this is a reference to one of the special result builder
 /// methods prefixed with `build*` i.e. `buildBlock`, `buildExpression` etc.
 bool isResultBuilderMethodReference(ASTContext &, UnresolvedDotExpr *);
+
+/// Determine the number of applications applied to the given overload.
+unsigned getNumApplications(ValueDecl *decl, bool hasAppliedSelf,
+                            FunctionRefKind functionRefKind);
+
 } // end namespace constraints
 
 template<typename ...Args>

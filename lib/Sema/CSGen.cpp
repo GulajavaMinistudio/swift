@@ -889,7 +889,7 @@ TypeVarRefCollector::walkToExprPre(Expr *expr) {
     inferTypeVars(DRE->getDecl());
 
   // FIXME: We can see UnresolvedDeclRefExprs here because we don't walk into
-  // patterns when running preCheckExpression, since we don't resolve patterns
+  // patterns when running preCheckTarget, since we don't resolve patterns
   // until CSGen. We ought to consider moving pattern resolution into
   // pre-checking, which would allow us to pre-check patterns normally.
   if (auto *declRef = dyn_cast<UnresolvedDeclRefExpr>(expr)) {
@@ -4607,13 +4607,14 @@ generateForEachStmtConstraints(ConstraintSystem &cs, DeclContext *dc,
         new (ctx) DeclRefExpr(makeIteratorVar, DeclNameLoc(stmt->getForLoc()),
                               /*Implicit=*/true),
         nextId, labels);
-    nextRef->setFunctionRefKind(FunctionRefKind::Compound);
+    nextRef->setFunctionRefKind(FunctionRefKind::SingleApply);
 
     ArgumentList *nextArgs;
     if (nextFn && nextFn->getParameters()->size() == 1) {
       auto isolationArg =
         new (ctx) CurrentContextIsolationExpr(stmt->getForLoc(), Type());
-      nextArgs = ArgumentList::forImplicitUnlabeled(ctx, { isolationArg });
+      nextArgs = ArgumentList::createImplicit(
+          ctx, {Argument(SourceLoc(), ctx.Id_isolation, isolationArg)});
     } else {
       nextArgs = ArgumentList::createImplicit(ctx, {});
     }

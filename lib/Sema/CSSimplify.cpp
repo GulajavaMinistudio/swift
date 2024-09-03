@@ -10293,15 +10293,16 @@ performMemberLookup(ConstraintKind constraintKind, DeclNameRef memberName,
       if (!Context.getProtocol(KnownProtocolKind::Sendable))
         return false;
 
-      // Static members are always sendable because they only capture
-      // metatypes which are Sendable.
-      if (baseObjTy->is<AnyMetatypeType>())
-        return false;
+      return llvm::any_of(lookup, [&](const auto &result) {
+        auto decl = result.getValueDecl();
+        if (!isa_and_nonnull<FuncDecl>(decl))
+          return false;
 
-      return isPartialApplication(memberLocator) &&
-             llvm::any_of(lookup, [&](const auto &result) {
-               return isa_and_nonnull<FuncDecl>(result.getValueDecl());
-             });
+        auto hasAppliedSelf = decl->hasCurriedSelf() &&
+                              doesMemberRefApplyCurriedSelf(baseObjTy, decl);
+        return getNumApplications(decl, hasAppliedSelf, functionRefKind) <
+               decl->getNumCurryLevels();
+      });
     };
 
     if (shouldCheckSendabilityOfBase()) {
@@ -10945,7 +10946,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyMemberConstraint(
 
         return simplifyValueWitnessConstraint(
             ConstraintKind::ValueWitness, baseTy, makeIterator, memberTy, useDC,
-            FunctionRefKind::Compound, flags, locator);
+            FunctionRefKind::SingleApply, flags, locator);
       }
 
       // Handle `next` reference.
@@ -10963,7 +10964,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyMemberConstraint(
 
         return simplifyValueWitnessConstraint(
             ConstraintKind::ValueWitness, baseTy, next, memberTy, useDC,
-            FunctionRefKind::Compound, flags, locator);
+            FunctionRefKind::SingleApply, flags, locator);
       }
     }
   }
@@ -14069,6 +14070,13 @@ ConstraintSystem::simplifyExplicitGenericArgumentsConstraint(
 
   auto genericParams = getGenericParams(decl);
   if (!decl->getAsGenericContext() || !genericParams) {
+    if (isa<AbstractFunctionDecl>(decl)) {
+      return recordFix(AllowFunctionSpecialization::create(
+                 *this, decl, getConstraintLocator(locator)))
+                 ? SolutionKind::Error
+                 : SolutionKind::Solved;
+    }
+
     // Allow concrete macros to have specializations with just a warning.
     return recordFix(AllowConcreteTypeSpecialization::create(
                *this, type1, decl, getConstraintLocator(locator),
@@ -14111,10 +14119,7 @@ ConstraintSystem::simplifyExplicitGenericArgumentsConstraint(
   // FIXME: We could support explicit function specialization.
   if (openedGenericParams.empty() ||
       (isa<AbstractFunctionDecl>(decl) && !hasParameterPack)) {
-    if (!shouldAttemptFixes())
-      return SolutionKind::Error;
-
-    return recordFix(AllowGenericFunctionSpecialization::create(
+    return recordFix(AllowFunctionSpecialization::create(
                *this, decl, getConstraintLocator(locator)))
                ? SolutionKind::Error
                : SolutionKind::Solved;
@@ -15246,7 +15251,7 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyFixConstraint(
   case FixKind::AllowAssociatedValueMismatch:
   case FixKind::GenericArgumentsMismatch:
   case FixKind::AllowConcreteTypeSpecialization:
-  case FixKind::AllowGenericFunctionSpecialization:
+  case FixKind::AllowFunctionSpecialization:
   case FixKind::IgnoreGenericSpecializationArityMismatch:
   case FixKind::IgnoreKeyPathSubscriptIndexMismatch:
   case FixKind::AllowMemberRefOnExistential: {
