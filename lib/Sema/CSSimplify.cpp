@@ -16,6 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CSDiagnostics.h"
+#include "OpenedExistentials.h"
 #include "TypeCheckConcurrency.h"
 #include "TypeCheckEffects.h"
 #include "swift/AST/ASTPrinter.h"
@@ -1440,66 +1441,13 @@ public:
   }
 };
 
-namespace {
-  /// Flags that should be applied to the existential argument type after
-  /// opening.
-  enum class OpenedExistentialAdjustmentFlags {
-    /// The argument should be made inout after opening.
-    InOut = 0x01,
-    LValue = 0x02,
-  };
-
-  using OpenedExistentialAdjustments =
-    OptionSet<OpenedExistentialAdjustmentFlags>;
-}
-
-/// Determine whether we should open up the existential argument to the
-/// given parameters.
-///
-/// \param callee The function or subscript being called.
-/// \param paramIdx The index specifying which function parameter is being
-/// initialized.
-/// \param paramTy The type of the parameter as it was opened in the constraint
-/// system.
-/// \param argTy The type of the argument.
-///
-/// \returns If the argument type is existential and opening it can bind a
-/// generic parameter in the callee, returns the generic parameter, type
-/// variable (from the opened parameter type) the existential type that needs
-/// to be opened (from the argument type), and the adjustments that need to be
-/// applied to the existential type after it is opened.
 static std::optional<std::tuple<GenericTypeParamType *, TypeVariableType *,
                                 Type, OpenedExistentialAdjustments>>
 shouldOpenExistentialCallArgument(ValueDecl *callee, unsigned paramIdx,
                                   Type paramTy, Type argTy, Expr *argExpr,
                                   ConstraintSystem &cs) {
-  if (!callee)
-    return std::nullopt;
-
-  // Only applies to functions and subscripts.
-  if (!isa<AbstractFunctionDecl>(callee) && !isa<SubscriptDecl>(callee))
-    return std::nullopt;
-
-  // Special semantics prohibit opening existentials.
-  switch (TypeChecker::getDeclTypeCheckingSemantics(callee)) {
-  case DeclTypeCheckingSemantics::OpenExistential:
-  case DeclTypeCheckingSemantics::TypeOf:
-    // type(of:) and _openExistential handle their own opening.
-    return std::nullopt;
-
-  case DeclTypeCheckingSemantics::Normal:
-  case DeclTypeCheckingSemantics::WithoutActuallyEscaping:
-    break;
-  }
-
-  // C++ function templates require specialization, which is not possible with
-  // opened existential archetypes, so do not open.
-  if (isa_and_nonnull<clang::FunctionTemplateDecl>(callee->getClangDecl()))
-    return std::nullopt;
-
-  // The actual parameter type needs to involve a type variable, otherwise
-  // type inference won't be possible.
-  if (!paramTy->hasTypeVariable())
+  auto result = canOpenExistentialCallArgument(callee, paramIdx, paramTy, argTy);
+  if (!result)
     return std::nullopt;
 
   // An argument expression that explicitly coerces to an existential
@@ -1517,104 +1465,7 @@ shouldOpenExistentialCallArgument(ValueDecl *callee, unsigned paramIdx,
     }
   }
 
-  OpenedExistentialAdjustments adjustments;
-
-  // The argument may be a "var" instead of a "let".
-  if (auto lv = argTy->getAs<LValueType>()) {
-    argTy = lv->getObjectType();
-    adjustments |= OpenedExistentialAdjustmentFlags::LValue;
-  }
-
-  // If the argument is inout, strip it off and we can add it back.
-  if (auto inOutArg = argTy->getAs<InOutType>()) {
-    argTy = inOutArg->getObjectType();
-    adjustments |= OpenedExistentialAdjustmentFlags::InOut;
-  }
-
-  // The argument type needs to be an existential type or metatype thereof.
-  if (!argTy->isAnyExistentialType())
-    return std::nullopt;
-
-  auto param = getParameterAt(callee, paramIdx);
-  if (!param)
-    return std::nullopt;
-
-  // If the parameter is non-generic variadic, don't open.
-  if (param->isVariadic())
-    return std::nullopt;
-
-  // Look through an inout and optional types on the formal type of the
-  // parameter.
-  auto formalParamTy = param->getInterfaceType()->getInOutObjectType()
-      ->lookThroughSingleOptionalType();
-
-  // If the argument is of an existential metatype, look through the
-  // metatype on the parameter.
-  if (argTy->is<AnyMetatypeType>()) {
-    formalParamTy = formalParamTy->getMetatypeInstanceType();
-    paramTy = paramTy->getMetatypeInstanceType();
-  }
-
-  // Look through an inout and optional types on the parameter.
-  paramTy = paramTy->getInOutObjectType()->lookThroughSingleOptionalType();
-
-  // The parameter type must be a type variable.
-  auto paramTypeVar = paramTy->getAs<TypeVariableType>();
-  if (!paramTypeVar)
-    return std::nullopt;
-
-  auto genericParam = formalParamTy->getAs<GenericTypeParamType>();
-  if (!genericParam)
-    return std::nullopt;
-
-  // Only allow opening the innermost generic parameters.
-  auto genericContext = callee->getAsGenericContext();
-  if (!genericContext || !genericContext->isGeneric())
-    return std::nullopt;
-
-  auto genericSig = callee->getInnermostDeclContext()
-      ->getGenericSignatureOfContext().getCanonicalSignature();
-  if (genericParam->getDepth() < genericSig->getMaxDepth())
-    return std::nullopt;
-
-  // If the existential argument conforms to all of protocol requirements on
-  // the formal parameter's type, don't open unless ImplicitOpenExistentials is
-  // enabled.
-
-  // If all of the conformance requirements on the formal parameter's type
-  // are self-conforming, don't open.
-  ASTContext &ctx = argTy->getASTContext();
-  if (!ctx.LangOpts.hasFeature(Feature::ImplicitOpenExistentials)) {
-    Type existentialObjectType;
-    if (auto existentialMetaTy = argTy->getAs<ExistentialMetatypeType>())
-      existentialObjectType = existentialMetaTy->getInstanceType();
-    else
-      existentialObjectType = argTy;
-    bool containsNonSelfConformance = false;
-    for (auto proto : genericSig->getRequiredProtocols(genericParam)) {
-      auto conformance = lookupExistentialConformance(
-          existentialObjectType, proto);
-      if (conformance.isInvalid()) {
-        containsNonSelfConformance = true;
-        break;
-      }
-    }
-
-    if (!containsNonSelfConformance)
-      return std::nullopt;
-  }
-
-  // Ensure that the formal parameter is only used in covariant positions,
-  // because it won't match anywhere else.
-  auto referenceInfo = findGenericParameterReferences(
-      callee, genericSig, genericParam,
-      /*treatNonResultCovarianceAsInvariant=*/false,
-      /*skipParamIdx=*/paramIdx);
-  if (referenceInfo.selfRef > TypePosition::Covariant ||
-      referenceInfo.assocTypeRef > TypePosition::Covariant)
-    return std::nullopt;
-
-  return std::make_tuple(genericParam, paramTypeVar, argTy, adjustments);
+  return result;
 }
 
 // Match the argument of a call to the parameter.
@@ -2313,6 +2164,7 @@ ConstraintSystem::matchTupleTypes(TupleType *tuple1, TupleType *tuple2,
   case ConstraintKind::ExplicitGenericArguments:
   case ConstraintKind::SameShape:
   case ConstraintKind::MaterializePackExpansion:
+  case ConstraintKind::LValueObject:
     llvm_unreachable("Bad constraint kind in matchTupleTypes()");
   }
 
@@ -2673,6 +2525,7 @@ static bool matchFunctionRepresentations(FunctionType::ExtInfo einfo1,
   case ConstraintKind::ExplicitGenericArguments:
   case ConstraintKind::SameShape:
   case ConstraintKind::MaterializePackExpansion:
+  case ConstraintKind::LValueObject:
     return true;
   }
 
@@ -3318,6 +3171,7 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
   case ConstraintKind::ExplicitGenericArguments:
   case ConstraintKind::SameShape:
   case ConstraintKind::MaterializePackExpansion:
+  case ConstraintKind::LValueObject:
     llvm_unreachable("Not a relational constraint");
   }
 
@@ -7179,6 +7033,7 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
     case ConstraintKind::ExplicitGenericArguments:
     case ConstraintKind::SameShape:
     case ConstraintKind::MaterializePackExpansion:
+    case ConstraintKind::LValueObject:
       llvm_unreachable("Not a relational constraint");
     }
   }
@@ -14152,6 +14007,80 @@ ConstraintSystem::simplifyExplicitGenericArgumentsConstraint(
   return SolutionKind::Solved;
 }
 
+ConstraintSystem::SolutionKind 
+ConstraintSystem::simplifyLValueObjectConstraint(
+    Type type1, Type type2, TypeMatchOptions flags,
+    ConstraintLocatorBuilder locator) {
+  auto lvalueTy = simplifyType(type1);
+
+  auto formUnsolved = [&]() {
+    // If we're supposed to generate constraints, do so.
+    if (flags.contains(TMF_GenerateConstraints)) {
+      auto *lvalueObject =
+          Constraint::create(*this, ConstraintKind::LValueObject,
+                             type1, type2, getConstraintLocator(locator));
+
+      addUnsolvedConstraint(lvalueObject);
+      return SolutionKind::Solved;
+    }
+
+    return SolutionKind::Unsolved;
+  };
+
+  auto isOrCanBeLValueType = [](Type type) {
+    if (auto *typeVar = type->getAs<TypeVariableType>()) {
+      return typeVar->getImpl().canBindToLValue();
+    }
+    return type->is<LValueType>();
+  };
+
+  if (lvalueTy->isPlaceholder()) {
+    if (!shouldAttemptFixes())
+      return SolutionKind::Error;
+
+    recordAnyTypeVarAsPotentialHole(type2);
+    return SolutionKind::Solved;
+  }
+
+  if (!isOrCanBeLValueType(lvalueTy)) {
+    if (!shouldAttemptFixes())
+      return SolutionKind::Error;
+
+    auto assessImpact = [&]() -> unsigned {
+      // If this is a projection of a member reference
+      // let's check whether the member is unconditionally
+      // settable, if so than it's a problem with its base.
+      if (locator.directlyAt<UnresolvedDotExpr>()) {
+        auto *memberLoc = getConstraintLocator(locator.getAnchor(),
+                                               ConstraintLocator::Member);
+        if (auto selected = findSelectedOverloadFor(memberLoc)) {
+          if (auto *storage = dyn_cast_or_null<AbstractStorageDecl>(
+                  selected->choice.getDeclOrNull())) {
+            return storage->isSettable(nullptr) ? 1 : 2;
+          }
+        }
+      }
+      return 2;
+    };
+
+    if (recordFix(
+            TreatRValueAsLValue::create(*this, getConstraintLocator(locator)),
+            assessImpact()))
+      return SolutionKind::Error;
+
+    lvalueTy = LValueType::get(lvalueTy);
+  }
+
+  if (lvalueTy->isTypeVariableOrMember())
+    return formUnsolved();
+
+  // TODO: This operation deserves its own locator just like OptionalObject.
+  addConstraint(ConstraintKind::Equal,
+                lvalueTy->castTo<LValueType>()->getObjectType(), type2,
+                getConstraintLocator(locator));
+  return SolutionKind::Solved;
+}
+
 static llvm::PointerIntPair<Type, 3, unsigned>
 getBaseTypeForPointer(TypeBase *type) {
   unsigned unwrapCount = 0;
@@ -15619,6 +15548,9 @@ ConstraintSystem::addConstraintImpl(ConstraintKind kind, Type first,
     return simplifyMaterializePackExpansionConstraint(first, second, subflags,
                                                       locator);
 
+  case ConstraintKind::LValueObject:
+    return simplifyLValueObjectConstraint(first, second, subflags, locator);
+
   case ConstraintKind::ValueMember:
   case ConstraintKind::UnresolvedValueMember:
   case ConstraintKind::ValueWitness:
@@ -16212,6 +16144,11 @@ ConstraintSystem::simplifyConstraint(const Constraint &constraint) {
 
   case ConstraintKind::MaterializePackExpansion:
     return simplifyMaterializePackExpansionConstraint(
+        constraint.getFirstType(), constraint.getSecondType(),
+        /*flags*/ std::nullopt, constraint.getLocator());
+
+  case ConstraintKind::LValueObject:
+    return simplifyLValueObjectConstraint(
         constraint.getFirstType(), constraint.getSecondType(),
         /*flags*/ std::nullopt, constraint.getLocator());
   }

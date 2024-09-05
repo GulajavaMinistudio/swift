@@ -5239,6 +5239,12 @@ private:
                                              TypeMatchOptions flags,
                                              ConstraintLocatorBuilder locator);
 
+  /// Extract the object type of the l-value type (type1) and bind it to
+  /// to type2.
+  SolutionKind simplifyLValueObjectConstraint(Type type1, Type type2,
+                                              TypeMatchOptions flags,
+                                              ConstraintLocatorBuilder locator);
+
 public: // FIXME: Public for use by static functions.
   /// Simplify a conversion constraint with a fix applied to it.
   SolutionKind simplifyFixConstraint(ConstraintFix *fix, Type type1, Type type2,
@@ -5691,13 +5697,6 @@ public:
   /// part of the constraint system.
   void forEachExpr(Expr *expr, llvm::function_ref<Expr *(Expr *)> callback);
 
-  /// Determine whether referencing the given member on the
-  /// given existential base type is supported. This is the case only if the
-  /// type of the member, spelled in the context of \p baseTy, does not contain
-  /// 'Self' or 'Self'-rooted dependent member types in non-covariant position.
-  bool isMemberAvailableOnExistential(Type baseTy,
-                                      const ValueDecl *member) const;
-
   /// Attempts to infer a capability of a key path (i.e. whether it
   /// is read-only, writable, etc.) based on the referenced members.
   ///
@@ -5954,20 +5953,6 @@ std::optional<MatchCallArgumentResult> matchCallArguments(
 /// Given an expression that is the target of argument labels (for a call,
 /// subscript, etc.), find the underlying target expression.
 Expr *getArgumentLabelTargetExpr(Expr *fn);
-
-/// Given a type that includes an existential type that has been opened to
-/// the given type variable, replace the opened type variable and its member
-/// types with their upper bounds.
-Type typeEraseOpenedExistentialReference(Type type, Type existentialBaseType,
-                                         TypeVariableType *openedTypeVar,
-                                         TypePosition outermostPosition);
-
-
-/// Given a type that includes opened existential archetypes derived from
-/// the given generic environment, replace the archetypes with their upper
-/// bounds.
-Type typeEraseOpenedArchetypesFromEnvironment(Type type,
-                                              GenericEnvironment *env);
 
 /// Returns true if a reference to a member on a given base type will apply
 /// its curried self parameter, assuming it has one.

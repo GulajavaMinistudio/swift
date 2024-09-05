@@ -587,7 +587,7 @@ public:
   /// Canonical protocol composition types are minimized only to a certain
   /// degree to preserve ABI compatibility. This routine enables performing
   /// slower, but stricter minimization at need (e.g. redeclaration checking).
-  CanType getMinimalCanonicalType(const DeclContext *useDC) const;
+  CanType getMinimalCanonicalType() const;
 
   /// Reconstitute type sugar, e.g., for array types, dictionary
   /// types, optionals, etc.
@@ -6139,7 +6139,7 @@ public:
   /// Canonical protocol composition types are minimized only to a certain
   /// degree to preserve ABI compatibility. This routine enables performing
   /// slower, but stricter minimization at need (e.g. redeclaration checking).
-  CanType getMinimalCanonicalType(const DeclContext *useDC) const;
+  CanType getMinimalCanonicalType() const;
 
   /// Retrieve the set of members composed to create this type.
   ///
@@ -6786,15 +6786,6 @@ class OpenedArchetypeType final : public LocalArchetypeType,
          LayoutConstraint layout);
 
 public:
-  /// Compute the parameter that serves as the \c Self type for an opened
-  /// archetype from the given outer generic signature.
-  ///
-  /// This type is a generic parameter one level deeper
-  /// than the deepest generic context depth.
-  static Type getSelfInterfaceTypeFromContext(GenericSignature parentSig,
-                                              ASTContext &ctx);
-
-public:
   /// Get or create an archetype that represents the opened type
   /// of an existential value.
   ///
@@ -6813,9 +6804,6 @@ public:
   ///
   /// \param existential The existential type or existential metatype to open.
   static Type getAny(Type existential);
-
-  /// Retrieve the ID number of this opened existential.
-  UUID getOpenedExistentialID() const;
 
   static bool classof(const TypeBase *T) {
     return T->getKind() == TypeKind::OpenedArchetype;

@@ -55,7 +55,6 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjCCommon.h"
-#include "clang/Basic/CharInfo.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
@@ -541,7 +540,7 @@ static void applyAvailableAttribute(Decl *decl, AvailabilityContext &info,
                                       /*Message=*/StringRef(),
                                       /*Rename=*/StringRef(),
                                       /*RenameDecl=*/nullptr,
-                                      info.getOSVersion().getLowerEndpoint(),
+                                      info.getRawMinimumVersion(),
                                       /*IntroducedRange*/SourceRange(),
                                       /*Deprecated=*/noVersion,
                                       /*DeprecatedRange*/SourceRange(),
@@ -2202,6 +2201,12 @@ namespace {
                                    MoveOnlyAttr(/*Implicit=*/true));
       }
 
+      if (Impl.SwiftContext.LangOpts.hasFeature(Feature::NonescapableTypes) &&
+          importer::hasNonEscapableAttr(decl)) {
+        result->getAttrs().add(new (Impl.SwiftContext)
+                                   NonEscapableAttr(/*Implicit=*/true));
+      }
+
       // FIXME: Figure out what to do with superclasses in C++. One possible
       // solution would be to turn them into members and add conversion
       // functions.
@@ -2798,13 +2803,13 @@ namespace {
       if (auto classDecl = dyn_cast<ClassDecl>(result)) {
         validateForeignReferenceType(decl, classDecl);
 
-        auto ctx = Impl.SwiftContext.getSwift58Availability();
-        if (!ctx.isAlwaysAvailable()) {
-          assert(ctx.getOSVersion().hasLowerEndpoint());
+        auto availability = Impl.SwiftContext.getSwift58Availability();
+        if (!availability.isAlwaysAvailable()) {
+          assert(availability.hasMinimumVersion());
           auto AvAttr = new (Impl.SwiftContext) AvailableAttr(
               SourceLoc(), SourceRange(),
               targetPlatform(Impl.SwiftContext.LangOpts), "", "",
-              /*RenameDecl=*/nullptr, ctx.getOSVersion().getLowerEndpoint(),
+              /*RenameDecl=*/nullptr, availability.getRawMinimumVersion(),
               /*IntroducedRange=*/SourceRange(), {},
               /*DeprecatedRange=*/SourceRange(), {},
               /*ObsoletedRange=*/SourceRange(),
@@ -5821,7 +5826,7 @@ namespace {
 
     return false;
   }
-}
+} // end anonymous namespace
 
 static bool conformsToProtocolInOriginalModule(NominalTypeDecl *nominal,
                                                const ProtocolDecl *proto) {
@@ -6615,9 +6620,9 @@ bool SwiftDeclConverter::existingConstructorIsWorse(
     if (!introduced.empty())
       return false;
   } else {
-    VersionRange existingIntroduced = existingAvailability.getOSVersion();
-    if (introduced != existingIntroduced.getLowerEndpoint()) {
-      return introduced < existingIntroduced.getLowerEndpoint();
+    auto existingIntroduced = existingAvailability.getRawMinimumVersion();
+    if (introduced != existingIntroduced) {
+      return introduced < existingIntroduced;
     }
   }
 
