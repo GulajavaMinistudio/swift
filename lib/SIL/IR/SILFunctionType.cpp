@@ -472,8 +472,7 @@ static CanType getAutoDiffTangentTypeForLinearMap(
   // Otherwise, the tangent type is a new generic parameter substituted for the
   // tangent type.
   auto gpIndex = substGenericParams.size();
-  auto gpType = CanGenericTypeParamType::get(/*isParameterPack*/ false,
-                                             0, gpIndex, context);
+  auto gpType = CanGenericTypeParamType::getType(0, gpIndex, context);
   substGenericParams.push_back(gpType);
   substReplacements.push_back(tanType);
   return gpType;
@@ -3351,6 +3350,25 @@ protected:
                            const clang::FunctionType *type)
     : Conventions(kind), FnType(type) {}
 
+  // Determines owned/unowned ResultConvention of the returned value based on
+  // returns_retained/returns_unretained attribute.
+  std::optional<ResultConvention>
+  getForeignReferenceTypeResultConventionWithAttributes(
+      const TypeLowering &tl, const clang::FunctionDecl *decl) const {
+    if (tl.getLoweredType().isForeignReferenceType() && decl->hasAttrs()) {
+      for (const auto *attr : decl->getAttrs()) {
+        if (const auto *swiftAttr = dyn_cast<clang::SwiftAttrAttr>(attr)) {
+          if (swiftAttr->getAttribute() == "returns_unretained") {
+            return ResultConvention::Unowned;
+          } else if (swiftAttr->getAttribute() == "returns_retained") {
+            return ResultConvention::Owned;
+          }
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
 public:
   CFunctionTypeConventions(const clang::FunctionType *type)
     : Conventions(ConventionsKind::CFunctionType), FnType(type) {}
@@ -3468,6 +3486,13 @@ public:
       return ResultConvention::Indirect;
     }
 
+    // Explicitly setting the ownership of the returned FRT if the C++
+    // global/free function has either swift_attr("returns_retained") or
+    // ("returns_unretained") attribute.
+    if (auto resultConventionOpt =
+            getForeignReferenceTypeResultConventionWithAttributes(tl, TheDecl))
+      return *resultConventionOpt;
+
     if (isCFTypedef(tl, TheDecl->getReturnType())) {
       // The CF attributes aren't represented in the type, so we need
       // to check them here.
@@ -3546,6 +3571,14 @@ public:
       // possible to make it easy for LLVM to optimize away the thunk.
       return ResultConvention::Indirect;
     }
+
+    // Explicitly setting the ownership of the returned FRT if the C++ member
+    // method has either swift_attr("returns_retained") or
+    // ("returns_unretained") attribute.
+    if (auto resultConventionOpt =
+            getForeignReferenceTypeResultConventionWithAttributes(resultTL, TheDecl))
+      return *resultConventionOpt;
+
     if (TheDecl->hasAttr<clang::CFReturnsRetainedAttr>() &&
         resultTL.getLoweredType().isForeignReferenceType()) {
       return ResultConvention::Owned;

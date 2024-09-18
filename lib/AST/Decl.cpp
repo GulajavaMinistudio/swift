@@ -1190,13 +1190,13 @@ LifetimeAnnotation Decl::getLifetimeAnnotation() const {
   return getLifetimeAnnotationFromAttributes();
 }
 
-AvailabilityContext Decl::getAvailabilityForLinkage() const {
+AvailabilityRange Decl::getAvailabilityForLinkage() const {
   ASTContext &ctx = getASTContext();
 
   // When computing availability for linkage, use the "before" version from
   // the @backDeployed attribute, if present.
   if (auto backDeployVersion = getBackDeployedBeforeOSVersion(ctx))
-    return AvailabilityContext{VersionRange::allGTE(*backDeployVersion)};
+    return AvailabilityRange{VersionRange::allGTE(*backDeployVersion)};
 
   auto containingContext =
       AvailabilityInference::annotatedAvailableRange(this, getASTContext());
@@ -1230,7 +1230,7 @@ AvailabilityContext Decl::getAvailabilityForLinkage() const {
   else if (auto *nominal = dyn_cast<NominalTypeDecl>(dc))
     return nominal->getAvailabilityForLinkage();
 
-  return AvailabilityContext::alwaysAvailable();
+  return AvailabilityRange::alwaysAvailable();
 }
 
 bool Decl::isAlwaysWeakImported() const {
@@ -1287,7 +1287,7 @@ bool Decl::isWeakImported(ModuleDecl *fromModule) const {
     return false;
 
   auto &ctx = fromModule->getASTContext();
-  auto deploymentTarget = AvailabilityContext::forDeploymentTarget(ctx);
+  auto deploymentTarget = AvailabilityRange::forDeploymentTarget(ctx);
 
   if (ctx.LangOpts.WeakLinkAtTarget)
     return !availability.isSupersetOf(deploymentTarget);
@@ -4219,18 +4219,27 @@ bool ValueDecl::isUsableFromInline() const {
 }
 
 bool ValueDecl::isInterfacePackageEffectivelyPublic() const {
-  // If a package decl has a @usableFromInline (or other inlinable)
-  // attribute, and is defined in a module built from interface, it
-  // can be referenced by another module that imports it even though
-  // the defining interface module does not have package-name (such
-  // as public or private interface); in such case, the decl is treated
-  // as public and access checks in sema are skipped.
-  // We might need to add another check here to ensure the interface
-  // was part of the same package before the package-name was removed.
-  return getFormalAccess() == AccessLevel::Package &&
-         isUsableFromInline() &&
-         getModuleContext()->getPackageName().empty() &&
-         getModuleContext()->isBuiltFromInterface();
+  // A package decl with @usableFromInline (or other inlinable
+  // attributes) is essentially public, and can be printed in
+  // public (or private) interface file without package-name;
+  // it can be referenced by another module (without package-name)
+  // importing such interface module.
+  auto isCandidate = getFormalAccess() == AccessLevel::Package &&
+                     isUsableFromInline() &&
+                     getModuleContext()->getPackageName().empty();
+  if (!isCandidate)
+    return false;
+
+  // Treat the decl as public (1) if it's contained in an interface
+  // file, e.g. when running -typecheck-module-from-interface or
+  // -compile-module-from-interface.
+  isCandidate = false;
+  if (auto srcFile = getDeclContext()->getParentSourceFile()) {
+    isCandidate = srcFile->Kind == SourceFileKind::Interface;
+  }
+  // Or (2) if the decl being referenced in a client file is defined
+  // in an interface module.
+  return isCandidate || getModuleContext()->isBuiltFromInterface();
 }
 
 bool ValueDecl::shouldHideFromEditor() const {
@@ -4512,9 +4521,9 @@ getAccessScopeForFormalAccess(const ValueDecl *VD,
     if (!pkg) {
       if (VD->isInterfacePackageEffectivelyPublic())
         return AccessScope::getPublic();
-      // Instead of reporting and failing early, return the scope of resultDC to
-      // allow continuation (should still non-zero exit later if in script mode)
-      return AccessScope(resultDC);
+
+      // If reached here, should be treated as internal.
+      return AccessScope(resultDC->getParentModule());
     } else {
       return AccessScope(pkg);
     }
@@ -5294,85 +5303,106 @@ Type TypeAliasDecl::getStructuralType() const {
 }
 
 GenericTypeParamDecl::GenericTypeParamDecl(DeclContext *dc, Identifier name,
-                                           SourceLoc nameLoc, SourceLoc eachLoc,
+                                           SourceLoc nameLoc,
+                                           SourceLoc specifierLoc,
                                            unsigned depth, unsigned index,
-                                           bool isParameterPack,
+                                           GenericTypeParamKind paramKind,
                                            bool isOpaqueType,
                                            TypeRepr *opaqueTypeRepr)
     : TypeDecl(DeclKind::GenericTypeParam, dc, name, nameLoc, {}) {
-  assert(!(eachLoc && !isParameterPack) &&
-         "'each' keyword always means type parameter pack");
+  ASSERT(!(specifierLoc &&
+         !(paramKind == GenericTypeParamKind::Pack || paramKind == GenericTypeParamKind::Value)) &&
+    "'each' or 'let' keyword imply a parameter pack or value generic parameter");
+  ASSERT(isOpaqueType || !opaqueTypeRepr);
 
   Bits.GenericTypeParamDecl.Depth = depth;
   assert(Bits.GenericTypeParamDecl.Depth == depth && "Truncation");
   Bits.GenericTypeParamDecl.Index = index;
   assert(Bits.GenericTypeParamDecl.Index == index && "Truncation");
-  Bits.GenericTypeParamDecl.ParameterPack = isParameterPack;
+  Bits.GenericTypeParamDecl.ParamKind = (uint8_t) paramKind;
   Bits.GenericTypeParamDecl.IsOpaqueType = isOpaqueType;
-  assert(isOpaqueType || !opaqueTypeRepr);
-  if (isOpaqueType)
-    *getTrailingObjects<TypeRepr *>() = opaqueTypeRepr;
-  if (isParameterPack)
-    *getTrailingObjects<SourceLoc>() = eachLoc;
 
-  auto &ctx = dc->getASTContext();
-  RecursiveTypeProperties props = RecursiveTypeProperties::HasTypeParameter;
+  if (this->isOpaqueType())
+    *getTrailingObjects<TypeRepr *>() = opaqueTypeRepr;
+
   if (this->isParameterPack())
-    props |= RecursiveTypeProperties::HasParameterPack;
-  auto type = new (ctx, AllocationArena::Permanent) GenericTypeParamType(this, props);
-  setInterfaceType(MetatypeType::get(type, ctx));
+    *getTrailingObjects<SourceLoc>() = specifierLoc;
+
+  if (this->isValue())
+    *getTrailingObjects<SourceLoc>() = specifierLoc;
 }
 
 GenericTypeParamDecl *GenericTypeParamDecl::create(
-    DeclContext *dc, Identifier name, SourceLoc nameLoc, SourceLoc eachLoc,
-    unsigned depth, unsigned index, bool isParameterPack, bool isOpaqueType,
-    TypeRepr *opaqueTypeRepr) {
+    DeclContext *dc, Identifier name, SourceLoc nameLoc, SourceLoc specifierLoc,
+    unsigned depth, unsigned index, GenericTypeParamKind paramKind,
+    bool isOpaqueType, TypeRepr *opaqueTypeRepr) {
   auto &ctx = dc->getASTContext();
-  auto allocSize = totalSizeToAlloc<TypeRepr *, SourceLoc>(
-      isOpaqueType ? 1 : 0, isParameterPack ? 1 : 0);
+
+  auto numTypeReprs = 0;
+
+  if (isOpaqueType)
+    numTypeReprs = 1;
+
+  auto numSourceLocs = 0;
+
+  if (paramKind == GenericTypeParamKind::Pack ||
+      paramKind == GenericTypeParamKind::Value)
+    numSourceLocs = 1;
+
+  auto allocSize = totalSizeToAlloc<TypeRepr *, SourceLoc>(numTypeReprs,
+                                                           numSourceLocs);
   auto mem = ctx.Allocate(allocSize, alignof(GenericTypeParamDecl));
   return new (mem)
-      GenericTypeParamDecl(dc, name, nameLoc, eachLoc, depth, index,
-                           isParameterPack, isOpaqueType, opaqueTypeRepr);
+      GenericTypeParamDecl(dc, name, nameLoc, specifierLoc, depth, index,
+                           paramKind, isOpaqueType, opaqueTypeRepr);
 }
 
 GenericTypeParamDecl *GenericTypeParamDecl::createDeserialized(
     DeclContext *dc, Identifier name, unsigned depth, unsigned index,
-    bool isParameterPack, bool isOpaqueType) {
-  return GenericTypeParamDecl::create(dc, name, SourceLoc(), SourceLoc(), depth,
-                                      index, isParameterPack, isOpaqueType,
+    GenericTypeParamKind paramKind, bool isOpaqueType) {
+  return GenericTypeParamDecl::create(dc, name, SourceLoc(), SourceLoc(),
+                                      depth, index, paramKind,
+                                      isOpaqueType,
                                       /*opaqueRepr*/ nullptr);
 }
 
 GenericTypeParamDecl *
 GenericTypeParamDecl::createParsed(DeclContext *dc, Identifier name,
-                                   SourceLoc nameLoc, SourceLoc eachLoc,
-                                   unsigned index, bool isParameterPack) {
+                                   SourceLoc nameLoc, SourceLoc specifierLoc,
+                                   unsigned index,
+                                   GenericTypeParamKind paramKind) {
   // We always create generic type parameters with an invalid depth.
   // Semantic analysis fills in the depth when it processes the generic
   // parameter list.
   return GenericTypeParamDecl::create(
-      dc, name, nameLoc, eachLoc, GenericTypeParamDecl::InvalidDepth, index,
-      isParameterPack, /*isOpaqueType*/ false, /*opaqueTypeRepr*/ nullptr);
+      dc, name, nameLoc, specifierLoc, GenericTypeParamDecl::InvalidDepth,
+      index, paramKind, /*isOpaqueType*/ false, /*opaqueTypeRepr*/ nullptr);
 }
 
 GenericTypeParamDecl *GenericTypeParamDecl::createImplicit(
     DeclContext *dc, Identifier name, unsigned depth, unsigned index,
-    bool isParameterPack, bool isOpaqueType, TypeRepr *opaqueTypeRepr,
-    SourceLoc nameLoc, SourceLoc eachLoc) {
-  auto *param = GenericTypeParamDecl::create(dc, name, nameLoc, eachLoc, depth,
-                                             index, isParameterPack,
-                                             isOpaqueType, opaqueTypeRepr);
+    GenericTypeParamKind paramKind, TypeRepr *opaqueTypeRepr, SourceLoc nameLoc,
+    SourceLoc specifierLoc) {
+  auto *param = GenericTypeParamDecl::create(dc, name, nameLoc, specifierLoc,
+                                             depth, index, paramKind,
+                                             (bool)opaqueTypeRepr,
+                                             opaqueTypeRepr);
   param->setImplicit();
   return param;
+}
+
+Type GenericTypeParamDecl::getValueType() const {
+  return evaluateOrDefault(getASTContext().evaluator,
+    GenericTypeParamDeclGetValueTypeRequest{const_cast<GenericTypeParamDecl *>(this)},
+    Type());
 }
 
 SourceRange GenericTypeParamDecl::getSourceRange() const {
   auto startLoc = getNameLoc();
   auto endLoc = getNameLoc();
 
-  if (const auto eachLoc = getEachLoc())
-    startLoc = eachLoc;
+  if (const auto specifierLoc = getSpecifierLoc())
+    startLoc = specifierLoc;
 
   if (!getInherited().empty())
     endLoc = getInherited().getEndLoc();
@@ -7236,8 +7266,14 @@ VarDecl::mutability(const DeclContext *UseDC,
   // declaration.  To handle top-level code properly, we look through
   // the TopLevelCode decl on the use (if present) since the vardecl may be
   // one level up.
-  if (getDeclContext() == UseDC)
+  if (getDeclContext() == UseDC) {
+    // Treat values of tuple type as mutable in these contexts, because
+    // SILGen wants to see them as lvalues.
+    if (getInterfaceType()->is<TupleType>())
+      return StorageMutability::Mutable;
+
     return StorageMutability::Initializable;
+  }
 
   if (isa<TopLevelCodeDecl>(UseDC) &&
       getDeclContext() == UseDC->getParent())

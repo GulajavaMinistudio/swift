@@ -24,6 +24,7 @@
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/ExtInfo.h"
 #include "swift/AST/GenericParamKey.h"
+#include "swift/AST/GenericTypeParamKind.h"
 #include "swift/AST/Identifier.h"
 #include "swift/AST/KnownProtocols.h"
 #include "swift/AST/Ownership.h"
@@ -33,6 +34,7 @@
 #include "swift/AST/TypeAlignments.h"
 #include "swift/AST/TypeExpansionContext.h"
 #include "swift/Basic/ArrayRefView.h"
+#include "swift/Basic/Assertions.h"
 #include "swift/Basic/Debug.h"
 #include "swift/Basic/InlineBitfield.h"
 #include "swift/Basic/UUID.h"
@@ -360,6 +362,8 @@ enum class TypeMatchFlags {
   IgnoreFunctionSendability = 1 << 6,
   /// Ignore `any Sendable` and compositions with Sendable protocol.
   IgnoreSendability = 1 << 7,
+  /// Ignore global actor isolation attributes on functions when matching types.
+  IgnoreFunctionGlobalActorIsolation = 1 << 8,
 };
 using TypeMatchOptions = OptionSet<TypeMatchFlags>;
 
@@ -530,6 +534,11 @@ protected:
     HasSubstitutionMap : 1
   );
 
+  SWIFT_INLINE_BITFIELD_FULL(IntegerType, TypeBase, 1,
+    /// Whether there is a prefix '-' before this type.
+    IsNegative : 1
+  );
+
   } Bits;
   // clang-format on
 
@@ -553,6 +562,13 @@ protected:
            "type variables must be solver allocated!");
     Bits.TypeBase.Properties = properties.getBits();
     assert(Bits.TypeBase.Properties == properties.getBits() && "Bits dropped!");
+  }
+
+  /// This is used when constructing GenericTypeParamTypes.
+  void setCanonicalType(CanType type) {
+    DEBUG_ASSERT(!Bits.TypeBase.IsCanonical);
+    DEBUG_ASSERT(CanonicalType.isNull());
+    CanonicalType = type;
   }
 
 public:
@@ -825,6 +841,13 @@ public:
   /// can only be a GenericTypeParamType.
   bool isRootParameterPack();
 
+  /// Determine whether this type is a value parameter 'let N: Int', which is a
+  /// GenericTypeParamType.
+  ///
+  /// Like \c isTypeParameter, this routine will return \c false for types that
+  /// include value parameters in nested positions e.g. \c X<T...>.
+  bool isValueParameter();
+
   /// Determine whether this type can dynamically be an optional type.
   ///
   /// \param includeExistential Whether an existential type should be considered
@@ -894,6 +917,9 @@ public:
 
   /// Whether this type represents a generic constraint.
   bool isConstraintType() const;
+
+  /// Whether this type is one of the set of types legal for variable generics.
+  bool isLegalValueGenericType();
 
   /// isExistentialType - Determines whether this type is an existential type,
   /// whose real (runtime) type is unknown but which is known to conform to
@@ -6517,6 +6543,7 @@ protected:
   size_t numTrailingObjects(OverloadToken<LayoutConstraint>) const {
     return Bits.ArchetypeType.HasLayoutConstraint ? 1 : 0;
   }
+
   Type InterfaceType;
   GenericEnvironment *Environment = nullptr;
 
@@ -6531,6 +6558,14 @@ protected:
   }
 
 public:
+  /// Compute the recursive type properties for an archtype, merging the
+  /// given properties with those derived from the other arguments.
+  static RecursiveTypeProperties archetypeProperties(
+      RecursiveTypeProperties properties,
+      ArrayRef<ProtocolDecl *> conformsTo,
+      Type superclass,
+      SubstitutionMap subs);
+
   /// Retrieve the name of this archetype.
   Identifier getName() const;
 
@@ -6555,11 +6590,7 @@ public:
   bool requiresClass() const;
 
   /// Retrieve the superclass of this type, if such a requirement exists.
-  Type getSuperclass() const {
-    if (!Bits.ArchetypeType.HasSuperclass) return Type();
-
-    return *getSubclassTrailingObjects<Type>();
-  }
+  Type getSuperclass() const;
 
   /// Retrieve the layout constraint of this type, if such a requirement exists.
   LayoutConstraint getLayoutConstraint() const {
@@ -6567,6 +6598,10 @@ public:
 
     return *getSubclassTrailingObjects<LayoutConstraint>();
   }
+
+  /// Retrieve the value type of this generic parameter, if such a requirement
+  /// exists.
+  Type getValueType() const;
 
   /// Retrieve the nested type with the given associated type.
   Type getNestedType(AssociatedTypeDecl *assocType);
@@ -6916,27 +6951,78 @@ const Type *ArchetypeType::getSubclassTrailingObjects() const {
   }
   llvm_unreachable("unhandled ArchetypeType subclass?");
 }
-  
+
 /// Describes the type of a generic parameter.
 ///
 /// \sa GenericTypeParamDecl
-class GenericTypeParamType : public SubstitutableType {
-  static constexpr unsigned TYPE_SEQUENCE_BIT = (1 << 30);
+class GenericTypeParamType : public SubstitutableType,
+                             public llvm::FoldingSetNode {
+  /// A canonical generic parameter type is given by a depth, index, parameter
+  /// kind, and an optional value type. A sugared generic parameter type stores
+  /// a declaration or an identifier.
+  union {
+    GenericTypeParamDecl *Decl;
+    Identifier Name;
+  };
 
-  using DepthIndexTy = llvm::PointerEmbeddedInt<unsigned, 31>;
+  unsigned Depth : 15;
+  unsigned IsDecl : 1;
+  unsigned Index : 16;
 
-  /// The generic type parameter or depth/index.
-  llvm::PointerUnion<GenericTypeParamDecl *, DepthIndexTy> ParamOrDepthIndex;
+  /// The kind of generic type parameter this is.
+  GenericTypeParamKind ParamKind;
+
+  /// If this type represents a value generic, 'let N', then this is the value
+  /// type relating to this type.
+  ///
+  /// Note: This is not set when the sugared form is used where the decl is
+  /// stored.
+  Type ValueType;
 
 public:
-  /// Retrieve a generic type parameter at the given depth and index.
-  static GenericTypeParamType *get(bool isParameterPack, unsigned depth,
-                                   unsigned index, const ASTContext &ctx);
+  /// Retrieve a sugared generic type parameter type.
+  ///
+  /// Note: This should only be called by the InterfaceTypeRequest.
+  static GenericTypeParamType *get(GenericTypeParamDecl *decl);
+
+  /// Retrieve a sugared generic type parameter at the given depth and index.
+  static GenericTypeParamType *get(Identifier name,
+                                   GenericTypeParamKind paramKind,
+                                   unsigned depth, unsigned index,
+                                   Type valueType, const ASTContext &ctx);
+
+  /// Retrieve a canonical generic type parameter with the given kind, depth,
+  /// index, and optional value type.
+  static GenericTypeParamType *get(GenericTypeParamKind paramKind,
+                                   unsigned depth, unsigned index,
+                                   Type valueType, const ASTContext &ctx);
+
+  /// Retrieve a canonical generic type parameter at the given depth and index.
+  static GenericTypeParamType *getType(unsigned depth, unsigned index,
+                                       const ASTContext &ctx);
+
+  /// Retrieve a canonical generic parameter pack at the given depth and index.
+  static GenericTypeParamType *getPack(unsigned depth, unsigned index,
+                                       const ASTContext &ctx);
+
+  /// Retrieve a canonical generic value parameter at the given depth and index
+  /// with the given value type.
+  static GenericTypeParamType *getValue(unsigned depth, unsigned index,
+                                        Type valueType, const ASTContext &ctx);
+
+  /// If this is an opaque parameter, return the declaration of the
+  /// parameter, otherwise null.
+  GenericTypeParamDecl *getOpaqueDecl() const;
 
   /// Retrieve the declaration of the generic type parameter, or null if
   /// there is no such declaration.
   GenericTypeParamDecl *getDecl() const {
-    return ParamOrDepthIndex.dyn_cast<GenericTypeParamDecl *>();
+    return (IsDecl ? Decl : nullptr);
+  }
+
+  /// Retrieve the kind of generic type parameter this type is referencing.
+  GenericTypeParamKind getParamKind() const {
+    return ParamKind;
   }
 
   /// Get the name of the generic type parameter.
@@ -6952,7 +7038,9 @@ public:
   /// \endcode
   ///
   /// Here 'T' has depth 0 and 'U' has depth 1. Both have index 0.
-  unsigned getDepth() const;
+  unsigned getDepth() const {
+    return Depth;
+  }
 
   /// The index of this generic type parameter within its generic parameter
   /// list.
@@ -6964,7 +7052,9 @@ public:
   /// \endcode
   ///
   /// Here 'T' and 'U' have indexes 0 and 1, respectively. 'V' has index 0.
-  unsigned getIndex() const;
+  unsigned getIndex() const {
+    return Index;
+  }
 
   /// Returns \c true if this type parameter is declared as a pack.
   ///
@@ -6972,7 +7062,38 @@ public:
   /// func foo<T...>() { }
   /// struct Foo<T...> { }
   /// \endcode
-  bool isParameterPack() const;
+  bool isParameterPack() const {
+    return ParamKind == GenericTypeParamKind::Pack;
+  }
+
+  /// Returns \c true if this type parameter is declared as a value.
+  ///
+  /// \code
+  /// struct Vector<Element, let N: Int>
+  /// \endcode
+  bool isValue() const {
+    return ParamKind == GenericTypeParamKind::Value;
+  }
+
+  Type getValueType() const;
+
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    // Note: We explicitly don't use 'getName()' because for canonical forms
+    // which don't store an identifier we'll go create a tau based form. We
+    // really want to just plumb down the null Identifier because that's what's
+    // inside the cache.
+    Profile(ID, getParamKind(), getDepth(), getIndex(), getValueType(),
+            Name);
+  }
+  static void Profile(llvm::FoldingSetNodeID &ID,
+                      GenericTypeParamKind paramKind, unsigned depth,
+                      unsigned index, Type valueType, Identifier name) {
+    ID.AddInteger((uint8_t)paramKind);
+    ID.AddInteger(depth);
+    ID.AddInteger(index);
+    ID.AddPointer(valueType.getPointer());
+    ID.AddPointer(name.get());
+  }
 
   // Implement isa/cast/dyncast/etc.
   static bool classof(const TypeBase *T) {
@@ -6983,22 +7104,24 @@ private:
   friend class GenericTypeParamDecl;
 
   explicit GenericTypeParamType(GenericTypeParamDecl *param,
-                                RecursiveTypeProperties props)
-    : SubstitutableType(TypeKind::GenericTypeParam, nullptr, props),
-      ParamOrDepthIndex(param) { }
+                                RecursiveTypeProperties props);
 
-  explicit GenericTypeParamType(bool isParameterPack, unsigned depth,
-                                unsigned index, RecursiveTypeProperties props,
-                                const ASTContext &ctx)
-      : SubstitutableType(TypeKind::GenericTypeParam, &ctx, props),
-        ParamOrDepthIndex(depth << 16 | index |
-                          ((isParameterPack ? 1 : 0) << 30)) {}
+  /// Note: We have no way to recover an ASTContext from an Identifier, so the
+  /// initialization of an identifier-sugared generic parameter type receives
+  /// the canonical type.
+  explicit GenericTypeParamType(Identifier name, GenericTypeParamType *canType,
+                                const ASTContext &ctx);
+
+  explicit GenericTypeParamType(GenericTypeParamKind paramKind, unsigned depth,
+                                unsigned index, Type valueType,
+                                RecursiveTypeProperties props,
+                                const ASTContext &ctx);
 };
 BEGIN_CAN_TYPE_WRAPPER(GenericTypeParamType, SubstitutableType)
-static CanGenericTypeParamType get(bool isParameterPack, unsigned depth,
-                                   unsigned index, const ASTContext &C) {
+static CanGenericTypeParamType getType(unsigned depth, unsigned index,
+                                       const ASTContext &C) {
   return CanGenericTypeParamType(
-      GenericTypeParamType::get(isParameterPack, depth, index, C));
+      GenericTypeParamType::getType(depth, index, C));
 }
 END_CAN_TYPE_WRAPPER(GenericTypeParamType, SubstitutableType)
 
@@ -7526,6 +7649,57 @@ BEGIN_CAN_TYPE_WRAPPER(PackElementType, Type)
   }
 END_CAN_TYPE_WRAPPER(PackElementType, Type)
 
+/// Represents an integer literal used in a type position.
+///
+/// Consider the following example:
+///
+/// \code
+/// struct T<let N: Int> {}
+/// T<123>
+/// \encode
+///
+/// 'T' is a BoundGenericStructType with an IntegerType generic argument with
+/// the value '123'.
+class IntegerType final : public TypeBase, public llvm::FoldingSetNode {
+  friend class ASTContext;
+
+  StringRef Value;
+
+  IntegerType(StringRef value, bool isNegative, const ASTContext &ctx) :
+      TypeBase(TypeKind::Integer, &ctx, RecursiveTypeProperties()),
+      Value(value) {
+    Bits.IntegerType.IsNegative = isNegative;
+  }
+
+public:
+  static IntegerType *get(StringRef value, bool isNegative,
+                          const ASTContext &ctx);
+
+  APInt getValue() const;
+
+  StringRef getDigitsText() const {
+    return Value;
+  }
+
+  bool isNegative() const {
+    return Bits.IntegerType.IsNegative;
+  }
+
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    Profile(ID, getDigitsText(), isNegative());
+  }
+  static void Profile(llvm::FoldingSetNodeID &ID, StringRef value,
+                      bool isNegative) {
+    ID.AddString(value);
+    ID.AddInteger(isNegative);
+  }
+
+  static bool classof(const TypeBase *T) {
+    return T->getKind() == TypeKind::Integer;
+  }
+};
+DEFINE_EMPTY_CAN_TYPE_WRAPPER(IntegerType, Type)
+
 /// getASTContext - Return the ASTContext that this type belongs to.
 inline ASTContext &TypeBase::getASTContext() const {
   // If this type is canonical, it has the ASTContext in it.
@@ -7582,6 +7756,10 @@ inline bool CanType::isConstraintTypeImpl(CanType type) {
   return (isa<ProtocolType>(type) ||
           isa<ProtocolCompositionType>(type) ||
           isa<ParameterizedProtocolType>(type));
+}
+
+inline bool TypeBase::isLegalValueGenericType() {
+  return isInt();
 }
 
 inline bool TypeBase::isExistentialType() {

@@ -531,7 +531,7 @@ static void printSILFunctionNameAndType(
 
       // Opaque parameter types are printed as their canonical types and not
       // the unparseable "<anonymous>".
-      if (sugaredTy->getDecl() && sugaredTy->getDecl()->isOpaqueType())
+      if (sugaredTy->getOpaqueDecl())
         continue;
 
       Identifier name = sugaredTy->getName();
@@ -2568,6 +2568,10 @@ public:
     *this << getIDAndType(RI->getOperand());
   }
 
+  void visitTypeValueInst(TypeValueInst *tvi) {
+    *this << tvi->getType() << " for " << tvi->getParamType();
+  }
+
   void visitEndLifetimeInst(EndLifetimeInst *ELI) {
     *this << getIDAndType(ELI->getOperand());
   }
@@ -4587,7 +4591,6 @@ PrintOptions PrintOptions::printSIL(const SILPrintContext *ctx) {
   result.PrintForSIL = true;
   result.PrintInSILBody = true;
   result.PreferTypeRepr = false;
-  result.PrintIfConfig = false;
   result.OpaqueReturnTypePrinting =
      OpaqueReturnTypePrintingMode::StableReference;
   if (ctx && ctx->printFullConvention())

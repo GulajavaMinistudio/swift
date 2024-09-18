@@ -1386,9 +1386,9 @@ void swift::diagnoseMissingExplicitSendable(NominalTypeDecl *nominal) {
       // based on the requirements harvested from instance storage.
 
       // Form the where clause containing all of the requirements.
-      std::string whereClause;
+      SmallString<64> whereClause;
       {
-        llvm::raw_string_ostream out(whereClause);
+        llvm::raw_svector_ostream out(whereClause);
         llvm::interleaveComma(
             requirements, out,
             [&](const Requirement &req) {
@@ -1504,10 +1504,11 @@ void swift::tryDiagnoseExecutorConformance(ASTContext &C,
     canRemoveOldDecls = true;
   } else {
     // Check if the availability of nominal is high enough to be using the ExecutorJob version
-    AvailabilityContext requirementInfo
-        = AvailabilityInference::availableRange(moveOnlyEnqueueRequirement, C);
-    AvailabilityContext declInfo =
-        TypeChecker::overApproximateAvailabilityAtLocation(nominal->getLoc(), dyn_cast<DeclContext>(nominal));
+    AvailabilityRange requirementInfo =
+        AvailabilityInference::availableRange(moveOnlyEnqueueRequirement, C);
+    AvailabilityRange declInfo =
+        TypeChecker::overApproximateAvailabilityAtLocation(
+            nominal->getLoc(), dyn_cast<DeclContext>(nominal));
     canRemoveOldDecls = declInfo.isContainedIn(requirementInfo);
   }
 
@@ -2887,25 +2888,28 @@ namespace {
       assert(applyStack.size() > 0 && "not contained within an Apply?");
 
       const auto End = applyStack.rend();
-      for (auto I = applyStack.rbegin(); I != End; ++I)
-        if (auto call = dyn_cast<CallExpr>(I->dyn_cast<ApplyExpr *>())) {
-          if (setAsync) {
-            call->setImplicitlyAsync(*setAsync);
-          }
-          if (setThrows) {
-            call->setImplicitlyThrows(true);
-          }else {
-            call->setImplicitlyThrows(false);
-          }
-          if (setDistributedThunk) {
-            call->setShouldApplyDistributedThunk(true);
-          }
-          return;
+      for (auto I = applyStack.rbegin(); I != End; ++I) {
+        auto *apply = I->dyn_cast<ApplyExpr *>();
+        if (!apply || isa<SelfApplyExpr>(apply)) {
+          continue;
         }
-      llvm_unreachable("expected a CallExpr in applyStack!");
-    }
 
-    bool shouldWalkCaptureInitializerExpressions() override { return true; }
+        if (setAsync) {
+          apply->setImplicitlyAsync(*setAsync);
+        }
+        if (setThrows) {
+          apply->setImplicitlyThrows(true);
+        } else {
+          apply->setImplicitlyThrows(false);
+        }
+        if (setDistributedThunk) {
+          apply->setShouldApplyDistributedThunk(true);
+        }
+        return;
+      }
+
+      llvm_unreachable("expected an ApplyExpr in applyStack!");
+    }
 
     MacroWalking getMacroWalkingBehavior() const override {
       return MacroWalking::Expansion;

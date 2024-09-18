@@ -588,6 +588,17 @@ static void checkGenericParams(GenericContext *ownerCtx) {
       hasPack = true;
     }
 
+    if (gp->isValue()) {
+      // Value generic nominal types require runtime support.
+      if (isa<NominalTypeDecl>(decl)) {
+        TypeChecker::checkAvailability(
+          gp->getSourceRange(),
+          ownerCtx->getASTContext().getValueGenericTypeAvailability(),
+          diag::availability_value_generic_type_only_version_newer,
+          ownerCtx);
+      }
+    }
+
     TypeChecker::checkDeclAttributes(gp);
     checkInheritanceClause(gp);
   }
@@ -2393,10 +2404,13 @@ public:
         InFlightDiagnostic inFlight =
             Ctx.Diags.diagnose(ID, diag::error_public_import_of_private_module,
                                target->getName(), importer->getName());
-        if (ID->getAttrs().isEmpty()) {
-           inFlight.fixItInsert(ID->getStartLoc(),
-                              "@_implementationOnly ");
-        }
+        if (auto attr = ID->getAttrs().getAttribute<AccessControlAttr>()) {
+          if (Ctx.LangOpts.hasFeature(Feature::InternalImportsByDefault))
+            inFlight.fixItRemove(attr->getLocation());
+          else
+            inFlight.fixItReplace(attr->getLocation(), "internal");
+        } else
+          inFlight.fixItInsert(ID->getStartLoc(), "internal ");
 
 #ifndef NDEBUG
         static bool enableTreatAsError = true;
@@ -2760,7 +2774,18 @@ public:
         // Properties with an opaque return type need an initializer to
         // determine their underlying type.
         if (var->getOpaqueResultTypeDecl()) {
-          var->diagnose(diag::opaque_type_var_no_init);
+          // ...but don't enforce this for SIL or module interface files.
+          switch (SF->Kind) {
+          case SourceFileKind::Interface:
+          case SourceFileKind::SIL:
+            break;
+          case SourceFileKind::DefaultArgument:
+          case SourceFileKind::Main:
+          case SourceFileKind::Library:
+          case SourceFileKind::MacroExpansion:
+            var->diagnose(diag::opaque_type_var_no_init);
+            break;
+          }
         }
 
         // Non-member observing properties need an initializer.
@@ -4292,11 +4317,8 @@ void TypeChecker::checkParameterList(ParameterList *params,
               if (!genericParam)
                 return false;
 
-              auto genericParamDecl = genericParam->getDecl();
+              auto genericParamDecl = genericParam->getOpaqueDecl();
               if (!genericParamDecl)
-                return false;
-
-              if (!genericParamDecl->isOpaqueType())
                 return false;
 
               param->diagnose(

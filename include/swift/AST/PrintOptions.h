@@ -387,6 +387,9 @@ struct PrintOptions {
   /// Replace BitwiseCopyable with _BitwiseCopyable.
   bool SuppressBitwiseCopyable = false;
 
+  /// Suppress ~Escapable types and lifetime dependence annotations
+  bool SuppressNonEscapableTypes = false;
+
   /// List of attribute kinds that should not be printed.
   std::vector<AnyAttrKind> ExcludeAttrList = {
       DeclAttrKind::Transparent, DeclAttrKind::Effects,
@@ -438,9 +441,6 @@ struct PrintOptions {
 
   /// Print all decls that have at least this level of access.
   AccessLevel AccessFilter = AccessLevel::Private;
-
-  /// Print IfConfigDecls.
-  bool PrintIfConfig = true;
 
   /// Whether we are printing for sil.
   bool PrintForSIL = false;
@@ -661,7 +661,6 @@ struct PrintOptions {
     result.ExcludeAttrList.push_back(DeclAttrKind::Rethrows);
     result.PrintOverrideKeyword = false;
     result.AccessFilter = accessFilter;
-    result.PrintIfConfig = false;
     result.ShouldQualifyNestedDeclarations =
         QualifyNestedDeclarations::TypesOnly;
     result.PrintDocumentationComments = false;

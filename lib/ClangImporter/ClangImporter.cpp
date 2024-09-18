@@ -749,10 +749,24 @@ void importer::getNormalInvocationArguments(
   invocationArgStrs.push_back("-fapinotes-modules");
   invocationArgStrs.push_back("-fapinotes-swift-version=" +
                               languageVersion.asAPINotesVersionString());
-  invocationArgStrs.push_back("-iapinotes-modules");
-  invocationArgStrs.push_back((llvm::Twine(searchPathOpts.RuntimeResourcePath) +
-                               llvm::sys::path::get_separator() +
-                               "apinotes").str());
+
+  // Prefer `-sdk` paths.
+  if (!searchPathOpts.getSDKPath().empty()) {
+    llvm::SmallString<261> path{searchPathOpts.getSDKPath()};
+    llvm::sys::path::append(path, "usr", "lib", "swift", "apinotes");
+
+    invocationArgStrs.push_back("-iapinotes-modules");
+    invocationArgStrs.push_back(path.str().str());
+  }
+
+  // Fallback to "legacy" `-resource-dir` paths.
+  {
+    llvm::SmallString<261> path{searchPathOpts.RuntimeResourcePath};
+    llvm::sys::path::append(path, "apinotes");
+
+    invocationArgStrs.push_back("-iapinotes-modules");
+    invocationArgStrs.push_back(path.str().str());
+  }
 }
 
 static void
@@ -2767,6 +2781,9 @@ ClangModuleUnit *ClangImporter::Implementation::getWrapperForModule(
   wrapper->setIsSystemModule(underlying->IsSystem);
   wrapper->setIsNonSwiftModule();
   wrapper->setHasResolvedImports();
+  if (!underlying->ExportAsModule.empty())
+    wrapper->setExportAsName(
+        SwiftContext.getIdentifier(underlying->ExportAsModule));
 
   auto file = new (SwiftContext) ClangModuleUnit(*wrapper, *this,
                                                  underlying);
@@ -7799,17 +7816,22 @@ CustomRefCountingOperationResult CustomRefCountingOperation::evaluate(
   if (!decl->hasAttrs())
     return {CustomRefCountingOperationResult::noAttribute, nullptr, ""};
 
-  auto retainFnAttr =
-      llvm::find_if(decl->getAttrs(), [&operationStr](auto *attr) {
-        if (auto swiftAttr = dyn_cast<clang::SwiftAttrAttr>(attr))
-          return swiftAttr->getAttribute().starts_with(operationStr);
-        return false;
-      });
-  if (retainFnAttr == decl->getAttrs().end()) {
-    return {CustomRefCountingOperationResult::noAttribute, nullptr, ""};
+  llvm::SmallVector<const clang::SwiftAttrAttr *, 1> retainReleaseAttrs;
+  for (auto *attr : decl->getAttrs()) {
+    if (auto swiftAttr = llvm::dyn_cast<clang::SwiftAttrAttr>(attr)) {
+      if (swiftAttr->getAttribute().starts_with(operationStr)) {
+        retainReleaseAttrs.push_back(swiftAttr);
+      }
+    }
   }
 
-  auto name = cast<clang::SwiftAttrAttr>(*retainFnAttr)
+  if (retainReleaseAttrs.empty()) {
+    return {CustomRefCountingOperationResult::noAttribute, nullptr, ""};
+  } else if (retainReleaseAttrs.size() > 1) {
+    return {CustomRefCountingOperationResult::tooManyAttributes, nullptr, ""};
+  }
+
+  auto name = retainReleaseAttrs.front()
                   ->getAttribute()
                   .drop_front(StringRef(operationStr).size())
                   .str();
