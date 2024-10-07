@@ -368,10 +368,9 @@ ModuleAliases("module-alias",
             llvm::cl::cat(Category));
 
 static llvm::cl::opt<bool>
-SkipDeinit("skip-deinit",
-           llvm::cl::desc("Whether to skip printing destructors"),
-           llvm::cl::cat(Category),
-           llvm::cl::init(true));
+    SkipDeinit("skip-deinit",
+               llvm::cl::desc("Whether to skip printing destructors"),
+               llvm::cl::cat(Category), llvm::cl::init(false));
 
 static llvm::cl::opt<bool>
 SkipImports("skip-imports",
@@ -1229,9 +1228,9 @@ static int printConformingMethodList(
           llvm::outs() << " []";
         llvm::outs() << "\n";
         for (auto VD : Result->Members) {
-          auto funcTy = cast<FuncDecl>(VD)->getMethodInterfaceType();
-          funcTy = Result->ExprType->getTypeOfMember(VD, funcTy);
-          auto resultTy = funcTy->castTo<FunctionType>()->getResult();
+          auto resultTy = cast<FuncDecl>(VD)->getResultInterfaceType();
+          resultTy = resultTy.subst(
+                Result->ExprType->getMemberSubstitutionMap(VD));
 
           llvm::outs() << "   - Name: ";
           VD->getName().print(llvm::outs());
@@ -3425,8 +3424,14 @@ public:
       case AccessorKind::Read:
         OS << "<read accessor for ";
         break;
+      case AccessorKind::Read2:
+        OS << "<read2 accessor for ";
+        break;
       case AccessorKind::Modify:
         OS << "<modify accessor for ";
+        break;
+      case AccessorKind::Modify2:
+        OS << "<modify2 accessor for ";
         break;
       case AccessorKind::Init:
         OS << "init accessor for ";

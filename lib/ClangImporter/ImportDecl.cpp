@@ -37,6 +37,7 @@
 #include "swift/AST/PrettyStackTrace.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/Stmt.h"
+#include "swift/AST/Type.h"
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/AST/Types.h"
 #include "swift/Basic/Assertions.h"
@@ -2614,6 +2615,11 @@ namespace {
         Impl.diagnose(loc,
                       diag::foreign_reference_types_cannot_find_retain_release,
                       false, retainOperation.name, decl->getNameAsString());
+        if (!Impl.SwiftContext.LangOpts
+                 .DisableExperimentalClangImporterDiagnostics) {
+          Impl.diagnoseTopLevelValue(
+              DeclName(Impl.SwiftContext.getIdentifier(retainOperation.name)));
+        }
       } else if (retainOperation.kind ==
                  CustomRefCountingOperationResult::tooManyFound) {
         HeaderLoc loc(decl->getLocation());
@@ -2673,7 +2679,12 @@ namespace {
         Impl.diagnose(loc,
                       diag::foreign_reference_types_cannot_find_retain_release,
                       true, releaseOperation.name, decl->getNameAsString());
-      } else if (releaseOperation.kind ==
+        if (!Impl.SwiftContext.LangOpts
+                 .DisableExperimentalClangImporterDiagnostics) {
+          Impl.diagnoseTopLevelValue(
+              DeclName(Impl.SwiftContext.getIdentifier(releaseOperation.name)));
+        }
+      }else if (releaseOperation.kind ==
                  CustomRefCountingOperationResult::tooManyFound) {
         HeaderLoc loc(decl->getLocation());
         Impl.diagnose(loc,
@@ -3879,7 +3890,7 @@ namespace {
                 ? IndexSubset::get(Impl.SwiftContext,
                                    scopedLifetimeParamIndicesForReturn)
                 : nullptr,
-            swiftParams->size(),
+            swiftParams->size() + hasSelf,
             /*isImmortal*/ false));
       else if (auto *ctordecl = dyn_cast<clang::CXXConstructorDecl>(decl)) {
         // Assume default constructed view types have no dependencies.
@@ -5498,6 +5509,22 @@ namespace {
       result->setHasMissingVTableEntries(false);
       result->setMemberLoader(&Impl, 0);
 
+      // GetDestructorRequest does not trigger lazy member loading
+      // And typechecking may ask for destructor before member loading is
+      // triggered. Create deinit explicitly
+      auto deallocII = &clangCtx.Idents.get("dealloc");
+      auto deallocSelector = clangCtx.Selectors.getNullarySelector(deallocII);
+      auto deallocName = clang::DeclarationName(deallocSelector);
+      for (auto nd : decl->lookup(deallocName)) {
+        if (auto deallocDecl = dyn_cast<clang::ObjCMethodDecl>(nd)) {
+          if (deallocDecl->isInstanceMethod()) {
+            auto loc = Impl.importSourceLoc(deallocDecl->getLocation());
+            auto dtor = Impl.createDeclWithClangNode<DestructorDecl>(
+                deallocDecl, access, loc, result);
+            result->addMember(dtor);
+          }
+        }
+      }
       return result;
     }
 
@@ -8154,6 +8181,20 @@ bool swift::importer::isMutabilityAttr(const clang::SwiftAttrAttr *swiftAttr) {
          swiftAttr->getAttribute() == "nonmutating";
 }
 
+static bool importAsUnsafe(ASTContext &context, const clang::RecordDecl *decl,
+                           const Decl *MappedDecl) {
+  if (!context.LangOpts.hasFeature(Feature::SafeInterop) ||
+      !context.LangOpts.hasFeature(Feature::AllowUnsafeAttribute) || !decl)
+    return false;
+
+  if (isa<ClassDecl>(MappedDecl))
+    return false;
+
+  return evaluateOrDefault(
+             context.evaluator, ClangTypeEscapability({decl->getTypeForDecl()}),
+             CxxEscapability::Unknown) == CxxEscapability::Unknown;
+}
+
 void
 ClangImporter::Implementation::importSwiftAttrAttributes(Decl *MappedDecl) {
   auto ClangDecl =
@@ -8178,6 +8219,7 @@ ClangImporter::Implementation::importSwiftAttrAttributes(Decl *MappedDecl) {
     //
     // __attribute__((swift_attr("attribute")))
     //
+    bool seenUnsafe = false;
     for (auto swiftAttr : ClangDecl->specific_attrs<clang::SwiftAttrAttr>()) {
       // FIXME: Hard-code @MainActor and @UIActor, because we don't have a
       // point at which to do name lookup for imported entities.
@@ -8287,8 +8329,7 @@ ClangImporter::Implementation::importSwiftAttrAttributes(Decl *MappedDecl) {
       if (swiftAttr->getAttribute() == "unsafe") {
         if (!SwiftContext.LangOpts.hasFeature(Feature::AllowUnsafeAttribute))
           continue;
-        auto attr = new (SwiftContext) UnsafeAttr(/*implicit=*/false);
-        MappedDecl->getAttrs().add(attr);
+        seenUnsafe = true;
         continue;
       }
 
@@ -8331,6 +8372,13 @@ ClangImporter::Implementation::importSwiftAttrAttributes(Decl *MappedDecl) {
         diagnose(attrLoc, diag::clang_swift_attr_unhandled,
                  swiftAttr->getAttribute());
       }
+    }
+
+    if (seenUnsafe ||
+        importAsUnsafe(SwiftContext, dyn_cast<clang::RecordDecl>(ClangDecl),
+                       MappedDecl)) {
+      auto attr = new (SwiftContext) UnsafeAttr(/*implicit=*/!seenUnsafe);
+      MappedDecl->getAttrs().add(attr);
     }
   };
   importAttrsFromDecl(ClangDecl);

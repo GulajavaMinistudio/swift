@@ -32,9 +32,9 @@
 #include "swift/Basic/OptionSet.h"
 #include "swift/Sema/CSBindings.h"
 #include "swift/Sema/CSFix.h"
+#include "swift/Sema/CSTrail.h"
 #include "swift/Sema/Constraint.h"
 #include "swift/Sema/ConstraintGraph.h"
-#include "swift/Sema/ConstraintGraphScope.h"
 #include "swift/Sema/ConstraintLocator.h"
 #include "swift/Sema/OverloadChoice.h"
 #include "swift/Sema/SolutionResult.h"
@@ -63,8 +63,6 @@ enum class TypeCheckExprFlags;
 
 namespace constraints {
 
-class ConstraintGraph;
-class ConstraintGraphNode;
 class ConstraintSystem;
 class SyntacticElementTarget;
 
@@ -200,28 +198,6 @@ enum class TrailingClosureMatching {
   /// Match a trailing closure to the last parameter.
   Backward,
 };
-
-/// A handle that holds the saved state of a type variable, which
-/// can be restored.
-class SavedTypeVariableBinding {
-  /// The type variable that we saved the state of.
-  TypeVariableType *TypeVar;
-
-  /// The saved type variable options.
-  unsigned Options;
-
-  /// The parent or fixed type.
-  llvm::PointerUnion<TypeVariableType *, TypeBase *> ParentOrFixed;
-
-public:
-  explicit SavedTypeVariableBinding(TypeVariableType *typeVar);
-
-  /// Restore the state of the type variable to the saved state.
-  void restore();
-};
-
-/// A set of saved type variable bindings.
-using SavedTypeVariableBindings = SmallVector<SavedTypeVariableBinding, 16>;
 
 class ConstraintLocator;
 
@@ -370,7 +346,7 @@ class TypeVariableType::Implementation {
   ///  constraint graph.
   unsigned GraphIndex;
 
-  friend class constraints::SavedTypeVariableBinding;
+  friend class constraints::SolverTrail;
 
 public:
   /// Retrieve the type variable associated with this implementation.
@@ -458,8 +434,9 @@ public:
   }
 
   /// Record the current type-variable binding.
-  void recordBinding(constraints::SavedTypeVariableBindings &record) {
-    record.push_back(constraints::SavedTypeVariableBinding(getTypeVariable()));
+  void recordBinding(constraints::SolverTrail &trail) {
+    trail.recordChange(constraints::SolverTrail::Change::updatedTypeVariable(
+        getTypeVariable(), ParentOrFixed, getRawOptions()));
   }
 
   /// Retrieve the locator describing where this type variable was
@@ -526,11 +503,11 @@ public:
   /// Retrieve the representative of the equivalence class to which this
   /// type variable belongs.
   ///
-  /// \param record The record of changes made by retrieving the representative,
+  /// \param trail The record of changes made by retrieving the representative,
   /// which can happen due to path compression. If null, path compression is
   /// not performed.
   TypeVariableType *
-  getRepresentative(constraints::SavedTypeVariableBindings *record) {
+  getRepresentative(constraints::SolverTrail *trail) {
     // Find the representative type variable.
     auto result = getTypeVariable();
     Implementation *impl = this;
@@ -544,7 +521,7 @@ public:
       impl = &nextTV->getImpl();
     }
 
-    if (impl == this || !record)
+    if (impl == this || !trail || trail->isUndoActive())
       return result;
 
     // Perform path compression.
@@ -556,7 +533,7 @@ public:
         break;
 
       // Record the state change.
-      impl->recordBinding(*record);
+      impl->recordBinding(*trail);
 
       impl->ParentOrFixed = result;
       impl = &nextTV->getImpl();
@@ -570,36 +547,36 @@ public:
   ///
   /// \param other The type variable to merge with.
   ///
-  /// \param record The record of state changes.
+  /// \param trail The record of state changes.
   void mergeEquivalenceClasses(TypeVariableType *other,
-                               constraints::SavedTypeVariableBindings *record) {
+                               constraints::SolverTrail *trail) {
     // Merge the equivalence classes corresponding to these two type
     // variables. Always merge 'up' the constraint stack, because it is simpler.
     if (getID() > other->getImpl().getID()) {
-      other->getImpl().mergeEquivalenceClasses(getTypeVariable(), record);
+      other->getImpl().mergeEquivalenceClasses(getTypeVariable(), trail);
       return;
     }
 
-    auto otherRep = other->getImpl().getRepresentative(record);
-    if (record)
-      otherRep->getImpl().recordBinding(*record);
+    auto otherRep = other->getImpl().getRepresentative(trail);
+    if (trail)
+      otherRep->getImpl().recordBinding(*trail);
     otherRep->getImpl().ParentOrFixed = getTypeVariable();
 
     if (canBindToLValue() && !otherRep->getImpl().canBindToLValue()) {
-      if (record)
-        recordBinding(*record);
+      if (trail)
+        recordBinding(*trail);
       getTypeVariable()->Bits.TypeVariableType.Options &= ~TVO_CanBindToLValue;
     }
 
     if (canBindToInOut() && !otherRep->getImpl().canBindToInOut()) {
-      if (record)
-        recordBinding(*record);
+      if (trail)
+        recordBinding(*trail);
       getTypeVariable()->Bits.TypeVariableType.Options &= ~TVO_CanBindToInOut;
     }
 
     if (canBindToNoEscape() && !otherRep->getImpl().canBindToNoEscape()) {
-      if (record)
-        recordBinding(*record);
+      if (trail)
+        recordBinding(*trail);
       getTypeVariable()->Bits.TypeVariableType.Options &= ~TVO_CanBindToNoEscape;
     }
   }
@@ -610,12 +587,12 @@ public:
   /// \returns the fixed type associated with this type variable, or a null
   /// type if there is no fixed type.
   ///
-  /// \param record The record of changes made by retrieving the representative,
+  /// \param trail The record of changes made by retrieving the representative,
   /// which can happen due to path compression. If null, path compression is
   /// not performed.
-  Type getFixedType(constraints::SavedTypeVariableBindings *record) {
+  Type getFixedType(constraints::SolverTrail *trail) {
     // Find the representative type variable.
-    auto rep = getRepresentative(record);
+    auto rep = getRepresentative(trail);
     Implementation &repImpl = rep->getImpl();
 
     // Return the bound type if there is one, otherwise, null.
@@ -624,20 +601,21 @@ public:
 
   /// Assign a fixed type to this equivalence class.
   void assignFixedType(Type type,
-                       constraints::SavedTypeVariableBindings *record) {
-    assert((!getFixedType(0) || getFixedType(0)->isEqual(type)) &&
+                       constraints::SolverTrail *trail) {
+    assert((!getFixedType(nullptr) ||
+            getFixedType(nullptr)->isEqual(type)) &&
            "Already has a fixed type!");
-    auto rep = getRepresentative(record);
-    if (record)
-      rep->getImpl().recordBinding(*record);
+    auto rep = getRepresentative(trail);
+    if (trail)
+      rep->getImpl().recordBinding(*trail);
     rep->getImpl().ParentOrFixed = type.getPointer();
   }
 
-  void setCanBindToLValue(constraints::SavedTypeVariableBindings *record,
+  void setCanBindToLValue(constraints::SolverTrail *trail,
                           bool enabled) {
-    auto &impl = getRepresentative(record)->getImpl();
-    if (record)
-      impl.recordBinding(*record);
+    auto &impl = getRepresentative(trail)->getImpl();
+    if (trail)
+      impl.recordBinding(*trail);
 
     if (enabled)
       impl.getTypeVariable()->Bits.TypeVariableType.Options |=
@@ -647,11 +625,11 @@ public:
           ~TVO_CanBindToLValue;
   }
 
-  void setCanBindToNoEscape(constraints::SavedTypeVariableBindings *record,
+  void setCanBindToNoEscape(constraints::SolverTrail *trail,
                             bool enabled) {
-    auto &impl = getRepresentative(record)->getImpl();
-    if (record)
-      impl.recordBinding(*record);
+    auto &impl = getRepresentative(trail)->getImpl();
+    if (trail)
+      impl.recordBinding(*trail);
 
     if (enabled)
       impl.getTypeVariable()->Bits.TypeVariableType.Options |=
@@ -661,10 +639,10 @@ public:
           ~TVO_CanBindToNoEscape;
   }
 
-  void enableCanBindToHole(constraints::SavedTypeVariableBindings *record) {
-    auto &impl = getRepresentative(record)->getImpl();
-    if (record)
-      impl.recordBinding(*record);
+  void enableCanBindToHole(constraints::SolverTrail *trail) {
+    auto &impl = getRepresentative(trail)->getImpl();
+    if (trail)
+      impl.recordBinding(*trail);
 
     impl.getTypeVariable()->Bits.TypeVariableType.Options |= TVO_CanBindToHole;
   }
@@ -1529,6 +1507,11 @@ public:
   /// to make the solution work.
   std::vector<ConstraintFix *> Fixes;
 
+  /// The list of fixed requirements.
+  using FixedRequirement =
+      std::tuple<GenericTypeParamType *, unsigned, TypeBase *>;
+  std::vector<FixedRequirement> FixedRequirements;
+
   /// Maps expressions for implied results (e.g implicit 'then' statements,
   /// implicit 'return' statements in single expression body closures) to their
   /// result kind.
@@ -1536,12 +1519,16 @@ public:
 
   /// For locators associated with call expressions, the trailing closure
   /// matching rule and parameter bindings that were applied.
-  llvm::MapVector<ConstraintLocator *, MatchCallArgumentResult>
+  llvm::DenseMap<ConstraintLocator *, MatchCallArgumentResult>
       argumentMatchingChoices;
 
   /// The set of disjunction choices used to arrive at this solution,
   /// which informs constraint application.
   llvm::DenseMap<ConstraintLocator *, unsigned> DisjunctionChoices;
+
+  /// A map from applied disjunction constraints to the corresponding
+  /// argument function type.
+  llvm::DenseMap<ConstraintLocator *, FunctionType *> AppliedDisjunctions;
 
   /// The set of opened types for a given locator.
   llvm::DenseMap<ConstraintLocator *, ArrayRef<OpenedType>> OpenedTypes;
@@ -1559,12 +1546,8 @@ public:
       PackExpansionEnvironments;
 
   /// The pack expansion environment that can open a given pack element.
-  llvm::MapVector<PackElementExpr *, PackExpansionExpr *>
+  llvm::DenseMap<PackElementExpr *, PackExpansionExpr *>
       PackEnvironments;
-
-  /// The outer pack element generic environment to use when dealing with nested
-  /// pack iteration (see \c getPackElementEnvironment).
-  llvm::SmallVector<GenericEnvironment *> PackElementGenericEnvironments;
 
   /// The locators of \c Defaultable constraints whose defaults were used.
   llvm::DenseSet<ConstraintLocator *> DefaultedConstraints;
@@ -2160,6 +2143,7 @@ public:
   friend class RequirementFailure;
   friend class MissingMemberFailure;
   friend struct ClosureIsolatedByPreconcurrency;
+  friend class SolverTrail;
 
   class SolverScope;
 
@@ -2336,7 +2320,7 @@ private:
   /// there are multiple ways in which one type could convert to another, e.g.,
   /// given class types A and B, the solver might choose either a superclass
   /// conversion or a user-defined conversion.
-  llvm::MapVector<std::pair<TypeBase *, TypeBase *>, ConversionRestrictionKind>
+  llvm::DenseMap<std::pair<TypeBase *, TypeBase *>, ConversionRestrictionKind>
       ConstraintRestrictions;
 
   /// The set of fixes applied to make the solution work.
@@ -2344,16 +2328,16 @@ private:
 
   /// The set of remembered disjunction choices used to reach
   /// the current constraint system.
-  llvm::MapVector<ConstraintLocator *, unsigned> DisjunctionChoices;
+  llvm::SmallDenseMap<ConstraintLocator *, unsigned, 4> DisjunctionChoices;
 
   /// A map from applied disjunction constraints to the corresponding
   /// argument function type.
-  llvm::SmallMapVector<ConstraintLocator *, const FunctionType *, 4>
+  llvm::SmallDenseMap<ConstraintLocator *, FunctionType *, 4>
       AppliedDisjunctions;
 
   /// For locators associated with call expressions, the trailing closure
   /// matching rule and parameter bindings that were applied.
-  llvm::MapVector<ConstraintLocator *, MatchCallArgumentResult>
+  llvm::DenseMap<ConstraintLocator *, MatchCallArgumentResult>
       argumentMatchingChoices;
 
   /// The set of implicit value conversions performed by the solver on
@@ -2374,7 +2358,7 @@ private:
 
   /// A mapping from constraint locators to the set of opened types associated
   /// with that locator.
-  llvm::SmallMapVector<ConstraintLocator *, ArrayRef<OpenedType>, 4>
+  llvm::SmallDenseMap<ConstraintLocator *, ArrayRef<OpenedType>, 4>
       OpenedTypes;
 
   /// A dictionary of all conformances that have been looked up by the solver.
@@ -2385,24 +2369,34 @@ private:
   /// solver path.
   using FixedRequirement =
       std::tuple<GenericTypeParamType *, unsigned, TypeBase *>;
-  llvm::SmallSetVector<FixedRequirement, 4> FixedRequirements;
+  llvm::DenseSet<FixedRequirement> FixedRequirements;
 
   bool isFixedRequirement(ConstraintLocator *reqLocator, Type requirementTy);
+
+  /// Add a fixed requirement and record a change to the trail.
   void recordFixedRequirement(ConstraintLocator *reqLocator,
                               Type requirementTy);
 
+  /// Primitive form used when applying solution.
+  void recordFixedRequirement(GenericTypeParamType *paramTy,
+                              unsigned reqKind, Type reqTy);
+
+  /// Called to undo the above change.
+  void removeFixedRequirement(GenericTypeParamType *paramTy,
+                              unsigned reqKind, Type reqTy);
+
   /// A mapping from constraint locators to the opened existential archetype
   /// used for the 'self' of an existential type.
-  llvm::SmallMapVector<ConstraintLocator *, OpenedArchetypeType *, 4>
+  llvm::SmallDenseMap<ConstraintLocator *, OpenedArchetypeType *, 4>
       OpenedExistentialTypes;
 
-  llvm::SmallMapVector<PackExpansionType *, TypeVariableType *, 4>
+  llvm::SmallDenseMap<PackExpansionType *, TypeVariableType *, 4>
       OpenedPackExpansionTypes;
 
-  llvm::SmallMapVector<ConstraintLocator *, std::pair<UUID, Type>, 4>
+  llvm::SmallDenseMap<ConstraintLocator *, std::pair<UUID, Type>, 4>
       PackExpansionEnvironments;
 
-  llvm::SmallMapVector<PackElementExpr *, PackExpansionExpr *, 2>
+  llvm::SmallDenseMap<PackElementExpr *, PackExpansionExpr *, 2>
       PackEnvironments;
 
   llvm::SmallVector<GenericEnvironment *, 4> PackElementGenericEnvironments;
@@ -2418,10 +2412,25 @@ private:
 
 public:
   /// A map from argument expressions to their applied property wrapper expressions.
-  llvm::SmallMapVector<ASTNode, SmallVector<AppliedPropertyWrapper, 2>, 4> appliedPropertyWrappers;
+  llvm::SmallMapVector<ASTNode, SmallVector<AppliedPropertyWrapper, 2>, 4>
+      appliedPropertyWrappers;
 
   /// The locators of \c Defaultable constraints whose defaults were used.
-  llvm::SetVector<ConstraintLocator *> DefaultedConstraints;
+  llvm::DenseSet<ConstraintLocator *> DefaultedConstraints;
+
+  void recordDefaultedConstraint(ConstraintLocator *locator) {
+    bool inserted = DefaultedConstraints.insert(locator).second;
+    if (inserted) {
+      if (isRecordingChanges()) {
+        recordChange(SolverTrail::Change::recordedDefaultedConstraint(locator));
+      }
+    }
+  }
+
+  void removeDefaultedConstraint(ConstraintLocator *locator) {
+    bool erased = DefaultedConstraints.erase(locator);
+    ASSERT(erased);
+  }
 
   /// A cache that stores the @dynamicCallable required methods implemented by
   /// types.
@@ -2529,9 +2538,9 @@ private:
     /// Whether to record failures or not.
     bool recordFixes = false;
 
-    /// The set of type variable bindings that have changed while
-    /// processing this constraint system.
-    SavedTypeVariableBindings savedBindings;
+    /// A log of changes to the constraint system, representing the
+    /// current path being explored in the solution space.
+    SolverTrail Trail;
 
      /// The best solution computed so far.
     std::optional<Score> BestScore;
@@ -2816,6 +2825,14 @@ public:
   /// we're exploring.
   SolverState *solverState = nullptr;
 
+  bool isRecordingChanges() const {
+    return solverState && !solverState->Trail.isUndoActive();
+  }
+
+  void recordChange(SolverTrail::Change change) {
+    solverState->Trail.recordChange(change);
+  }
+
   /// Form a locator that can be used to retrieve argument information cached in
   /// the constraint system for the callee described by the anchor of the
   /// passed locator.
@@ -2869,47 +2886,13 @@ public:
     /// The length of \c TypeVariables.
     unsigned numTypeVariables;
 
-    /// The length of \c SavedBindings.
-    unsigned numSavedBindings;
-
-    /// The length of \c ConstraintRestrictions.
-    unsigned numConstraintRestrictions;
+    /// The length of \c Trail.
+    unsigned numTrailChanges;
 
     /// The length of \c Fixes.
+    ///
+    /// FIXME: Remove this.
     unsigned numFixes;
-
-    /// The length of \c FixedRequirements.
-    unsigned numFixedRequirements;
-
-    /// The length of \c DisjunctionChoices.
-    unsigned numDisjunctionChoices;
-
-    /// The length of \c AppliedDisjunctions.
-    unsigned numAppliedDisjunctions;
-
-    /// The length of \c argumentMatchingChoices.
-    unsigned numArgumentMatchingChoices;
-
-    /// The length of \c OpenedTypes.
-    unsigned numOpenedTypes;
-
-    /// The length of \c OpenedExistentialTypes.
-    unsigned numOpenedExistentialTypes;
-
-    /// The length of \c OpenedPackExpansionsTypes.
-    unsigned numOpenedPackExpansionTypes;
-
-    /// The length of \c PackExpansionEnvironments.
-    unsigned numPackExpansionEnvironments;
-
-    /// The length of \c PackEnvironments.
-    unsigned numPackEnvironments;
-
-    /// The length of \c PackElementGenericEnvironments.
-    unsigned numPackElementGenericEnvironments;
-
-    /// The length of \c DefaultedConstraints.
-    unsigned numDefaultedConstraints;
 
     unsigned numAddedNodeTypes;
 
@@ -2974,9 +2957,6 @@ public:
 
     /// The scope number of this scope. Set when the scope is registered.
     unsigned scopeNumber = 0;
-
-    /// Constraint graph scope associated with this solver scope.
-    ConstraintGraphScope CGScope;
 
     SolverScope(const SolverScope &) = delete;
     SolverScope &operator=(const SolverScope &) = delete;
@@ -3065,18 +3045,11 @@ private:
     }
   }
 
-  /// Restore the type variable bindings to what they were before
-  /// we attempted to solve this constraint system.
-  ///
-  /// \param numBindings The number of bindings to restore, from the end of
-  /// the saved-binding stack.
-  void restoreTypeVariableBindings(unsigned numBindings);
-
   /// Retrieve the set of saved type variable bindings, if available.
   ///
   /// \returns null when we aren't currently solving the system.
-  SavedTypeVariableBindings *getSavedBindings() const {
-    return solverState ? &solverState->savedBindings : nullptr;
+  SolverTrail *getTrail() const {
+    return solverState ? &solverState->Trail : nullptr;
   }
 
   /// Add a new type variable that was already created.
@@ -3476,16 +3449,43 @@ public:
   std::pair<Type, OpenedArchetypeType *> openExistentialType(
       Type type, ConstraintLocator *locator);
 
+  /// Update OpenedExistentials and record a change in the trail.
+  void recordOpenedExistentialType(ConstraintLocator *locator,
+                                   OpenedArchetypeType *opened);
+
+  /// Undo the above change.
+  void removeOpenedExistentialType(ConstraintLocator *locator) {
+    bool erased = OpenedExistentialTypes.erase(locator);
+    ASSERT(erased);
+  }
+
   /// Get the opened element generic environment for the given locator.
   GenericEnvironment *getPackElementEnvironment(ConstraintLocator *locator,
                                                 CanType shapeClass);
 
+  /// Update PackExpansionEnvironments and record a change in the trail.
+  void recordPackExpansionEnvironment(ConstraintLocator *locator,
+                                      std::pair<UUID, Type> uuidAndShape);
+
+  /// Undo the above change.
+  void removePackExpansionEnvironment(ConstraintLocator *locator) {
+    bool erased = PackExpansionEnvironments.erase(locator);
+    ASSERT(erased);
+  }
+
   /// Get the opened element generic environment for the given pack element.
   PackExpansionExpr *getPackEnvironment(PackElementExpr *packElement) const;
 
-  /// Associate an opened element generic environment to a pack element.
+  /// Associate an opened element generic environment to a pack element,
+  /// and record a change in the trail.
   void addPackEnvironment(PackElementExpr *packElement,
                           PackExpansionExpr *packExpansion);
+
+  /// Undo the above change.
+  void removePackEnvironment(PackElementExpr *packElement) {
+    bool erased = PackEnvironments.erase(packElement);
+    ASSERT(erased);
+  }
 
   /// Retrieve the constraint locator for the given anchor and
   /// path, uniqued and automatically infer the summary flags
@@ -3651,8 +3651,15 @@ public:
   /// \param type The type on which to holeify.
   void recordTypeVariablesAsHoles(Type type);
 
+  /// Add a MatchCallArgumentResult and record the change in the trail.
   void recordMatchCallArgumentResult(ConstraintLocator *locator,
                                      MatchCallArgumentResult result);
+
+  /// Undo the above change.
+  void removeMatchCallArgumentResult(ConstraintLocator *locator) {
+    bool erased = argumentMatchingChoices.erase(locator);
+    ASSERT(erased);
+  }
 
   /// Record implicitly generated `callAsFunction` with root at the
   /// given expression, located at \c locator.
@@ -4083,7 +4090,7 @@ public:
   /// Retrieve the representative of the equivalence class containing
   /// this type variable.
   TypeVariableType *getRepresentative(TypeVariableType *typeVar) const {
-    return typeVar->getImpl().getRepresentative(getSavedBindings());
+    return typeVar->getImpl().getRepresentative(getTrail());
   }
 
   /// Find if the given type variable is representative for a type
@@ -4146,7 +4153,7 @@ public:
   /// Retrieve the fixed type corresponding to the given type variable,
   /// or a null type if there is no fixed type.
   Type getFixedType(TypeVariableType *typeVar) const {
-    return typeVar->getImpl().getFixedType(getSavedBindings());
+    return typeVar->getImpl().getFixedType(getTrail());
   }
 
   /// Retrieve the fixed type corresponding to a given type variable,
@@ -4242,6 +4249,19 @@ public:
                        bool updateState = true,
                        bool notifyBindingInference = true);
 
+  /// Update ConstraintRestrictions and record a change in the trail.
+  void addConversionRestriction(Type srcType, Type dstType,
+                                ConversionRestrictionKind restriction);
+
+  /// Called to undo the above change.
+  void removeConversionRestriction(Type srcType, Type dstType);
+
+  /// Update Fixes and record a change in the trail.
+  void addFix(ConstraintFix *fix);
+
+  /// Called to undo the above change.
+  void removeFix(ConstraintFix *fix);
+
   /// Determine whether the given type is a dictionary and, if so, provide the
   /// key and value types for the dictionary.
   static std::optional<std::pair<Type, Type>> isDictionaryType(Type type);
@@ -4328,6 +4348,16 @@ private:
                              OpenedTypeMap &replacements,
                              ConstraintLocatorBuilder locator);
 
+  /// Update OpenedPackExpansionTypes and record a change in the trail.
+  void recordOpenedPackExpansionType(PackExpansionType *expansion,
+                                     TypeVariableType *expansionVar);
+
+  /// Undo the above change.
+  void removeOpenedPackExpansionType(PackExpansionType *expansion) {
+    bool erased = OpenedPackExpansionTypes.erase(expansion);
+    ASSERT(erased);
+  }
+
 public:
   /// Recurse over the given type and open any opaque archetype types.
   Type openOpaqueType(Type type, ContextualTypePurpose context,
@@ -4389,6 +4419,13 @@ public:
                               bool skipProtocolSelfConstraint,
                               ConstraintLocatorBuilder locator,
                               llvm::function_ref<Type(Type)> subst);
+
+  /// Update OpenedTypes and record a change in the trail.
+  void recordOpenedType(
+      ConstraintLocator *locator, ArrayRef<OpenedType> openedTypes);
+
+  /// Undo the above change.
+  void removeOpenedType(ConstraintLocator *locator);
 
   /// Record the set of opened types for the given locator.
   void recordOpenedTypes(
@@ -5318,13 +5355,23 @@ private:
   /// Collect the current inactive disjunction constraints.
   void collectDisjunctions(SmallVectorImpl<Constraint *> &disjunctions);
 
-  /// Record a particular disjunction choice of
-  void recordDisjunctionChoice(ConstraintLocator *disjunctionLocator,
-                               unsigned index) {
-    // We shouldn't ever register disjunction choices multiple times.
-    assert(!DisjunctionChoices.count(disjunctionLocator) ||
-           DisjunctionChoices[disjunctionLocator] == index);
-    DisjunctionChoices.insert({disjunctionLocator, index});
+  /// Record a particular disjunction choice and add a change to the trail.
+  void recordDisjunctionChoice(ConstraintLocator *locator, unsigned index);
+
+  /// Undo the above change.
+  void removeDisjunctionChoice(ConstraintLocator *locator) {
+    bool erased = DisjunctionChoices.erase(locator);
+    ASSERT(erased);
+  }
+
+  /// Record applied disjunction and add a change to the trail.
+  void recordAppliedDisjunction(ConstraintLocator *locator,
+                                FunctionType *type);
+
+  /// Undo the above change.
+  void removeAppliedDisjunction(ConstraintLocator *locator) {
+    bool erased = AppliedDisjunctions.erase(locator);
+    ASSERT(erased);
   }
 
   /// Filter the set of disjunction terms, keeping only those where the
@@ -5630,9 +5677,12 @@ public:
 
   // If the given constraint is an applied disjunction, get the argument function
   // that the disjunction is applied to.
-  const FunctionType *getAppliedDisjunctionArgumentFunction(const Constraint *disjunction) {
+  FunctionType *getAppliedDisjunctionArgumentFunction(const Constraint *disjunction) {
     assert(disjunction->getKind() == ConstraintKind::Disjunction);
-    return AppliedDisjunctions[disjunction->getLocator()];
+    auto found = AppliedDisjunctions.find(disjunction->getLocator());
+    if (found == AppliedDisjunctions.end())
+      return nullptr;
+    return found->second;
   }
 
   /// The overload sets that have already been resolved along the current path.
@@ -6534,7 +6584,8 @@ ForcedCheckedCastExpr *findForcedDowncast(ASTContext &ctx, Expr *expr);
 /// can I add `consume` around this expression?
 ///
 /// \param module represents the module in which the expr appears
-bool canAddExplicitConsume(ModuleDecl *module, Expr *expr);
+bool canAddExplicitConsume(constraints::Solution &sol,
+                           ModuleDecl *module, Expr *expr);
 
 // Count the number of overload sets present
 // in the expression and all of the children.

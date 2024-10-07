@@ -52,7 +52,9 @@
 #include "swift/Strings.h"
 #include "swift/Subsystems.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/Mangle.h"
+#include "clang/AST/Type.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileEntry.h"
 #include "clang/Basic/IdentifierTable.h"
@@ -1197,7 +1199,7 @@ std::optional<std::vector<std::string>> ClangImporter::getClangCC1Arguments(
       llvm::interleave(
           invocationArgs, [](StringRef arg) { llvm::errs() << arg; },
           [] { llvm::errs() << "' '"; });
-      llvm::errs() << "'\n";
+      llvm::errs() << "'\n\n";
     }
 
     clang::CreateInvocationOptions CIOpts;
@@ -1275,7 +1277,8 @@ std::unique_ptr<clang::CompilerInvocation> ClangImporter::createClangInvocation(
 std::unique_ptr<ClangImporter>
 ClangImporter::create(ASTContext &ctx,
                       std::string swiftPCHHash, DependencyTracker *tracker,
-                      DWARFImporterDelegate *dwarfImporterDelegate) {
+                      DWARFImporterDelegate *dwarfImporterDelegate,
+                      bool ignoreFileMapping) {
   std::unique_ptr<ClangImporter> importer{
       new ClangImporter(ctx, tracker, dwarfImporterDelegate)};
   auto &importerOpts = ctx.ClangImporterOpts;
@@ -1296,17 +1299,32 @@ ClangImporter::create(ASTContext &ctx,
   llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS =
       ctx.SourceMgr.getFileSystem();
 
-  auto fileMapping = getClangInvocationFileMapping(ctx);
+  ClangInvocationFileMapping fileMapping =
+    getClangInvocationFileMapping(ctx, nullptr, ignoreFileMapping);
+
   // Avoid creating indirect file system when using include tree.
   if (!ctx.ClangImporterOpts.HasClangIncludeTreeRoot) {
     // Wrap Swift's FS to allow Clang to override the working directory
     VFS = llvm::vfs::RedirectingFileSystem::create(
         fileMapping.redirectedFiles, true, *ctx.SourceMgr.getFileSystem());
+    if (importerOpts.DumpClangDiagnostics) {
+      llvm::errs() << "clang importer redirected file mappings:\n";
+      for (const auto &mapping : fileMapping.redirectedFiles) {
+        llvm::errs() << "   mapping real file '" << mapping.second
+                     << "' to virtual file '" << mapping.first << "'\n";
+      }
+      llvm::errs() << "\n";
+    }
 
     if (!fileMapping.overridenFiles.empty()) {
       llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> overridenVFS =
           new llvm::vfs::InMemoryFileSystem();
       for (const auto &file : fileMapping.overridenFiles) {
+        if (importerOpts.DumpClangDiagnostics) {
+          llvm::errs() << "clang importer overriding file '" << file.first
+                       << "' with the following contents:\n";
+          llvm::errs() << file.second << "\n";
+        }
         auto contents = ctx.Allocate<char>(file.second.size() + 1);
         std::copy(file.second.begin(), file.second.end(), contents.begin());
         // null terminate the buffer.
@@ -5018,6 +5036,74 @@ TinyPtrVector<ValueDecl *> CXXNamespaceMemberLookup::evaluate(
   return result;
 }
 
+CxxEscapability
+ClangTypeEscapability::evaluate(Evaluator &evaluator,
+                                EscapabilityLookupDescriptor desc) const {
+  auto desugared = desc.type->getUnqualifiedDesugaredType();
+  if (const auto *recordType = desugared->getAs<clang::RecordType>()) {
+    if (importer::hasNonEscapableAttr(recordType->getDecl()))
+      return CxxEscapability::NonEscapable;
+    if (importer::hasEscapableAttr(recordType->getDecl()))
+      return CxxEscapability::Escapable;
+    auto recordDecl = recordType->getDecl();
+    auto cxxRecordDecl = dyn_cast<clang::CXXRecordDecl>(recordDecl);
+    if (!cxxRecordDecl || cxxRecordDecl->isAggregate()) {
+      bool hadUnknown = false;
+      auto evaluateEscapability = [&](const clang::Type *type) {
+        auto escapability = evaluateOrDefault(
+            evaluator, ClangTypeEscapability({type}), CxxEscapability::Unknown);
+        if (escapability == CxxEscapability::Unknown)
+          hadUnknown = true;
+        return escapability;
+      };
+
+      if (cxxRecordDecl) {
+        for (auto base : cxxRecordDecl->bases()) {
+          auto baseEscapability = evaluateEscapability(
+              base.getType()->getUnqualifiedDesugaredType());
+          if (baseEscapability == CxxEscapability::NonEscapable)
+            return CxxEscapability::NonEscapable;
+        }
+      }
+
+      for (auto field : recordDecl->fields()) {
+        auto fieldEscapability = evaluateEscapability(
+            field->getType()->getUnqualifiedDesugaredType());
+        if (fieldEscapability == CxxEscapability::NonEscapable)
+          return CxxEscapability::NonEscapable;
+      }
+
+      return hadUnknown ? CxxEscapability::Unknown : CxxEscapability::Escapable;
+    }
+  }
+  if (desugared->isArrayType()) {
+    auto elemTy = cast<clang::ArrayType>(desugared)
+                      ->getElementType()
+                      ->getUnqualifiedDesugaredType();
+    return evaluateOrDefault(evaluator, ClangTypeEscapability({elemTy}),
+                             CxxEscapability::Unknown);
+  }
+
+  // Base cases
+  if (desugared->isAnyPointerType() || desugared->isBlockPointerType() ||
+      desugared->isMemberPointerType() || desugared->isReferenceType())
+    return CxxEscapability::NonEscapable;
+  if (desugared->isScalarType())
+    return CxxEscapability::Escapable;
+  return CxxEscapability::Unknown;
+}
+
+void swift::simple_display(llvm::raw_ostream &out,
+                           EscapabilityLookupDescriptor desc) {
+  out << "Computing escapability for type '";
+  out << clang::QualType(desc.type, 0).getAsString();
+  out << "'";
+}
+
+SourceLoc swift::extractNearestSourceLoc(EscapabilityLookupDescriptor) {
+  return SourceLoc();
+}
+
 // Just create a specialized function decl for "__swift_interopStaticCast"
 // using the types base and derived.
 static
@@ -7389,6 +7475,10 @@ static bool hasNonCopyableAttr(const clang::RecordDecl *decl) {
 
 bool importer::hasNonEscapableAttr(const clang::RecordDecl *decl) {
   return hasSwiftAttribute(decl, "~Escapable");
+}
+
+bool importer::hasEscapableAttr(const clang::RecordDecl *decl) {
+  return hasSwiftAttribute(decl, "Escapable");
 }
 
 /// Recursively checks that there are no pointers in any fields or base classes.
