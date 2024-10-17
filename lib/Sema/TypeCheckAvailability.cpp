@@ -690,7 +690,7 @@ private:
 
     // Declarations with an explicit availability attribute always get a TRC.
     AvailabilityRange DeclaredAvailability =
-        swift::AvailabilityInference::availableRange(D, Context);
+        swift::AvailabilityInference::availableRange(D);
     if (!DeclaredAvailability.isAlwaysAvailable()) {
       return TypeRefinementContext::createForDecl(
           Context, D, getCurrentTRC(),
@@ -782,10 +782,12 @@ private:
     // it.
     assert(D->getSourceRange().isValid());
 
+    auto &Context = D->getASTContext();
+    SourceRange Range;
     if (auto *storageDecl = dyn_cast<AbstractStorageDecl>(D)) {
       // Use the declaration's availability for the context when checking
       // the bodies of its accessors.
-      SourceRange Range = storageDecl->getSourceRange();
+      Range = storageDecl->getSourceRange();
 
       // HACK: For synthesized trivial accessors we may have not a valid
       // location for the end of the braces, so in that case we will fall back
@@ -797,11 +799,12 @@ private:
       if (BracesRange.isValid()) {
         Range.widen(BracesRange);
       }
-
-      return Range;
+    } else {
+      Range = D->getSourceRangeIncludingAttrs();
     }
 
-    return D->getSourceRangeIncludingAttrs();
+    Range.End = Lexer::getLocForEndOfToken(Context.SourceMgr, Range.End);
+    return Range;
   }
 
   // Creates an implicit decl TRC specifying the deployment
@@ -827,7 +830,7 @@ private:
       if (auto bodyStmt = tlcd->getBody()) {
         pushDeclBodyContext(
             tlcd, {{bodyStmt, createImplicitDeclContextForDeploymentTarget(
-                                  tlcd, tlcd->getSourceRange())}});
+                                  tlcd, refinementSourceRangeForDecl(tlcd))}});
       }
       return;
     }
@@ -1431,7 +1434,7 @@ AvailabilityRange TypeChecker::overApproximateAvailabilityAtLocation(
     loc = D->getLoc();
 
     std::optional<AvailabilityRange> Info =
-        AvailabilityInference::annotatedAvailableRange(D, Context);
+        AvailabilityInference::annotatedAvailableRange(D);
 
     if (Info.has_value()) {
       OverApproximateContext.constrainWith(Info.value());
@@ -1472,7 +1475,7 @@ bool TypeChecker::isDeclarationUnavailable(
   }
 
   AvailabilityRange safeRangeUnderApprox{
-      AvailabilityInference::availableRange(D, Context)};
+      AvailabilityInference::availableRange(D)};
 
   if (safeRangeUnderApprox.isAlwaysAvailable())
     return false;
@@ -1499,8 +1502,7 @@ TypeChecker::checkDeclarationAvailability(const Decl *D,
   if (isDeclarationUnavailable(D, Where.getDeclContext(), [&Where] {
         return Where.getAvailabilityRange();
       })) {
-    auto &Context = Where.getDeclContext()->getASTContext();
-    return AvailabilityInference::availableRange(D, Context);
+    return AvailabilityInference::availableRange(D);
   }
 
   return std::nullopt;
@@ -4639,7 +4641,7 @@ static bool declNeedsExplicitAvailability(const Decl *decl) {
     return false;
 
   // Warn on decls without an introduction version.
-  auto safeRangeUnderApprox = AvailabilityInference::availableRange(decl, ctx);
+  auto safeRangeUnderApprox = AvailabilityInference::availableRange(decl);
   return safeRangeUnderApprox.isAlwaysAvailable();
 }
 

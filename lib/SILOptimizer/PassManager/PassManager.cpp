@@ -1516,6 +1516,7 @@ void SwiftPassInvocation::finishedModulePassRun() {
   endPass();
   assert(!function && transform && "not running a pass");
   assert(changeNotifications == SILAnalysis::InvalidationKind::Nothing
+         && !functionTablesChanged
          && "unhandled change notifications at end of module pass");
   transform = nullptr;
 }
@@ -1551,6 +1552,7 @@ void SwiftPassInvocation::endPass() {
 void SwiftPassInvocation::beginTransformFunction(SILFunction *function) {
   assert(!this->function && transform && "not running a pass");
   assert(changeNotifications == SILAnalysis::InvalidationKind::Nothing
+         && !functionTablesChanged
          && "change notifications not cleared");
   this->function = function;
 }
@@ -1560,6 +1562,10 @@ void SwiftPassInvocation::endTransformFunction() {
   if (changeNotifications != SILAnalysis::InvalidationKind::Nothing) {
     passManager->invalidateAnalysis(function, changeNotifications);
     changeNotifications = SILAnalysis::InvalidationKind::Nothing;
+  }
+  if (functionTablesChanged) {
+    passManager->invalidateFunctionTables();
+    functionTablesChanged = false;
   }
   function = nullptr;
   assert(numBlockSetsAllocated == 0 && "Not all BasicBlockSets deallocated");
@@ -1580,6 +1586,7 @@ void SwiftPassInvocation::endVerifyFunction() {
   assert(function);
   if (!transform) {
     assert(changeNotifications == SILAnalysis::InvalidationKind::Nothing &&
+           !functionTablesChanged &&
            "verifyication must not change the SIL of a function");
     assert(numBlockSetsAllocated == 0 && "Not all BasicBlockSets deallocated");
     assert(numNodeSetsAllocated == 0 && "Not all NodeSets deallocated");
@@ -1633,6 +1640,9 @@ void BridgedChangeNotificationHandler::notifyChanges(Kind changeKind) const {
     break;
   case Kind::effectsChanged:
     invocation->notifyChanges(SILAnalysis::InvalidationKind::Effects);
+    break;
+  case Kind::functionTablesChanged:
+    invocation->notifyFunctionTablesChanged();
     break;
   }
 }
@@ -2052,9 +2062,8 @@ bool BridgedPassContext::completeLifetime(BridgedValue value) const {
   return result == LifetimeCompletion::WasCompleted;
 }
 
-bool FullApplySite_canInline(BridgedInstruction apply) {
-  return swift::SILInliner::canInlineApplySite(
-      swift::FullApplySite(apply.unbridged()));
+bool BeginApply_canInline(BridgedInstruction beginApply) {
+  return swift::SILInliner::canInlineBeginApply(beginApply.getAs<BeginApplyInst>());
 }
 
 BridgedDynamicCastResult classifyDynamicCastBridged(BridgedType sourceTy, BridgedType destTy,

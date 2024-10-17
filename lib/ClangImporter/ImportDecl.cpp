@@ -575,7 +575,7 @@ static void inferProtocolMemberAvailability(ClangImporter::Implementation &impl,
 
   const Decl *innermostDecl = dc->getInnermostDeclarationDeclContext();
   AvailabilityRange containingDeclRange =
-      AvailabilityInference::availableRange(innermostDecl, C);
+      AvailabilityInference::availableRange(innermostDecl);
 
   requiredRange.intersectWith(containingDeclRange);
 
@@ -1637,7 +1637,8 @@ namespace {
 
         synthesizer.makeStructRawValued(
             structDecl, underlyingType,
-            {KnownProtocolKind::RawRepresentable, KnownProtocolKind::Equatable},
+            {KnownProtocolKind::RawRepresentable, KnownProtocolKind::Equatable,
+             KnownProtocolKind::Hashable},
             options, /*setterAccess=*/AccessLevel::Public);
 
         result = structDecl;
@@ -3857,7 +3858,7 @@ namespace {
         return;
 
       auto swiftParams = result->getParameters();
-      bool hasSelf = result->hasImplicitSelfDecl();
+      bool hasSelf = result->hasImplicitSelfDecl() && !isa<ConstructorDecl>(result);
       SmallVector<LifetimeDependenceInfo, 1> lifetimeDependencies;
       SmallBitVector inheritLifetimeParamIndicesForReturn(swiftParams->size() +
                                                           hasSelf);
@@ -6811,7 +6812,7 @@ bool SwiftDeclConverter::existingConstructorIsWorse(
   // other?
   llvm::VersionTuple introduced = findLatestIntroduction(objcMethod);
   AvailabilityRange existingAvailability =
-      AvailabilityInference::availableRange(existingCtor, Impl.SwiftContext);
+      AvailabilityInference::availableRange(existingCtor);
   assert(!existingAvailability.isKnownUnreachable());
 
   if (existingAvailability.isAlwaysAvailable()) {
@@ -9119,7 +9120,7 @@ ClangImporter::Implementation::importMirroredDecl(const clang::NamedDecl *decl,
       if (proto->getAttrs().hasAttribute<AvailableAttr>()) {
         if (!result->getAttrs().hasAttribute<AvailableAttr>()) {
           AvailabilityRange protoRange =
-              AvailabilityInference::availableRange(proto, SwiftContext);
+              AvailabilityInference::availableRange(proto);
           applyAvailableAttribute(result, protoRange, SwiftContext);
         }
       } else {
