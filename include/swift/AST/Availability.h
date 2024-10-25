@@ -335,78 +335,6 @@ public:
   }
 };
 
-/// An `AvailabilityContext` summarizes the availability constraints for a
-/// specific scope, such as within a declaration or at a particular source
-/// location in a function body. This context is sufficient to determine whether
-/// a declaration is available or not in that scope.
-class AvailabilityContext : public llvm::FoldingSetNode {
-  /// Summarizes platform specific availability constraints.
-  struct PlatformInfo {
-    /// The introduction version.
-    AvailabilityRange Range;
-
-    /// Sets `Range` to `other` if `other` is more restrictive. Returns true if
-    /// any property changed as a result of adding this constraint.
-    bool constrainRange(const AvailabilityRange &other) {
-      if (!other.isContainedIn(Range))
-        return false;
-
-      Range = other;
-      return true;
-    }
-
-    /// Sets `Range` to the platform introduction range of `decl` if that range
-    /// is more restrictive. Returns true if
-    /// any property changed as a result of adding this constraint.
-    bool constrainRange(const Decl *decl);
-
-    void Profile(llvm::FoldingSetNodeID &ID) const {
-      Range.getRawVersionRange().Profile(ID);
-    }
-  };
-  PlatformInfo PlatformAvailability;
-
-  AvailabilityContext(const PlatformInfo &platformInfo)
-      : PlatformAvailability(platformInfo){};
-
-  static const AvailabilityContext *get(const PlatformInfo &platformInfo,
-                                        ASTContext &ctx);
-
-public:
-  /// Retrieves the default `AvailabilityContext`, which is maximally available.
-  /// The platform availability range will be set to the deployment target (or
-  /// minimum inlining target when applicable).
-  static const AvailabilityContext *getDefault(ASTContext &ctx);
-
-  /// Retrieves a uniqued `AvailabilityContext` with the given platform
-  /// availability parameters.
-  static const AvailabilityContext *
-  get(const AvailabilityRange &platformAvailability, ASTContext &ctx) {
-    PlatformInfo platformInfo{platformAvailability};
-    return get(platformInfo, ctx);
-  }
-
-  /// Returns the range of platform versions which may execute code in the
-  /// availability context, starting at its introduction version.
-  AvailabilityRange getPlatformRange() const {
-    return PlatformAvailability.Range;
-  }
-
-  /// Returns the unique context that is the result of constraining the current
-  /// context's platform availability range with `platformRange`.
-  const AvailabilityContext *
-  constrainWithPlatformRange(const AvailabilityRange &platformRange,
-                             ASTContext &ctx) const;
-
-  /// Returns the unique context that is the result of constraining the current
-  /// context both with the availability attributes of `decl` and with
-  /// `platformRange`.
-  const AvailabilityContext *constrainWithDeclAndPlatformRange(
-      Decl *decl, const AvailabilityRange &platformRange) const;
-
-  void Profile(llvm::FoldingSetNodeID &ID) const;
-};
-
 class AvailabilityInference {
 public:
   /// Returns the decl that should be considered the parent decl of the given
@@ -422,15 +350,20 @@ public:
 
   static AvailabilityRange inferForType(Type t);
 
-  /// Returns the context where a declaration is available
-  /// We assume a declaration without an annotation is always available.
+  /// Returns the range of platform versions in which the decl is available.
   static AvailabilityRange availableRange(const Decl *D);
+
+  /// Returns the range of platform versions in which the decl is available and
+  /// the attribute which determined this range (which may be `nullptr` if the
+  /// declaration is always available.
+  static std::pair<AvailabilityRange, const AvailableAttr *>
+  availableRangeAndAttr(const Decl *D);
 
   /// Returns true is the declaration is `@_spi_available`.
   static bool isAvailableAsSPI(const Decl *D);
 
-  /// Returns the availability context for a declaration with the given
-  /// @available attribute.
+  /// Returns the range of platform versions in which a declaration with the
+  /// given `@available` attribute is available.
   ///
   /// NOTE: The attribute must be active on the current platform.
   static AvailabilityRange availableRange(const AvailableAttr *attr,

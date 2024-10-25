@@ -19,6 +19,7 @@
 #include "ForeignRepresentationInfo.h"
 #include "SubstitutionMapStorage.h"
 #include "swift/ABI/MetadataValues.h"
+#include "swift/AST/AvailabilityContextStorage.h"
 #include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/ConcreteDeclRef.h"
 #include "swift/AST/ConformanceLookup.h"
@@ -593,8 +594,8 @@ struct ASTContext::Implementation {
     /// The set of substitution maps (uniqued by their storage).
     llvm::FoldingSet<SubstitutionMap::Storage> SubstitutionMaps;
 
-    /// The set of unique AvailabilityContexts.
-    llvm::FoldingSet<AvailabilityContext> AvailabilityContexts;
+    /// The set of unique AvailabilityContexts (uniqued by their storage).
+    llvm::FoldingSet<AvailabilityContext::Storage> AvailabilityContexts;
 
     ~Arena() {
       for (auto &conformance : SpecializedConformances)
@@ -631,7 +632,9 @@ struct ASTContext::Implementation {
   llvm::FoldingSet<SILBoxType> SILBoxTypes;
   llvm::FoldingSet<IntegerType> IntegerTypes;
   llvm::DenseMap<BuiltinIntegerWidth, BuiltinIntegerType*> BuiltinIntegerTypes;
+  llvm::DenseMap<unsigned, BuiltinUnboundGenericType*> BuiltinUnboundGenericTypes;
   llvm::FoldingSet<BuiltinVectorType> BuiltinVectorTypes;
+  llvm::FoldingSet<BuiltinFixedArrayType> BuiltinFixedArrayTypes;
   llvm::FoldingSet<DeclName::CompoundDeclName> CompoundNames;
   llvm::DenseMap<UUID, GenericEnvironment *> OpenedElementEnvironments;
   llvm::FoldingSet<IndexSubset> IndexSubsets;
@@ -3575,6 +3578,38 @@ BuiltinIntegerType *BuiltinIntegerType::get(BuiltinIntegerWidth BitWidth,
   return Result;
 }
 
+BuiltinUnboundGenericType *
+BuiltinUnboundGenericType::get(TypeKind genericTypeKind,
+                               const ASTContext &C) {
+  BuiltinUnboundGenericType *&Result
+    = C.getImpl().BuiltinUnboundGenericTypes[unsigned(genericTypeKind)];
+  
+  if (Result == nullptr) {
+    Result = new (C, AllocationArena::Permanent)
+      BuiltinUnboundGenericType(C, genericTypeKind);
+  }
+  return Result;
+}
+
+BuiltinFixedArrayType *BuiltinFixedArrayType::get(CanType Size,
+                                                  CanType ElementType) {
+  llvm::FoldingSetNodeID id;
+  BuiltinFixedArrayType::Profile(id, Size, ElementType);
+  auto &context = Size->getASTContext();
+
+  void *insertPos;
+  if (BuiltinFixedArrayType *vecType
+        = context.getImpl().BuiltinFixedArrayTypes
+                 .FindNodeOrInsertPos(id, insertPos))
+    return vecType;
+
+  BuiltinFixedArrayType *faTy
+    = new (context, AllocationArena::Permanent)
+        BuiltinFixedArrayType(Size, ElementType);
+  context.getImpl().BuiltinFixedArrayTypes.InsertNode(faTy, insertPos);
+  return faTy;
+}
+
 BuiltinVectorType *BuiltinVectorType::get(const ASTContext &context,
                                           Type elementType,
                                           unsigned numElements) {
@@ -5581,8 +5616,9 @@ SubstitutionMap::Storage *SubstitutionMap::Storage::get(
   return result;
 }
 
-const AvailabilityContext *
-AvailabilityContext::get(const PlatformInfo &platformInfo, ASTContext &ctx) {
+const AvailabilityContext::Storage *
+AvailabilityContext::Storage::get(const PlatformInfo &platformInfo,
+                                  ASTContext &ctx) {
   llvm::FoldingSetNodeID id;
   platformInfo.Profile(id);
 
@@ -5593,9 +5629,9 @@ AvailabilityContext::get(const PlatformInfo &platformInfo, ASTContext &ctx) {
   if (existing)
     return existing;
 
-  void *mem =
-      ctx.Allocate(sizeof(AvailabilityContext), alignof(AvailabilityContext));
-  auto *newNode = ::new (mem) AvailabilityContext(platformInfo);
+  void *mem = ctx.Allocate(sizeof(AvailabilityContext::Storage),
+                           alignof(AvailabilityContext::Storage));
+  auto *newNode = ::new (mem) AvailabilityContext::Storage(platformInfo);
   foldingSet.InsertNode(newNode, insertPos);
 
   return newNode;
