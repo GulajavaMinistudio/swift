@@ -563,7 +563,9 @@ bool CompilerInstance::setup(const CompilerInvocation &Invoke,
     return true;
   }
 
-  setupStatsReporter();
+  if (hasASTContext()) {
+    setupStatsReporter();
+  }
 
   if (setupDiagnosticVerifierIfNeeded()) {
     Error = "Setting up diagnostics verifier failed";
@@ -1488,6 +1490,11 @@ ModuleDecl *CompilerInstance::getMainModule() const {
       MainModule->setAllowNonResilientAccess();
     if (Invocation.getSILOptions().EnableSerializePackage)
       MainModule->setSerializePackageEnabled();
+
+    if (auto compilerVersion =
+            Invocation.getFrontendOptions().SwiftInterfaceCompilerVersion) {
+      MainModule->setSwiftInterfaceCompilerVersion(compilerVersion);
+    }
 
     // Register the main module with the AST context.
     Context->addLoadedModule(MainModule);
