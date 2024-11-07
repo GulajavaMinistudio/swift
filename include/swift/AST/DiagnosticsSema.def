@@ -666,6 +666,13 @@ ERROR(expr_keypath_mutating_getter,none,
 ERROR(expr_keypath_static_member,none,
       "%select{key path|dynamic key path member lookup}1 cannot refer to static member %0",
       (const ValueDecl *, bool))
+ERROR(keypath_static_member_access_from_unsupported_module,none,
+     "%select{key path|dynamic key path member lookup}3 cannot refer "
+     "to static member %1 of type %0 from module %2",
+      (Type, const ValueDecl *, const ModuleDecl *, bool))
+NOTE(keypath_static_member_access_from_unsupported_module_note,none,
+     "rebuild %0 to enable static member use in key paths",
+     (const ModuleDecl *))
 ERROR(expr_keypath_enum_case,none,
       "%select{key path|dynamic key path member lookup}1 cannot refer to enum case %0",
       (const ValueDecl *, bool))
@@ -901,6 +908,9 @@ ERROR(serialization_target_too_new_repl,none,
       "deployment target of %0 %3: %4",
       (StringRef, llvm::VersionTuple, Identifier, llvm::VersionTuple,
        StringRef))
+ERROR(serialization_non_ossa_module_incompatible, Fatal,
+      "cannot import non-OSSA module into an OSSA module",
+      (Identifier))
 
 ERROR(serialization_fatal,Fatal,
       "fatal error encountered while reading from module '%0'; "
@@ -5949,9 +5959,6 @@ ERROR(isolated_deinit_no_isolation,none,
 ERROR(isolated_deinit_on_value_type,none,
       "only classes and actors can have isolated deinit",
       ())
-ERROR(isolated_deinit_experimental,none,
-      "'isolated' deinit requires frontend flag -enable-experimental-feature IsolatedDeinit "
-      "to enable the usage of this language feature", ())
 
 //------------------------------------------------------------------------------
 // MARK: String Processing

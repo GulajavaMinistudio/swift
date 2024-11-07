@@ -758,15 +758,6 @@ def disable_bridging_pch : Flag<["-"], "disable-bridging-pch">,
   Flags<[HelpHidden]>,
   HelpText<"Disable automatic generation of bridging PCH files">;
 
-def disable_print_package_name_for_non_package_interface :
-  Flag<["-"], "disable-print-package-name-for-non-package-interface">,
-  Flags<[FrontendOption, NoDriverOption, HelpHidden]>,
-  HelpText<"No op; package name is only printed in package interface by default">;
-def print_package_name_in_non_package_interface :
-  Flag<["-"], "print-package-name-in-non-package-interface">,
-  Flags<[FrontendOption, NoDriverOption, HelpHidden]>,
-  HelpText<"Print package name in public or private interface">;
-
 def lto : Joined<["-"], "lto=">,
   Flags<[FrontendOption, NoInteractiveOption]>,
   HelpText<"Specify the LTO type to either 'llvm-thin' or 'llvm-full'">;
@@ -827,6 +818,10 @@ def experimental_package_interface_load:
   Flags<[FrontendOption, HelpHidden]>,
   HelpText<"Enables loading a package interface if in the same package specified with package-name">;
 
+def experimental_serialize_debug_info:
+  Flag<["-"], "experimental-serialize-debug-info">,
+  Flags<[FrontendOption, HelpHidden]>,
+  HelpText<"Enables seriailzation/deserialization of debug scopes">;
 // Diagnostic control options
 def suppress_warnings : Flag<["-"], "suppress-warnings">,
   Flags<[FrontendOption]>,
@@ -1287,6 +1282,8 @@ def emit_sil : Flag<["-"], "emit-sil">,
   HelpText<"Emit canonical SIL file(s)">, ModeOpt;
 def emit_silgen : Flag<["-"], "emit-silgen">,
   HelpText<"Emit raw SIL file(s)">, ModeOpt;
+def emit_lowered_sil : Flag<["-"], "emit-lowered-sil">,
+  HelpText<"Emit lowered SIL file(s)">, ModeOpt;
 def emit_sib : Flag<["-"], "emit-sib">,
   HelpText<"Emit serialized AST + canonical SIL file(s)">, ModeOpt;
 def emit_sibgen : Flag<["-"], "emit-sibgen">,
@@ -1477,6 +1474,10 @@ def profile_generate : Flag<["-"], "profile-generate">,
   Flags<[FrontendOption, NoInteractiveOption]>,
   HelpText<"Generate instrumented code to collect execution counts">;
 
+def debug_info_for_profiling : Flag<["-"], "debug-info-for-profiling">,
+  Flags<[FrontendOption, NoInteractiveOption]>,
+  HelpText<"Emit extra debug info (DWARF discriminators) to make sampling-based profiling more accurate">;
+
 def profile_use : CommaJoined<["-"], "profile-use=">,
   Flags<[FrontendOption, NoInteractiveOption, ArgumentIsPath]>,
   MetaVarName<"<profdata>">,
@@ -1485,6 +1486,11 @@ def profile_use : CommaJoined<["-"], "profile-use=">,
 def profile_coverage_mapping : Flag<["-"], "profile-coverage-mapping">,
   Flags<[FrontendOption, NoInteractiveOption]>,
   HelpText<"Generate coverage data for use with profiled execution counts">;
+
+def profile_sample_use : CommaJoined<["-"], "profile-sample-use=">,
+  Flags<[FrontendOption, NoInteractiveOption, ArgumentIsPath]>,
+  MetaVarName<"<profile data>">,
+  HelpText<"Supply sampling-based profiling data from llvm-profdata to enable profile-guided optimization">;
 
 def embed_bitcode : Flag<["-"], "embed-bitcode">,
   Flags<[FrontendOption, NoInteractiveOption]>,
@@ -2094,6 +2100,14 @@ def load_plugin_executable:
   HelpText<"Path to a compiler plugin executable and a comma-separated list "
            "of module names where the macro types are declared">,
   MetaVarName<"<path>#<module-names>">;
+
+def load_resolved_plugin:
+  Separate<["-"], "load-resolved-plugin">, Group<plugin_search_Group>,
+  Flags<[FrontendOption, DoesNotAffectIncrementalBuild, ArgumentIsPath]>,
+  HelpText<"Path to resolved plugin configuration and a comma-separated list "
+           "of module names where the macro types are declared. Library path "
+           "and exectuable path can be empty if not used">,
+  MetaVarName<"<library-path>#<executable-path>#<module-names>">;
 
 def in_process_plugin_server_path : Separate<["-"], "in-process-plugin-server-path">,
   Flags<[FrontendOption, ArgumentIsPath]>,

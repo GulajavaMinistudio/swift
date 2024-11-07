@@ -1260,12 +1260,8 @@ static bool walkExplicitReturnStmts(const BraceStmt *BS,
     }
 
     PreWalkResult<Stmt *> walkToStmtPre(Stmt *S) override {
-      if (S->isImplicit()) {
-        return Action::SkipNode(S);
-      }
-
       auto *returnStmt = dyn_cast<ReturnStmt>(S);
-      if (!returnStmt) {
+      if (!returnStmt || returnStmt->isImplicit()) {
         return Action::Continue(S);
       }
 
@@ -1321,12 +1317,8 @@ ResultBuilderOpSupport TypeChecker::checkBuilderOpSupport(
     ArrayRef<Identifier> argLabels, SmallVectorImpl<ValueDecl *> *allResults) {
 
   auto isUnavailable = [&](Decl *D) -> bool {
-    if (AvailableAttr::isUnavailable(D))
-      return true;
-
     auto loc = extractNearestSourceLoc(dc);
-    auto context = ExportContext::forFunctionBody(dc, loc);
-    return TypeChecker::checkDeclarationAvailability(D, context).has_value();
+    return getUnsatisfiedAvailabilityConstraint(D, dc, loc).has_value();
   };
 
   bool foundMatch = false;

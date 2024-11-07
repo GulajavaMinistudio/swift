@@ -2758,6 +2758,10 @@ private:
     /// output a null pointer.
     unsigned noDynamicallyReplacedDecl : 1;
 
+    /// Whether the OpaqueResultTypeRequest request was evaluated and produced
+    /// a null pointer.
+    unsigned noOpaqueResultType : 1;
+
     /// Whether the "isFinal" bit has been computed yet.
     unsigned isFinalComputed : 1;
 
@@ -2785,7 +2789,7 @@ private:
   friend class InterfaceTypeRequest;
   friend class CheckRedeclarationRequest;
   friend class ActorIsolationRequest;
-  friend class DynamicallyReplacedDeclRequest;
+  friend class OpaqueResultTypeRequest;
   friend class ApplyAccessNoteRequest;
 
   friend class Decl;
@@ -2908,14 +2912,6 @@ public:
   /// Returns \c true if this value decl is inlinable with attributes
   /// \c \@usableFromInline, \c \@inlinalbe, and \c \@_alwaysEmitIntoClient
   bool isUsableFromInline() const;
-
-  /// Treat as public and allow skipping access checks if the following conditions
-  /// are met:
-  /// - This decl has a package access level,
-  /// - Has a @usableFromInline (or other inlinable) attribute,
-  /// - And is defined in a module built from a public or private
-  ///   interface that does not contain package-name.
-  bool isInterfacePackageEffectivelyPublic() const;
 
   /// Returns \c true if this declaration is *not* intended to be used directly
   /// by application developers despite the visibility.
@@ -5765,6 +5761,8 @@ private:
     unsigned RequiresOpaqueAccessors : 1;
     unsigned RequiresOpaqueModifyCoroutineComputed : 1;
     unsigned RequiresOpaqueModifyCoroutine : 1;
+    unsigned RequiresOpaqueModify2CoroutineComputed : 1;
+    unsigned RequiresOpaqueModify2Coroutine : 1;
   } LazySemanticInfo = { };
 
   /// The implementation info for the accessors.
@@ -6029,16 +6027,27 @@ public:
     return getOpaqueReadOwnership() != OpaqueReadOwnership::Borrowed;
   }
 
+  /// Does this storage require a '_read' accessor in its opaque-accessors set?
+  bool requiresOpaqueReadCoroutine() const;
+
   /// Does this storage require a 'read' accessor in its opaque-accessors set?
-  bool requiresOpaqueReadCoroutine() const {
-    return getOpaqueReadOwnership() != OpaqueReadOwnership::Owned;
-  }
+  bool requiresOpaqueRead2Coroutine() const;
 
   /// Does this storage require a 'set' accessor in its opaque-accessors set?
   bool requiresOpaqueSetter() const { return supportsMutation(); }
 
-  /// Does this storage require a 'modify' accessor in its opaque-accessors set?
+  /// Does this storage require a '_modify' accessor in its opaque-accessors
+  /// set?
   bool requiresOpaqueModifyCoroutine() const;
+
+  /// Does this storage require a 'modify' accessor in its opaque-accessors
+  /// set?
+  bool requiresOpaqueModify2Coroutine() const;
+
+  /// Given that CoroutineAccessors is enabled, is _read/_modify required for
+  /// ABI stability?
+  bool
+  requiresCorrespondingUnderscoredCoroutineAccessor(AccessorKind kind) const;
 
   /// Does this storage have any explicit observers (willSet or didSet) attached
   /// to it?

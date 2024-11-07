@@ -1,10 +1,11 @@
-#include "llvm/ADT/STLExtras.h"
 #include "swift/AST/ASTMangler.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/Basic/Defer.h"
+#include "swift/Parse/Lexer.h"
 #include "swift/Sema/IDETypeChecking.h"
-#include <swift/APIDigester/ModuleAnalyzerNodes.h>
+#include "llvm/ADT/STLExtras.h"
 #include <algorithm>
+#include <swift/APIDigester/ModuleAnalyzerNodes.h>
 
 using namespace swift;
 using namespace ide;
@@ -1065,13 +1066,12 @@ static StringRef getPrintedName(SDKContext &Ctx, Type Ty,
   if (IsImplicitlyUnwrappedOptional)
     PO.PrintOptionalAsImplicitlyUnwrapped = true;
 
-  Ty->getWithoutParens().print(OS, PO);
+  Ty.print(OS, PO);
   return Ctx.buffer(OS.str());
 }
 
 static StringRef getTypeName(SDKContext &Ctx, Type Ty,
                              bool IsImplicitlyUnwrappedOptional) {
-  Ty = Ty->getWithoutParens();
   if (Ty->isVoid()) {
     return Ctx.buffer("Void");
   }

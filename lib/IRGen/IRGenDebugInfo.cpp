@@ -839,6 +839,7 @@ private:
                               TheCU->getProducer(), true, StringRef(), 0,
                               RemappedASTFile, llvm::DICompileUnit::FullDebug,
                               Signature);
+        // NOTE: not setting DebugInfoForProfiling here
         DIB.finalize();
       }
     }
@@ -996,11 +997,6 @@ private:
     // Strip off top level of type sugar (except for type aliases).
     // We don't want Optional<T> and T? to get different debug types.
     while (true) {
-      if (auto *ParenTy = dyn_cast<ParenType>(Ty.getPointer())) {
-        Ty = ParenTy->getUnderlyingType();
-        continue;
-      }
-
       if (auto *SugarTy = dyn_cast<SyntaxSugarType>(Ty.getPointer())) {
         Ty = SugarTy->getSinglyDesugaredType();
         continue;
@@ -1389,21 +1385,9 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
       }
     }
 
-    APInt SpareBitsMask;
-    auto &EnumStrategy =
-        getEnumImplStrategy(IGM, DbgTy.getType()->getCanonicalType());
-
-    auto VariantOffsetInBits = 0;
-    if (auto SpareBitsMaskInfo = EnumStrategy.calculateSpareBitsMask()) {
-      SpareBitsMask = SpareBitsMaskInfo->bits;
-      // The offset of the variant mask in the overall enum.
-      VariantOffsetInBits = SpareBitsMaskInfo->byteOffset * 8;
-    }
-
     auto VPTy = DBuilder.createVariantPart(
         Scope, {}, File, Line, SizeInBits, AlignInBits, Flags, nullptr,
-        DBuilder.getOrCreateArray(Elements), /*UniqueIdentifier=*/"",
-        VariantOffsetInBits, SpareBitsMask);
+        DBuilder.getOrCreateArray(Elements), /*UniqueIdentifier=*/"");
 
     auto DITy = DBuilder.createStructType(
         Scope, Name, File, Line, SizeInBits, AlignInBits, Flags, nullptr,
@@ -1792,6 +1776,28 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
       return InternalType;
     }
 
+    llvm::DIType *SpecificationOf = nullptr;
+    if (auto *TypeDecl = DbgTy.getType()->getNominalOrBoundGenericNominal()) {
+      // If this is a nominal type that has the @_originallyDefinedIn attribute,
+      // IRGenDebugInfo emits a forward declaration of the type as a child
+      // of the original module, and the type with a specification pointing to
+      // the forward declaraation. We do this so LLDB has enough information to
+      // both find the type in reflection metadata (the parent module name) and
+      // find it in the swiftmodule (the module name in the type mangled name).
+      if (auto Attribute =
+              TypeDecl->getAttrs().getAttribute<OriginallyDefinedInAttr>()) {
+        auto Identifier = IGM.getSILModule().getASTContext().getIdentifier(
+            Attribute->OriginalModuleName);
+
+        void *Key = (void *)Identifier.get();
+        auto InnerScope =
+            getOrCreateModule(Key, TheCU, Attribute->OriginalModuleName, {});
+        SpecificationOf = DBuilder.createForwardDecl(
+            llvm::dwarf::DW_TAG_structure_type, TypeDecl->getNameStr(),
+            InnerScope, File, 0, llvm::dwarf::DW_LANG_Swift, 0, 0);
+      }
+    }
+
     // Here goes!
     switch (BaseTy->getKind()) {
     case TypeKind::BuiltinUnboundGeneric:
@@ -1894,7 +1900,8 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
             llvm::dwarf::DW_TAG_structure_type, MangledName, Scope, L.File,
             FwdDeclLine, llvm::dwarf::DW_LANG_Swift, 0, AlignInBits);
       return createOpaqueStruct(Scope, Name, L.File, FwdDeclLine, SizeInBits,
-                                AlignInBits, Flags, MangledName);
+                                AlignInBits, Flags, MangledName, {},
+                                SpecificationOf);
     }
 
     case TypeKind::Class: {
@@ -1931,7 +1938,8 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
         return DIType;
       }
       return createPointerSizedStruct(Scope, Decl->getNameStr(), L.File,
-                                      FwdDeclLine, Flags, MangledName);
+                                      FwdDeclLine, Flags, MangledName,
+                                      SpecificationOf);
     }
 
     case TypeKind::Protocol: {
@@ -1977,11 +1985,11 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
         return createSpecializedStructOrClassType(
             StructTy, Decl, Scope, L.File, L.Line, SizeInBits, AlignInBits,
             Flags, MangledName);
-      
+
       return createOpaqueStructWithSizedContainer(
           Scope, Decl ? Decl->getNameStr() : "", L.File, FwdDeclLine,
           SizeInBits, AlignInBits, Flags, MangledName,
-          collectGenericParams(StructTy));
+          collectGenericParams(StructTy), SpecificationOf);
     }
 
     case TypeKind::BoundGenericClass: {
@@ -1999,9 +2007,9 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
       // attribute accordingly.
       assert(SizeInBits ==
              CI.getTargetInfo().getPointerWidth(clang::LangAS::Default));
-      return createPointerSizedStruct(Scope,
-                                      Decl ? Decl->getNameStr() : MangledName,
-                                      L.File, FwdDeclLine, Flags, MangledName);
+      return createPointerSizedStruct(
+          Scope, Decl ? Decl->getNameStr() : MangledName, L.File, FwdDeclLine,
+          Flags, MangledName, SpecificationOf);
     }
 
     case TypeKind::Pack:
@@ -2122,7 +2130,7 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
       }
       return createOpaqueStruct(Scope, Decl->getName().str(), L.File,
                                 FwdDeclLine, SizeInBits, AlignInBits, Flags,
-                                MangledName);
+                                MangledName, {}, SpecificationOf);
     }
 
     case TypeKind::BoundGenericEnum: {
@@ -2142,7 +2150,8 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
       }
       return createOpaqueStructWithSizedContainer(
           Scope, Decl->getName().str(), L.File, FwdDeclLine, SizeInBits,
-          AlignInBits, Flags, MangledName, collectGenericParams(EnumTy));
+          AlignInBits, Flags, MangledName, collectGenericParams(EnumTy),
+          SpecificationOf);
     }
 
     case TypeKind::BuiltinVector: {
@@ -2190,11 +2199,6 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
           DbgTy.getNumExtraInhabitants());
       return DBuilder.createTypedef(getOrCreateType(AliasedDbgTy), MangledName,
                                     L.File, 0, Scope);
-    }
-
-    case TypeKind::Paren: {
-      auto Ty = cast<ParenType>(BaseTy)->getUnderlyingType();
-      return getOrCreateDesugaredType(Ty, DbgTy);
     }
 
     // SyntaxSugarType derivations.
@@ -2322,7 +2326,8 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
     }
   }
 
-  llvm::DIType *getOrCreateType(DebugTypeInfo DbgTy) {
+  llvm::DIType *getOrCreateType(DebugTypeInfo DbgTy,
+                                llvm::DIScope *Scope = nullptr) {
     // Is this an empty type?
     if (DbgTy.isNull())
       // We can't use the empty type as an index into DenseMap.
@@ -2354,7 +2359,6 @@ createSpecializedStructOrClassType(NominalOrBoundGenericNominalType *Type,
     //
     // FIXME: Builtin and qualified types in LLVM have no parent
     // scope. TODO: This can be fixed by extending DIBuilder.
-    llvm::DIScope *Scope = nullptr;
     // Make sure to retrieve the context of the type alias, not the pointee.
     DeclContext *Context = nullptr;
     const Decl *TypeDecl = nullptr;
@@ -2504,7 +2508,7 @@ IRGenDebugInfoImpl::IRGenDebugInfoImpl(const IRGenOptions &Opts,
           ? llvm::DICompileUnit::FullDebug
           : llvm::DICompileUnit::LineTablesOnly,
       /* DWOId */ 0, /* SplitDebugInlining */ true,
-      /* DebugInfoForProfiling */ false,
+      /* DebugInfoForProfiling */ Opts.DebugInfoForProfiling,
       llvm::DICompileUnit::DebugNameTableKind::Default,
       /* RangesBaseAddress */ false, DebugPrefixMap.remapPath(Sysroot), SDK);
 

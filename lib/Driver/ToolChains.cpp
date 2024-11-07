@@ -204,6 +204,12 @@ void ToolChain::addCommonFrontendArgs(const OutputInfo &OI,
     arguments.push_back("-disable-objc-interop");
   }
 
+  if (const Arg *arg = inputArgs.getLastArg(
+        options::OPT_experimental_serialize_debug_info)) {
+    arguments.push_back(
+        inputArgs.MakeArgString(Twine("-experimental-serialize-debug-info")));
+  }
+
   if (inputArgs.hasArg(options::OPT_experimental_hermetic_seal_at_link)) {
     arguments.push_back("-enable-llvm-vfe");
     arguments.push_back("-enable-llvm-wme");
@@ -708,6 +714,8 @@ const char *ToolChain::JobContext::computeFrontendModeForCompile() const {
     return "-emit-silgen";
   case file_types::TY_SIL:
     return "-emit-sil";
+  case file_types::TY_LoweredSIL:
+    return "-emit-lowered-sil";
   case file_types::TY_RawSIB:
     return "-emit-sibgen";
   case file_types::TY_SIB:
@@ -1008,6 +1016,7 @@ ToolChain::constructInvocation(const BackendJobAction &job,
     case file_types::TY_RawSIL:
     case file_types::TY_RawSIB:
     case file_types::TY_SIL:
+    case file_types::TY_LoweredSIL:
     case file_types::TY_SIB:
     case file_types::TY_PCH:
     case file_types::TY_ClangModuleFile:

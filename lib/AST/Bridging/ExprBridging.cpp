@@ -281,6 +281,21 @@ BridgedIntegerLiteralExpr_createParsed(BridgedASTContext cContext,
       IntegerLiteralExpr(cStr.unbridged(), cTokenLoc.unbridged());
 }
 
+BridgedKeyPathDotExpr
+BridgedKeyPathDotExpr_createParsed(BridgedASTContext cContext,
+                                   BridgedSourceLoc cLoc) {
+  return new (cContext.unbridged()) KeyPathDotExpr(cLoc.unbridged());
+}
+
+BridgedKeyPathExpr BridgedKeyPathExpr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cBackslashLoc,
+    BridgedNullableExpr cParsedRoot, BridgedNullableExpr cParsedPath,
+    bool hasLeadingDot) {
+  return KeyPathExpr::createParsed(
+      cContext.unbridged(), cBackslashLoc.unbridged(), cParsedRoot.unbridged(),
+      cParsedPath.unbridged(), hasLeadingDot);
+}
+
 BridgedSuperRefExpr
 BridgedSuperRefExpr_createParsed(BridgedASTContext cContext,
                                  BridgedSourceLoc cSuperLoc) {
@@ -311,6 +326,24 @@ BridgedIsExpr BridgedIsExpr_createParsed(BridgedASTContext cContext,
                                          BridgedTypeRepr cType) {
   return IsExpr::create(cContext.unbridged(), cIsLoc.unbridged(),
                         cType.unbridged());
+}
+
+BridgedMacroExpansionExpr BridgedMacroExpansionExpr_createParsed(
+    BridgedDeclContext cDeclContext, BridgedSourceLoc cPoundLoc,
+    BridgedDeclNameRef cMacroNameRef, BridgedDeclNameLoc cMacroNameLoc,
+    BridgedSourceLoc cLeftAngleLoc, BridgedArrayRef cGenericArgs,
+    BridgedSourceLoc cRightAngleLoc, BridgedNullableArgumentList cArgList) {
+  auto *DC = cDeclContext.unbridged();
+  auto &Context = DC->getASTContext();
+  return MacroExpansionExpr::create(
+      cDeclContext.unbridged(), cPoundLoc.unbridged(),
+      /*module name=*/DeclNameRef(), /*module name loc=*/DeclNameLoc(),
+      cMacroNameRef.unbridged(), cMacroNameLoc.unbridged(),
+      cLeftAngleLoc.unbridged(),
+      Context.AllocateCopy(cGenericArgs.unbridged<TypeRepr *>()),
+      cRightAngleLoc.unbridged(), cArgList.unbridged(),
+      DC->isTypeContext() ? MacroRole::Declaration
+                          : getFreestandingMacroRoles());
 }
 
 BridgedNilLiteralExpr
@@ -365,6 +398,14 @@ BridgedRegexLiteralExpr_createParsed(BridgedASTContext cContext,
                                         cRegexText.unbridged());
 }
 
+BridgedParenExpr BridgedParenExpr_createParsed(BridgedASTContext cContext,
+                                               BridgedSourceLoc cLParen,
+                                               BridgedExpr cExpr,
+                                               BridgedSourceLoc cRParen) {
+  ASTContext &context = cContext.unbridged();
+  return new (context)
+      ParenExpr(cLParen.unbridged(), cExpr.unbridged(), cRParen.unbridged());
+}
 BridgedSequenceExpr BridgedSequenceExpr_createParsed(BridgedASTContext cContext,
                                                      BridgedArrayRef exprs) {
   return SequenceExpr::create(cContext.unbridged(), exprs.unbridged<Expr *>());

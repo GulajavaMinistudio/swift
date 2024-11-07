@@ -607,11 +607,13 @@ Type typeCheckExpression(Expr *&expr, DeclContext *dc,
 
 std::optional<constraints::SyntacticElementTarget>
 typeCheckExpression(constraints::SyntacticElementTarget &target,
-                    TypeCheckExprOptions options = TypeCheckExprOptions());
+                    TypeCheckExprOptions options = TypeCheckExprOptions(),
+                    DiagnosticTransaction *diagnosticTransaction);
 
 std::optional<constraints::SyntacticElementTarget>
 typeCheckTarget(constraints::SyntacticElementTarget &target,
-                TypeCheckExprOptions options = TypeCheckExprOptions());
+                TypeCheckExprOptions options = TypeCheckExprOptions(),
+                DiagnosticTransaction *diagnosticTransaction);
 
 /// Remove any solutions from the provided vector that require more fixes than
 /// the best score or don't contain a type for the code completion token.
@@ -1031,26 +1033,6 @@ diagnosticIfDeclCannotBePotentiallyUnavailable(const Decl *D);
 /// with an @available() attribute indicating it is unavailable or None if this
 /// is allowed.
 std::optional<Diagnostic> diagnosticIfDeclCannotBeUnavailable(const Decl *D);
-
-/// Same as \c checkDeclarationAvailability but doesn't give a reason for
-/// unavailability.
-bool isDeclarationUnavailable(
-    const Decl *D, const DeclContext *referenceDC,
-    llvm::function_ref<AvailabilityRange()> getAvailabilityRange);
-
-/// Checks whether a declaration should be considered unavailable when
-/// referred to at the given location and, if so, returns the unmet required
-/// version range. Returns None is the declaration is definitely available.
-std::optional<AvailabilityRange>
-checkDeclarationAvailability(const Decl *D, const ExportContext &Where);
-
-/// Checks whether a conformance should be considered unavailable when
-/// referred to at the given location and, if so, returns the unmet required
-/// version range. Returns None is the declaration is definitely available.
-std::optional<AvailabilityRange>
-checkConformanceAvailability(const RootProtocolConformance *Conf,
-                             const ExtensionDecl *Ext,
-                             const ExportContext &Where);
 
 bool checkAvailability(
     SourceRange ReferenceRange, AvailabilityRange RequiredAvailability,

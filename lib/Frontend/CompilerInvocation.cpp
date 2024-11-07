@@ -18,18 +18,16 @@
 #include "ArgsToFrontendOptionsConverter.h"
 #include "swift/AST/DiagnosticsFrontend.h"
 #include "swift/Basic/Assertions.h"
-#include "swift/Basic/Assertions.h"
 #include "swift/Basic/Feature.h"
 #include "swift/Basic/Platform.h"
 #include "swift/Option/Options.h"
 #include "swift/Option/SanitizerOptions.h"
+#include "swift/Parse/Lexer.h"
 #include "swift/Parse/ParseVersion.h"
 #include "swift/SIL/SILBridging.h"
 #include "swift/Strings.h"
 #include "swift/SymbolGraphGen/SymbolGraphOptions.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/VersionTuple.h"
-#include "llvm/TargetParser/Triple.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
@@ -37,7 +35,9 @@
 #include "llvm/Support/LineIterator.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/VersionTuple.h"
 #include "llvm/Support/WithColor.h"
+#include "llvm/TargetParser/Triple.h"
 
 using namespace swift;
 using namespace llvm::opt;
@@ -554,9 +554,7 @@ static bool ShouldIncludeModuleInterfaceArg(const Arg *A) {
 }
 
 static bool IsPackageInterfaceFlag(const Arg *A, ArgList &Args) {
-  return A->getOption().matches(options::OPT_package_name) &&
-         !Args.hasArg(
-             options::OPT_print_package_name_in_non_package_interface);
+  return false;
 }
 
 static bool IsPrivateInterfaceFlag(const Arg *A, ArgList &Args) {
@@ -1015,13 +1013,16 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     Opts.EnableExperimentalStringProcessing = true;
   }
 
-  auto enableUpcomingFeature = [&Opts, &Diags](Feature feature) -> bool {
+  auto enableUpcomingFeature = [&Opts, &Diags](Feature feature,
+                                               bool downgradeDiag) -> bool {
     // Check if this feature was introduced already in this language version.
     if (auto firstVersion = getFeatureLanguageVersion(feature)) {
       if (Opts.isSwiftVersionAtLeast(*firstVersion)) {
-        Diags.diagnose(SourceLoc(), diag::error_upcoming_feature_on_by_default,
-                       getFeatureName(feature), *firstVersion);
-        return true;
+        Diags
+            .diagnose(SourceLoc(), diag::error_upcoming_feature_on_by_default,
+                      getFeatureName(feature), *firstVersion)
+            .limitBehaviorIf(downgradeDiag, DiagnosticBehavior::Warning);
+        return !downgradeDiag;
       }
     }
 
@@ -1062,7 +1063,7 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     // -enable-experimental-feature flag too since the feature may have
     // graduated from being experimental.
     if (auto feature = getUpcomingFeature(value)) {
-      if (enableUpcomingFeature(*feature))
+      if (enableUpcomingFeature(*feature, /*downgradeDiag=*/true))
         HadError = true;
     }
 
@@ -1087,7 +1088,7 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     if (!feature)
       continue;
 
-    if (enableUpcomingFeature(*feature))
+    if (enableUpcomingFeature(*feature, /*downgradeDiag=*/false))
       HadError = true;
   }
 
@@ -2169,6 +2170,27 @@ static bool ParseSearchPathArgs(SearchPathOptions &Opts, ArgList &Args,
           resolveSearchPath(dylibPath), resolveSearchPath(serverPath)});
       break;
     }
+    case OPT_load_resolved_plugin: {
+      StringRef libraryPath;
+      StringRef executablePath;
+      StringRef modulesStr;
+      std::tie(libraryPath, executablePath) =
+          StringRef(A->getValue()).split('#');
+      std::tie(executablePath, modulesStr) = executablePath.split('#');
+      if (modulesStr.empty() ||
+          (libraryPath.empty() && executablePath.empty())) {
+        Diags.diagnose(SourceLoc(), diag::error_load_resolved_plugin,
+                       A->getValue());
+      }
+      std::vector<std::string> moduleNames;
+      for (auto name : llvm::split(modulesStr, ',')) {
+        moduleNames.emplace_back(name);
+      }
+      Opts.PluginSearchOpts.emplace_back(
+          PluginSearchOption::ResolvedPluginConfig{
+              libraryPath.str(), executablePath.str(), std::move(moduleNames)});
+      break;
+    }
     default:
       llvm_unreachable("unhandled plugin search option");
     }
@@ -2697,6 +2719,8 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
 
   Opts.EnableARCOptimizations &= !Args.hasArg(OPT_disable_arc_opts);
   Opts.EnableOSSAModules |= Args.hasArg(OPT_enable_ossa_modules);
+  Opts.EnableRecompilationToOSSAModule |=
+      Args.hasArg(OPT_enable_recompilation_to_ossa_module);
   Opts.EnableOSSAOptimizations &= !Args.hasArg(OPT_disable_ossa_opts);
   Opts.EnableSILOpaqueValues = Args.hasFlag(
       OPT_enable_sil_opaque_values, OPT_disable_sil_opaque_values, false);
@@ -3176,6 +3200,11 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
   Opts.GenerateProfile |= Args.hasArg(OPT_profile_generate);
   const Arg *ProfileUse = Args.getLastArg(OPT_profile_use);
   Opts.UseProfile = ProfileUse ? ProfileUse->getValue() : "";
+
+  const Arg *ProfileSampleUse = Args.getLastArg(OPT_profile_sample_use);
+  Opts.UseSampleProfile = ProfileSampleUse ? ProfileSampleUse->getValue() : "";
+
+  Opts.DebugInfoForProfiling |= Args.hasArg(OPT_debug_info_for_profiling);
 
   Opts.PrintInlineTree |= Args.hasArg(OPT_print_llvm_inline_tree);
   // Always producing all outputs when caching is enabled.
@@ -3738,6 +3767,7 @@ bool CompilerInvocation::parseArgs(
     SILOpts.SkipFunctionBodies = FunctionBodySkipping::None;
     SILOpts.CMOMode = CrossModuleOptimizationMode::Everything;
     SILOpts.EmbeddedSwift = true;
+    SILOpts.UseAggressiveReg2MemForCodeSize = true;
     // OSSA modules are required for deinit de-virtualization.
     SILOpts.EnableOSSAModules = true;
     // -g is promoted to -gdwarf-types in embedded Swift
@@ -3750,6 +3780,11 @@ bool CompilerInvocation::parseArgs(
       return true;
     }
   }
+
+  SILOpts.UseAggressiveReg2MemForCodeSize =
+    ParsedArgs.hasFlag(OPT_enable_aggressive_reg2mem,
+                       OPT_disable_aggressive_reg2mem,
+                       SILOpts.UseAggressiveReg2MemForCodeSize);
 
   // With Swift 6, enable @_spiOnly by default. This also enables proper error
   // reporting of ioi references from spi decls.

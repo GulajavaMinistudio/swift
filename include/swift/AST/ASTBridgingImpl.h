@@ -18,9 +18,10 @@
 #include "swift/AST/Decl.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/IfConfigClauseRangeInfo.h"
-#include "swift/AST/Stmt.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/ProtocolConformanceRef.h"
+#include "swift/AST/SourceFile.h"
+#include "swift/AST/Stmt.h"
 #include "swift/Basic/Assertions.h"
 
 SWIFT_BEGIN_NULLABILITY_ANNOTATIONS
@@ -98,6 +99,26 @@ BridgedStringRef BridgedASTContext_allocateCopyString(BridgedASTContext bridged,
 }
 
 //===----------------------------------------------------------------------===//
+// MARK: BridgedDeclContext
+//===----------------------------------------------------------------------===//
+
+bool BridgedDeclContext_isLocalContext(BridgedDeclContext dc) {
+  return dc.unbridged()->isLocalContext();
+}
+
+bool BridgedDeclContext_isTypeContext(BridgedDeclContext dc) {
+  return dc.unbridged()->isTypeContext();
+}
+
+bool BridgedDeclContext_isModuleScopeContext(BridgedDeclContext dc) {
+  return dc.unbridged()->isModuleScopeContext();
+}
+
+BridgedASTContext BridgedDeclContext_getASTContext(BridgedDeclContext dc) {
+  return dc.unbridged()->getASTContext();
+}
+
+//===----------------------------------------------------------------------===//
 // MARK: BridgedDeclObj
 //===----------------------------------------------------------------------===//
 
@@ -140,6 +161,16 @@ bool BridgedDeclObj::Struct_hasUnreferenceableStorage() const {
 
 BridgedASTType BridgedDeclObj::Class_getSuperclass() const {
   return {getAs<swift::ClassDecl>()->getSuperclass().getPointer()};
+}
+
+BridgedDeclObj BridgedDeclObj::Class_getDestructor() const {
+  return {getAs<swift::ClassDecl>()->getDestructor()};
+}
+
+bool BridgedDeclObj::Destructor_isIsolated() const {
+  auto dd = getAs<swift::DestructorDecl>();
+  auto ai = swift::getActorIsolation(dd);
+  return ai.isActorIsolated();
 }
 
 //===----------------------------------------------------------------------===//

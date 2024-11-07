@@ -587,10 +587,9 @@ Expected<Pattern *> ModuleFile::readPattern(DeclContext *owningDC) {
     auto result = ParenPattern::createImplicit(getContext(), subPattern);
 
     if (Type interfaceType = subPattern->getDelayedInterfaceType())
-      result->setDelayedInterfaceType(ParenType::get(getContext(),
-                                                     interfaceType), owningDC);
+      result->setDelayedInterfaceType(interfaceType, owningDC);
     else
-      result->setType(ParenType::get(getContext(), subPattern->getType()));
+      result->setType(subPattern->getType());
     restoreOffset.reset();
     return result;
   }
@@ -3937,14 +3936,17 @@ public:
     if (var->hasStorage())
       AddAttribute(new (ctx) HasStorageAttr(/*isImplicit:*/true));
 
-    if (opaqueReturnTypeID) {
-      auto opaqueReturnType = MF.getDeclChecked(opaqueReturnTypeID);
-      if (!opaqueReturnType)
-        return opaqueReturnType.takeError();
+    {
+      OpaqueTypeDecl *opaqueDecl = nullptr;
+      if (opaqueReturnTypeID) {
+        auto opaqueReturnType = MF.getDeclChecked(opaqueReturnTypeID);
+        if (!opaqueReturnType)
+          return opaqueReturnType.takeError();
 
-      ctx.evaluator.cacheOutput(
-          OpaqueResultTypeRequest{var},
-          cast<OpaqueTypeDecl>(opaqueReturnType.get()));
+        opaqueDecl = cast<OpaqueTypeDecl>(opaqueReturnType.get());
+      }
+      ctx.evaluator.cacheOutput(OpaqueResultTypeRequest{var},
+                                std::move(opaqueDecl));
     }
 
     // If this is a lazy property, record its backing storage.
@@ -4358,14 +4360,17 @@ public:
     fn->setIsObjC(isObjC);
     fn->setForcedStaticDispatch(hasForcedStaticDispatch);
 
-    if (opaqueReturnTypeID) {
-      auto declOrError = MF.getDeclChecked(opaqueReturnTypeID);
-      if (!declOrError)
-        return declOrError.takeError();
+    {
+      OpaqueTypeDecl *opaqueDecl = nullptr;
+      if (opaqueReturnTypeID) {
+        auto declOrError = MF.getDeclChecked(opaqueReturnTypeID);
+        if (!declOrError)
+          return declOrError.takeError();
 
-      ctx.evaluator.cacheOutput(
-          OpaqueResultTypeRequest{fn},
-          cast<OpaqueTypeDecl>(declOrError.get()));
+        opaqueDecl = cast<OpaqueTypeDecl>(declOrError.get());
+      }
+      ctx.evaluator.cacheOutput(OpaqueResultTypeRequest{fn},
+                                std::move(opaqueDecl));
     }
 
     if (!isAccessor)
@@ -5205,16 +5210,19 @@ public:
     subscript->setOverriddenDecl(cast_or_null<SubscriptDecl>(overridden.get()));
     if (subscript->getOverriddenDecl())
       AddAttribute(new (ctx) OverrideAttr(SourceLoc()));
-    
-    if (opaqueReturnTypeID) {
-      Decl *opaqueReturnType;
-      UNWRAP(MF.getDeclChecked(opaqueReturnTypeID), opaqueReturnType);
 
-      ctx.evaluator.cacheOutput(
-          OpaqueResultTypeRequest{subscript},
-          cast<OpaqueTypeDecl>(opaqueReturnType));
+    {
+      OpaqueTypeDecl *opaqueDecl = nullptr;
+      if (opaqueReturnTypeID) {
+        Decl *opaqueReturnType;
+        UNWRAP(MF.getDeclChecked(opaqueReturnTypeID), opaqueReturnType);
+
+        opaqueDecl = cast<OpaqueTypeDecl>(opaqueReturnType);
+      }
+      ctx.evaluator.cacheOutput(OpaqueResultTypeRequest{subscript},
+                                std::move(opaqueDecl));
     }
-    
+
     return subscript;
   }
 
@@ -5602,6 +5610,7 @@ DeclDeserializer::readAvailable_DECL_ATTR(SmallVectorImpl<uint64_t> &scratch,
   bool isNoAsync;
   bool isPackageDescriptionVersionSpecific;
   bool isSPI;
+  bool isForEmbedded;
   DEF_VER_TUPLE_PIECES(Introduced);
   DEF_VER_TUPLE_PIECES(Deprecated);
   DEF_VER_TUPLE_PIECES(Obsoleted);
@@ -5611,7 +5620,7 @@ DeclDeserializer::readAvailable_DECL_ATTR(SmallVectorImpl<uint64_t> &scratch,
   // Decode the record, pulling the version tuple information.
   serialization::decls_block::AvailableDeclAttrLayout::readRecord(
       scratch, isImplicit, isUnavailable, isDeprecated, isNoAsync,
-      isPackageDescriptionVersionSpecific, isSPI,
+      isPackageDescriptionVersionSpecific, isSPI, isForEmbedded,
       LIST_VER_TUPLE_PIECES(Introduced), LIST_VER_TUPLE_PIECES(Deprecated),
       LIST_VER_TUPLE_PIECES(Obsoleted), rawPlatform, renameDeclID, messageSize,
       renameSize);
@@ -5655,7 +5664,7 @@ DeclDeserializer::readAvailable_DECL_ATTR(SmallVectorImpl<uint64_t> &scratch,
   auto attr = new (ctx) AvailableAttr(
       SourceLoc(), SourceRange(), platform, message, rename, renameDecl,
       Introduced, SourceRange(), Deprecated, SourceRange(), Obsoleted,
-      SourceRange(), platformAgnostic, isImplicit, isSPI);
+      SourceRange(), platformAgnostic, isImplicit, isSPI, isForEmbedded);
   return attr;
 }
 
@@ -6973,19 +6982,6 @@ Expected<Type> DESERIALIZE_TYPE(NOMINAL_TYPE)(
   return NominalType::get(nominal, parentTy.get(), MF.getContext());
 }
 
-Expected<Type> DESERIALIZE_TYPE(PAREN_TYPE)(ModuleFile &MF,
-                                            SmallVectorImpl<uint64_t> &scratch,
-                                            StringRef blobData) {
-  TypeID underlyingID;
-  decls_block::ParenTypeLayout::readRecord(scratch, underlyingID);
-
-  auto underlyingTy = MF.getTypeChecked(underlyingID);
-  if (!underlyingTy)
-    return underlyingTy.takeError();
-
-  return ParenType::get(MF.getContext(), underlyingTy.get());
-}
-
 Expected<Type> DESERIALIZE_TYPE(TUPLE_TYPE)(ModuleFile &MF,
                                             SmallVectorImpl<uint64_t> &scratch,
                                             StringRef blobData) {
@@ -8176,6 +8172,9 @@ public:
 
 llvm::Expected<const clang::Type *>
 ModuleFile::getClangType(ClangTypeID TID) {
+  if (!getContext().LangOpts.UseClangFunctionTypes)
+    return nullptr;
+
   if (TID == 0)
     return nullptr;
 

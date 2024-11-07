@@ -44,7 +44,7 @@
 #include "swift/AST/Types.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/Parse/Lexer.h"
-#include "swift/Parse/Parser.h"
+#include "swift/Parse/ParseDeclName.h"
 #include "swift/Sema/IDETypeChecking.h"
 #include "clang/Basic/CharInfo.h"
 #include "llvm/ADT/MapVector.h"
@@ -112,14 +112,7 @@ public:
   }
 
   void diagnoseIsolatedDeinitInValueTypes(DeclAttribute *attr) {
-    auto &C = D->getASTContext();
-
     if (isa<DestructorDecl>(D)) {
-      if (!C.LangOpts.hasFeature(Feature::IsolatedDeinit)) {
-        diagnoseAndRemoveAttr(attr, diag::isolated_deinit_experimental);
-        return;
-      }
-
       if (auto nominal = dyn_cast<NominalTypeDecl>(D->getDeclContext())) {
         if (!isa<ClassDecl>(nominal)) {
           // only classes and actors can have isolated deinit.
@@ -2105,7 +2098,7 @@ void AttributeChecker::visitAvailableAttr(AvailableAttr *attr) {
     return;
 
   // FIXME: This seems like it could be diagnosed during parsing instead.
-  while (attr->IsSPI) {
+  while (attr->isSPI()) {
     if (attr->hasPlatform() && attr->Introduced.has_value())
       break;
     diagnoseAndRemoveAttr(attr, diag::spi_available_malformed);
@@ -4673,7 +4666,7 @@ void AttributeChecker::checkAvailableAttrs(ArrayRef<AvailableAttr *> Attrs) {
   if (!D->getDeclContext()->getInnermostDeclarationDeclContext()) {
     // If all available are spi available, we should use @_spi instead.
     if (std::all_of(Attrs.begin(), Attrs.end(), [](AvailableAttr *AV) {
-      return AV->IsSPI;
+      return AV->isSPI();
     })) {
       diagnose(D->getLoc(), diag::spi_preferred_over_spi_available);
     }
@@ -7153,15 +7146,6 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
   // 'nonisolated' can be applied to global and static/class variables
   // that do not have storage.
   auto dc = D->getDeclContext();
-  auto &ctx = D->getASTContext();
-
-  if (!ctx.LangOpts.hasFeature(Feature::GlobalActorInferenceCutoff)) {
-    if (isa<ProtocolDecl>(D) || isa<ExtensionDecl>(D) || isa<ClassDecl>(D) ||
-        isa<StructDecl>(D) || isa<EnumDecl>(D)) {
-      diagnoseAndRemoveAttr(attr, diag::invalid_decl_modifier, attr);
-      return;
-    }
-  }
 
   // nonisolated(unsafe) is unsafe, but only under strict concurrency.
   if (attr->isUnsafe() &&
@@ -7184,14 +7168,12 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
           }
         }
 
-        if (ctx.LangOpts.hasFeature(Feature::GlobalActorInferenceCutoff)) {
           // Additionally, a stored property of a non-'Sendable' type can be
           // explicitly marked 'nonisolated'.
           if (auto parentDecl = dc->getDeclaredTypeInContext())
             if (!parentDecl->isSendableType()) {
               canBeNonisolated = true;
             }
-        }
 
         // Otherwise, this stored property has to be qualified as 'unsafe'.
         if (var->supportsMutation() && !attr->isUnsafe() && !canBeNonisolated) {
@@ -7203,15 +7185,12 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
 
         // 'nonisolated' without '(unsafe)' is not allowed on non-Sendable
         // variables, unless they are a member of a non-'Sendable' type.
-        if (!attr->isUnsafe() && !type->hasError()) {
-          if (!(canBeNonisolated &&
-                ctx.LangOpts.hasFeature(Feature::GlobalActorInferenceCutoff))) {
-            bool diagnosed = diagnoseIfAnyNonSendableTypes(
-                type, SendableCheckContext(dc), Type(), SourceLoc(),
-                attr->getLocation(), diag::nonisolated_non_sendable);
-            if (diagnosed)
-              return;
-          }
+        if (!attr->isUnsafe() && !type->hasError() && !canBeNonisolated) {
+          bool diagnosed = diagnoseIfAnyNonSendableTypes(
+              type, SendableCheckContext(dc), Type(), SourceLoc(),
+              attr->getLocation(), diag::nonisolated_non_sendable);
+          if (diagnosed)
+            return;
         }
       }
 

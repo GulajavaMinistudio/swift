@@ -25,6 +25,7 @@
 #include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticsClangImporter.h"
+#include "swift/ClangImporter/ClangImporter.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -43,6 +44,7 @@
 #include "swift/Basic/Assertions.h"
 #include "swift/Basic/Defer.h"
 #include "swift/Basic/PrettyStackTrace.h"
+#include "swift/Basic/SourceLoc.h"
 #include "swift/Basic/Statistic.h"
 #include "swift/Basic/StringExtras.h"
 #include "swift/Basic/Version.h"
@@ -1661,6 +1663,8 @@ namespace {
           // Create the wrapper struct.
           errorWrapper =
               new (C) StructDecl(loc, name, loc, std::nullopt, nullptr, dc);
+          SourceLoc end = Impl.importSourceLoc(decl->getEndLoc());
+          errorWrapper->setBraces(SourceRange(loc, end));
           errorWrapper->setAccess(AccessLevel::Public);
           errorWrapper->getAttrs().add(
             new (Impl.SwiftContext) FrozenAttr(/*IsImplicit*/true));
@@ -2666,7 +2670,7 @@ namespace {
           Impl.diagnoseTopLevelValue(
               DeclName(Impl.SwiftContext.getIdentifier(releaseOperation.name)));
         }
-      }else if (releaseOperation.kind ==
+      } else if (releaseOperation.kind ==
                  CustomRefCountingOperationResult::tooManyFound) {
         HeaderLoc loc(decl->getLocation());
         Impl.diagnose(loc,
@@ -3335,13 +3339,11 @@ namespace {
         return property->getParsedAccessor(AccessorKind::Set);
       }
 
-      // If a C++ decl is annotated with both swift_attr("returns_retained") and
-      // swift_attr("returns_unretained") then emit an error in the swift
-      // compiler. Note: this error is not emitted in the clang compiler because
-      // these attributes are used only for swift interop.
+      // Emit diagnostics for incorrect usage of "returns_unretained" and
+      // "returns_unretained" attributes
+      bool returnsRetainedAttrIsPresent = false;
+      bool returnsUnretainedAttrIsPresent = false;
       if (decl->hasAttrs()) {
-        bool returnsRetainedAttrIsPresent = false;
-        bool returnsUnretainedAttrIsPresent = false;
         for (const auto *attr : decl->getAttrs()) {
           if (const auto *swiftAttr = dyn_cast<clang::SwiftAttrAttr>(attr)) {
             if (swiftAttr->getAttribute() == "returns_unretained") {
@@ -3351,11 +3353,25 @@ namespace {
             }
           }
         }
+      }
 
+      HeaderLoc loc(decl->getLocation());
+      if (isForeignReferenceTypeWithoutImmortalAttrs(decl->getReturnType())) {
         if (returnsRetainedAttrIsPresent && returnsUnretainedAttrIsPresent) {
-          HeaderLoc loc(decl->getLocation());
           Impl.diagnose(loc, diag::both_returns_retained_returns_unretained,
                         decl);
+        } else if (!returnsRetainedAttrIsPresent &&
+                   !returnsUnretainedAttrIsPresent) {
+          Impl.diagnose(loc, diag::no_returns_retained_returns_unretained,
+                        decl);
+        }
+      } else {
+        if (returnsRetainedAttrIsPresent || returnsUnretainedAttrIsPresent) {
+          Impl.diagnose(
+              loc,
+              diag::
+                  returns_retained_or_returns_unretained_for_non_cxx_frt_values,
+              decl);
         }
       }
 
@@ -3606,9 +3622,9 @@ namespace {
           auto *typeParam = Impl.createDeclWithClangNode<GenericTypeParamDecl>(
               param, AccessLevel::Public, dc,
               Impl.SwiftContext.getIdentifier(param->getName()),
-              /*nameLoc*/ SourceLoc(), /*specifierLoc*/ SourceLoc(),
-              /*depth*/ 0, /*index*/ i,
-              GenericTypeParamKind::Type);
+              /*nameLoc*/ Impl.importSourceLoc(param->getLocation()),
+              /*specifierLoc*/ SourceLoc(),
+              /*depth*/ 0, /*index*/ i, GenericTypeParamKind::Type);
           templateParams.push_back(typeParam);
           (void)++i;
         }
@@ -3854,6 +3870,18 @@ namespace {
       if (decl->getTemplatedKind() == clang::FunctionDecl::TK_FunctionTemplate)
         return;
 
+      SmallVector<LifetimeDependenceInfo, 1> lifetimeDependencies;
+      LifetimeDependenceInfo immortalLifetime(nullptr, nullptr, 0,
+                                              /*isImmortal*/ true);
+      if (const auto *funDecl = dyn_cast<FuncDecl>(result))
+        if (hasUnsafeAPIAttr(decl) && !funDecl->getResultInterfaceType()->isEscapable()) {
+          Impl.SwiftContext.evaluator.cacheOutput(
+              LifetimeDependenceInfoRequest{result},
+              Impl.SwiftContext.AllocateCopy(lifetimeDependencies));
+          lifetimeDependencies.push_back(immortalLifetime);
+          return;
+        }
+
       auto retType = decl->getReturnType();
       auto warnForEscapableReturnType = [&] {
         if (isEscapableAnnotatedType(retType.getTypePtr())) {
@@ -3866,8 +3894,8 @@ namespace {
       };
 
       auto swiftParams = result->getParameters();
-      bool hasSelf = result->hasImplicitSelfDecl() && !isa<ConstructorDecl>(result);
-      SmallVector<LifetimeDependenceInfo, 1> lifetimeDependencies;
+      bool hasSelf =
+          result->hasImplicitSelfDecl() && !isa<ConstructorDecl>(result);
       SmallBitVector inheritLifetimeParamIndicesForReturn(swiftParams->size() +
                                                           hasSelf);
       SmallBitVector scopedLifetimeParamIndicesForReturn(swiftParams->size() +
@@ -3907,8 +3935,7 @@ namespace {
         // Assume default constructed view types have no dependencies.
         if (ctordecl->isDefaultConstructor() &&
             importer::hasNonEscapableAttr(ctordecl->getParent()))
-          lifetimeDependencies.push_back(
-              LifetimeDependenceInfo(nullptr, nullptr, 0, /*isImmortal*/ true));
+          lifetimeDependencies.push_back(immortalLifetime);
       }
       if (lifetimeDependencies.empty()) {
         if (isNonEscapableAnnotatedType(retType.getTypePtr())) {
@@ -6468,7 +6495,8 @@ Decl *SwiftDeclConverter::importGlobalAsInitializer(
   }
 
   auto result = Impl.createDeclWithClangNode<ConstructorDecl>(
-      decl, AccessLevel::Public, name, /*NameLoc=*/SourceLoc(), failable,
+      decl, AccessLevel::Public, name,
+      Impl.importSourceLoc(decl->getLocation()), failable,
       /*FailabilityLoc=*/SourceLoc(),
       /*Async=*/false, /*AsyncLoc=*/SourceLoc(),
       /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(), /*ThrownType=*/TypeLoc(),
@@ -6983,7 +7011,8 @@ ConstructorDecl *SwiftDeclConverter::importConstructor(
   assert(!importedName.getAsyncInfo());
   auto result = Impl.createDeclWithClangNode<ConstructorDecl>(
       objcMethod, AccessLevel::Public, importedName.getDeclName(),
-      /*NameLoc=*/SourceLoc(), failability, /*FailabilityLoc=*/SourceLoc(),
+      /*NameLoc=*/Impl.importSourceLoc(objcMethod->getLocation()), failability,
+      /*FailabilityLoc=*/SourceLoc(),
       /*Async=*/false, /*AsyncLoc=*/SourceLoc(),
       /*Throws=*/importedName.getErrorInfo().has_value(),
       /*ThrowsLoc=*/SourceLoc(), /*ThrownType=*/TypeLoc(), bodyParams,
@@ -8197,18 +8226,27 @@ bool swift::importer::isMutabilityAttr(const clang::SwiftAttrAttr *swiftAttr) {
          swiftAttr->getAttribute() == "nonmutating";
 }
 
-static bool importAsUnsafe(ASTContext &context, const clang::RecordDecl *decl,
+static bool importAsUnsafe(ASTContext &context, const clang::NamedDecl *decl,
                            const Decl *MappedDecl) {
   if (!context.LangOpts.hasFeature(Feature::SafeInterop) ||
-      !context.LangOpts.hasFeature(Feature::AllowUnsafeAttribute) || !decl)
+      !context.LangOpts.hasFeature(Feature::AllowUnsafeAttribute))
     return false;
+
+  if (isa<clang::CXXMethodDecl>(decl) &&
+      !evaluateOrDefault(context.evaluator, IsSafeUseOfCxxDecl({decl, context}),
+                         {}))
+    return true;
 
   if (isa<ClassDecl>(MappedDecl))
     return false;
 
-  return evaluateOrDefault(
-             context.evaluator, ClangTypeEscapability({decl->getTypeForDecl()}),
-             CxxEscapability::Unknown) == CxxEscapability::Unknown;
+  if (const auto *record = dyn_cast<clang::RecordDecl>(decl))
+    return evaluateOrDefault(context.evaluator,
+                             ClangTypeEscapability({record->getTypeForDecl()}),
+                             CxxEscapability::Unknown) ==
+           CxxEscapability::Unknown;
+
+  return false;
 }
 
 void
@@ -8390,9 +8428,7 @@ ClangImporter::Implementation::importSwiftAttrAttributes(Decl *MappedDecl) {
       }
     }
 
-    if (seenUnsafe ||
-        importAsUnsafe(SwiftContext, dyn_cast<clang::RecordDecl>(ClangDecl),
-                       MappedDecl)) {
+    if (seenUnsafe || importAsUnsafe(SwiftContext, ClangDecl, MappedDecl)) {
       auto attr = new (SwiftContext) UnsafeAttr(/*implicit=*/!seenUnsafe);
       MappedDecl->getAttrs().add(attr);
     }
@@ -9128,6 +9164,9 @@ ClangImporter::Implementation::importMirroredDecl(const clang::NamedDecl *decl,
 
     auto updateMirroredDecl = [&](Decl *result) {
       result->setImplicit();
+      if (auto VD = dyn_cast<ValueDecl>(result)) {
+        VD->setSynthesized();
+      }
 
       // Map the Clang attributes onto Swift attributes.
       importAttributes(decl, result);

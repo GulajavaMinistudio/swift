@@ -270,7 +270,7 @@ def dependency_scan_cache_remarks : Flag<["-"], "Rdependency-scan-cache">,
 
 def parallel_scan : Flag<["-"], "parallel-scan">,
    HelpText<"Perform dependency scanning in-parallel.">;
-def no_parallel_scan : Flag<["-"], "-no-parallel-scan">,
+def no_parallel_scan : Flag<["-"], "no-parallel-scan">,
    HelpText<"Perform dependency scanning in a single-threaded fashion.">;
 
 def enable_copy_propagation : Flag<["-"], "enable-copy-propagation">,
@@ -1226,6 +1226,9 @@ let Flags = [FrontendOption, NoDriverOption, HelpHidden, ModuleInterfaceOptionIg
             "when optimizing ownership will be lowered before serializing SIL">;
 }
 
+def enable_recompilation_to_ossa_module : Flag<["-"], "enable-recompilation-to-ossa-module">,
+  HelpText<"Allow recompilation of a non-OSSA module to an OSSA module when imported from another OSSA module">;
+
 def enable_sil_opaque_values : Flag<["-"], "enable-sil-opaque-values">,
   HelpText<"Enable SIL Opaque Values">;
 
@@ -1293,6 +1296,13 @@ def enable_lifetime_dependence_diagnostics :
 def disable_lifetime_dependence_diagnostics :
   Flag<["-"], "disable-lifetime-dependence-diagnostics">,
   HelpText<"Disable lifetime dependence diagnostics for Nonescapable types.">;
+
+def enable_aggressive_reg2mem :
+  Flag<["-"], "enable-aggressive-reg2mem">,
+  HelpText<"Enable a more aggressive reg2mem heuristic">;
+def disable_aggressive_reg2mem :
+  Flag<["-"], "disable-aggressive-reg2mem">,
+  HelpText<"Disable a more aggressive reg2mem heuristic">;
 
 def enable_collocate_metadata_functions :
   Flag<["-"], "enable-collocate-metadata-functions">,

@@ -1016,8 +1016,7 @@ public:
         PrettyStackTraceDecl debugStack("verifying access", D);
         if (!D->getASTContext().isAccessControlDisabled()) {
           if (D->getFormalAccessScope().isPublic() &&
-              D->getFormalAccess() < AccessLevel::Public &&
-              !D->isInterfacePackageEffectivelyPublic()) {
+              D->getFormalAccess() < AccessLevel::Public) {
             Out << "non-public decl has no formal access scope\n";
             D->dump(Out);
             abort();
@@ -2132,16 +2131,6 @@ public:
         abort();
       }
 
-      verifyCheckedBase(E);
-    }
-
-    void verifyChecked(ParenExpr *E) {
-      PrettyStackTraceExpr debugStack(Ctx, "verifying ParenExpr", E);
-      auto ty = dyn_cast<ParenType>(E->getType().getPointer());
-      if (!ty) {
-        Out << "ParenExpr not of ParenType\n";
-        abort();
-      }
       verifyCheckedBase(E);
     }
 

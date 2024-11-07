@@ -40,7 +40,6 @@
 #include "swift/IRGen/IRABIDetailsProvider.h"
 #include "swift/IRGen/Linking.h"
 #include "swift/Parse/Lexer.h"
-#include "swift/Parse/Parser.h"
 
 #include "SwiftToClangInteropContext.h"
 #include "clang/AST/ASTContext.h"
@@ -2742,11 +2741,6 @@ private:
   void visitPackElementType(PackElementType *PET,
                             std::optional<OptionalTypeKind> optionalKind) {
     llvm_unreachable("Not implemented");
-  }
-
-  void visitParenType(ParenType *PT,
-                      std::optional<OptionalTypeKind> optionalKind) {
-    visitPart(PT->getSinglyDesugaredType(), optionalKind);
   }
 
   void visitSyntaxSugarType(SyntaxSugarType *SST,

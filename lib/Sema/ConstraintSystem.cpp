@@ -117,8 +117,10 @@ ExpressionTimer::~ExpressionTimer() {
 }
 
 ConstraintSystem::ConstraintSystem(DeclContext *dc,
-                                   ConstraintSystemOptions options)
+                                   ConstraintSystemOptions options,
+                                   DiagnosticTransaction *diagnosticTransaction)
   : Context(dc->getASTContext()), DC(dc), Options(options),
+    diagnosticTransaction(diagnosticTransaction),
     Arena(dc->getASTContext(), Allocator),
     CG(*new ConstraintGraph(*this))
 {
@@ -4676,20 +4678,13 @@ void ConstraintSystem::diagnoseFailureFor(SyntacticElementTarget target) {
 
 bool ConstraintSystem::isDeclUnavailable(const Decl *D,
                                          ConstraintLocator *locator) const {
-  // First check whether this declaration is universally unavailable.
-  if (D->getAttrs().isUnavailable(getASTContext()))
-    return true;
+  SourceLoc loc;
+  if (locator) {
+    if (auto anchor = locator->getAnchor())
+      loc = getLoc(anchor);
+  }
 
-  return TypeChecker::isDeclarationUnavailable(D, DC, [&] {
-    SourceLoc loc;
-
-    if (locator) {
-      if (auto anchor = locator->getAnchor())
-        loc = getLoc(anchor);
-    }
-
-    return TypeChecker::overApproximateAvailabilityAtLocation(loc, DC);
-  });
+  return getUnsatisfiedAvailabilityConstraint(D, DC, loc).has_value();
 }
 
 bool ConstraintSystem::isConformanceUnavailable(ProtocolConformanceRef conformance,
@@ -4717,7 +4712,8 @@ void ConstraintSystem::maybeProduceFallbackDiagnostic(
   // diagnostics already emitted or waiting to be emitted. Because they are
   // a better indication of the problem.
   ASTContext &ctx = getASTContext();
-  if (ctx.hadError())
+  if (ctx.hadError() ||
+      (diagnosticTransaction && diagnosticTransaction->hasErrors()))
     return;
 
   ctx.Diags.diagnose(target.getLoc(), diag::failed_to_produce_diagnostic);
@@ -4860,24 +4856,6 @@ void ConstraintSystem::removeFixedRequirement(GenericTypeParamType *GP,
   ASSERT(erased);
 }
 
-// Replace any error types encountered with placeholders.
-Type ConstraintSystem::getVarType(const VarDecl *var) {
-  auto type = var->getTypeInContext();
-
-  // If this declaration is used as part of a code completion
-  // expression, solver needs to glance over the fact that
-  // it might be invalid to avoid failing constraint generation
-  // and produce completion results.
-  if (!isForCodeCompletion())
-    return type;
-
-  return type.transformRec([&](Type type) -> std::optional<Type> {
-    if (!type->is<ErrorType>())
-      return std::nullopt;
-    return Type(PlaceholderType::get(Context, const_cast<VarDecl *>(var)));
-  });
-}
-
 bool ConstraintSystem::isReadOnlyKeyPathComponent(
     const AbstractStorageDecl *storage, SourceLoc referenceLoc) {
   // See whether key paths can store to this component. (Key paths don't
@@ -4904,12 +4882,12 @@ bool ConstraintSystem::isReadOnlyKeyPathComponent(
   // If the setter is unavailable, then the keypath ought to be read-only
   // in this context.
   if (auto setter = storage->getOpaqueAccessor(AccessorKind::Set)) {
-    ExportContext where = ExportContext::forFunctionBody(DC, referenceLoc);
-    auto maybeUnavail =
-        TypeChecker::checkDeclarationAvailability(setter, where);
-    if (maybeUnavail.has_value()) {
+    // FIXME: Fully unavailable setters should cause the key path to be
+    // readonly too.
+    auto constraint =
+        getUnsatisfiedAvailabilityConstraint(setter, DC, referenceLoc);
+    if (constraint && constraint->isConditionallySatisfiable())
       return true;
-    }
   }
 
   return false;

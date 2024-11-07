@@ -313,6 +313,8 @@ struct BridgedDeclObj {
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE OptionalBridgedDeclObj NominalType_getValueTypeDestructor() const;
   BRIDGED_INLINE bool Struct_hasUnreferenceableStorage() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedASTType Class_getSuperclass() const;
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedDeclObj Class_getDestructor() const;
+  BRIDGED_INLINE bool Destructor_isIsolated() const;
 };
 
 struct BridgedASTNode {
@@ -502,7 +504,19 @@ void BridgedDiagnostic_finish(BridgedDiagnostic cDiag);
 //===----------------------------------------------------------------------===//
 
 SWIFT_NAME("getter:BridgedDeclContext.isLocalContext(self:)")
-bool BridgedDeclContext_isLocalContext(BridgedDeclContext cDeclContext);
+BRIDGED_INLINE bool
+BridgedDeclContext_isLocalContext(BridgedDeclContext cDeclContext);
+
+SWIFT_NAME("getter:BridgedDeclContext.isTypeContext(self:)")
+BRIDGED_INLINE bool BridgedDeclContext_isTypeContext(BridgedDeclContext dc);
+
+SWIFT_NAME("getter:BridgedDeclContext.isModuleScopeContext(self:)")
+BRIDGED_INLINE bool
+BridgedDeclContext_isModuleScopeContext(BridgedDeclContext dc);
+
+SWIFT_NAME("getter:BridgedDeclContext.astContext(self:)")
+BRIDGED_INLINE BridgedASTContext
+BridgedDeclContext_getASTContext(BridgedDeclContext dc);
 
 SWIFT_NAME("BridgedPatternBindingInitializer.create(declContext:)")
 BridgedPatternBindingInitializer
@@ -966,6 +980,14 @@ BridgedAssociatedTypeDecl BridgedAssociatedTypeDecl_createParsed(
     BridgedNullableTypeRepr opaqueDefaultType,
     BridgedNullableTrailingWhereClause genericWhereClause);
 
+SWIFT_NAME("BridgedMacroExpansionDecl.createParsed(_:poundLoc:macroNameRef:"
+           "macroNameLoc:leftAngleLoc:genericArgs:rightAngleLoc:args:)")
+BridgedMacroExpansionDecl BridgedMacroExpansionDecl_createParsed(
+    BridgedDeclContext cDeclContext, BridgedSourceLoc cPoundLoc,
+    BridgedDeclNameRef cMacroNameRef, BridgedDeclNameLoc cMacroNameLoc,
+    BridgedSourceLoc cLeftAngleLoc, BridgedArrayRef cGenericArgs,
+    BridgedSourceLoc cRightAngleLoc, BridgedNullableArgumentList cArgList);
+
 SWIFT_NAME(
     "BridgedExtensionDecl.createParsed(_:declContext:extensionKeywordLoc:"
     "extendedType:inheritedTypes:genericWhereClause:braceRange:)")
@@ -1325,6 +1347,26 @@ BridgedIsExpr BridgedIsExpr_createParsed(BridgedASTContext cContext,
                                          BridgedSourceLoc cIsLoc,
                                          BridgedTypeRepr cType);
 
+SWIFT_NAME("BridgedKeyPathDotExpr.createParsed(_:loc:)")
+BridgedKeyPathDotExpr
+BridgedKeyPathDotExpr_createParsed(BridgedASTContext cContext,
+                                   BridgedSourceLoc cLoc);
+
+SWIFT_NAME("BridgedKeyPathExpr.createParsed(_:backslashLoc:parsedRoot:"
+           "parsedPath:hasLeadingDot:)")
+BridgedKeyPathExpr BridgedKeyPathExpr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cBackslashLoc,
+    BridgedNullableExpr cParsedRoot, BridgedNullableExpr cParsedPath,
+    bool hasLeadingDot);
+
+SWIFT_NAME("BridgedMacroExpansionExpr.createParsed(_:poundLoc:macroNameRef:"
+           "macroNameLoc:leftAngleLoc:genericArgs:rightAngleLoc:args:)")
+BridgedMacroExpansionExpr BridgedMacroExpansionExpr_createParsed(
+    BridgedDeclContext cDeclContext, BridgedSourceLoc cPoundLoc,
+    BridgedDeclNameRef cMacroNameRef, BridgedDeclNameLoc cMacroNameLoc,
+    BridgedSourceLoc cLeftAngleLoc, BridgedArrayRef cGenericArgs,
+    BridgedSourceLoc cRightAngleLoc, BridgedNullableArgumentList cArgList);
+
 SWIFT_NAME("BridgedNilLiteralExpr.createParsed(_:nilKeywordLoc:)")
 BridgedNilLiteralExpr
 BridgedNilLiteralExpr_createParsed(BridgedASTContext cContext,
@@ -1346,6 +1388,12 @@ BridgedPackExpansionExpr
 BridgedPackExpansionExpr_createParsed(BridgedASTContext cContext,
                                       BridgedSourceLoc cRepeatLoc,
                                       BridgedExpr cPatternExpr);
+
+SWIFT_NAME("BridgedParenExpr.createParsed(_:leftParenLoc:expr:rightParenLoc:)")
+BridgedParenExpr BridgedParenExpr_createParsed(BridgedASTContext cContext,
+                                               BridgedSourceLoc cLParen,
+                                               BridgedExpr cExpr,
+                                               BridgedSourceLoc cRParen);
 
 SWIFT_NAME("BridgedPostfixUnaryExpr.createParsed(_:operator:operand:)")
 BridgedPostfixUnaryExpr
