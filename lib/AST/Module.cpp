@@ -275,7 +275,7 @@ void SourceLookupCache::addToUnqualifiedLookupCache(Range items,
       continue;
 
     if (auto *VD = dyn_cast<ValueDecl>(D)) {
-      auto getDerivative = [onlyDerivatives, VD]() -> AbstractFunctionDecl * {
+      auto getDerivative = [VD]() -> AbstractFunctionDecl * {
         if (auto *AFD = dyn_cast<AbstractFunctionDecl>(VD))
           if (AFD->getAttrs().hasAttribute<DerivativeAttr>())
             return AFD;
@@ -862,6 +862,7 @@ ModuleDecl::getOriginalLocation(SourceLoc loc) const {
       // replaced function bodies. The body is actually different code to the
       // original file.
     case GeneratedSourceInfo::PrettyPrinted:
+    case GeneratedSourceInfo::AttributeFromClang:
       // No original location, return the original buffer/location
       return {startBufferID, startLoc};
     }
@@ -1148,6 +1149,7 @@ std::optional<MacroRole> SourceFile::getFulfilledMacroRole() const {
   case GeneratedSourceInfo::ReplacedFunctionBody:
   case GeneratedSourceInfo::PrettyPrinted:
   case GeneratedSourceInfo::DefaultArgument:
+  case GeneratedSourceInfo::AttributeFromClang:
     return std::nullopt;
   }
 }
@@ -3674,12 +3676,12 @@ SynthesizedFileUnit &FileUnit::getOrCreateSynthesizedFile() {
   return *SynthesizedFile;
 }
 
-TypeRefinementContext *SourceFile::getTypeRefinementContext() const {
-  return TRC;
+AvailabilityScope *SourceFile::getAvailabilityScope() const {
+  return RootAvailabilityScope;
 }
 
-void SourceFile::setTypeRefinementContext(TypeRefinementContext *Root) {
-  TRC = Root;
+void SourceFile::setAvailabilityScope(AvailabilityScope *scope) {
+  RootAvailabilityScope = scope;
 }
 
 ArrayRef<OpaqueTypeDecl *> SourceFile::getOpaqueReturnTypeDecls() {

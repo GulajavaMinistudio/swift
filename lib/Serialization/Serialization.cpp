@@ -3099,13 +3099,6 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
       return;
     }
 
-    case DeclAttrKind::MainType: {
-      auto abbrCode = S.DeclTypeAbbrCodes[MainTypeDeclAttrLayout::Code];
-      MainTypeDeclAttrLayout::emitRecord(S.Out, S.ScratchRecord, abbrCode,
-                                         DA->isImplicit());
-      return;
-    }
-
     case DeclAttrKind::Specialize: {
       auto abbrCode = S.DeclTypeAbbrCodes[SpecializeDeclAttrLayout::Code];
       auto attr = cast<SpecializeAttr>(DA);
@@ -3399,13 +3392,13 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
 
       unsigned numNames = introducedDeclNames.size();
 
-      (void)evaluateOrDefault(S.getASTContext().evaluator,
-                              ResolveMacroConformances{theAttr, D}, {});
+      auto conformances =
+          evaluateOrDefault(S.getASTContext().evaluator,
+                            ResolveMacroConformances{theAttr, D}, {});
 
       unsigned numConformances = 0;
-      for (auto conformance : theAttr->getConformances()) {
-        introducedDeclNames.push_back(
-            S.addTypeRef(conformance->getInstanceType()));
+      for (auto conformance : conformances) {
+        introducedDeclNames.push_back(S.addTypeRef(conformance));
         ++numConformances;
       }
 

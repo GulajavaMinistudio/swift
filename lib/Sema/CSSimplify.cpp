@@ -8349,8 +8349,8 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
 
 void ConstraintSystem::recordSynthesizedConformance(
                                            ConstraintLocator *locator,
-                                           ProtocolConformanceRef conformance) {
-  bool inserted = SynthesizedConformances.insert({locator, conformance}).second;
+                                           ProtocolDecl *proto) {
+  bool inserted = SynthesizedConformances.insert({locator, proto}).second;
   ASSERT(inserted);
 
   if (solverState)
@@ -8512,13 +8512,12 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
       // dynamically during IRGen.
       if (auto *witness = dyn_cast<FuncDecl>(witnessInfo->first)) {
         auto synthesizeConformance = [&]() {
-          ProtocolConformanceRef synthesized(protocol);
           auto witnessLoc = getConstraintLocator(
               locator.getAnchor(), LocatorPathElt::Witness(witness));
           // FIXME: Why are we recording the same locator more than once here?
           if (SynthesizedConformances.count(witnessLoc) == 0)
-            recordSynthesizedConformance(witnessLoc, synthesized);
-          return recordConformance(synthesized);
+            recordSynthesizedConformance(witnessLoc, protocol);
+          return SolutionKind::Solved;
         };
 
         if (witness->isGeneric()) {
@@ -10147,6 +10146,9 @@ performMemberLookup(ConstraintKind constraintKind, DeclNameRef memberName,
       return llvm::any_of(lookup, [&](const auto &result) {
         auto decl = result.getValueDecl();
         if (!isa_and_nonnull<FuncDecl>(decl))
+          return false;
+
+        if (!decl->isInstanceMember())
           return false;
 
         auto hasAppliedSelf = decl->hasCurriedSelf() &&

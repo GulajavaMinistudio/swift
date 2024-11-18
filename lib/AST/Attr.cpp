@@ -353,6 +353,23 @@ bool DeclAttribute::canAttributeAppearOnDeclKind(DeclAttrKind DAK, DeclKind DK) 
   llvm_unreachable("bad DeclKind");
 }
 
+// Ensure that every DeclAttribute subclass implements its own CloneAttr.
+static void checkDeclAttributeClones() {
+#define DECL_ATTR(_,CLASS,...) \
+  CLASS##Attr *(CLASS##Attr::*ptr##CLASS)(ASTContext &) const = &CLASS##Attr::clone; \
+  (void)ptr##CLASS;
+#include "swift/AST/DeclAttr.def"
+}
+
+DeclAttribute *DeclAttribute::clone(ASTContext &ctx) const {
+  (void)checkDeclAttributeClones;
+  switch (getKind()) {
+#define DECL_ATTR(_,CLASS, ...) \
+  case DeclAttrKind::CLASS: return static_cast<const CLASS##Attr *>(this)->clone(ctx);
+#include "swift/AST/DeclAttr.def"
+  }
+}
+
 bool
 DeclAttributes::isUnavailableInSwiftVersion(
   const version::Version &effectiveVersion) const {
@@ -536,7 +553,7 @@ DeclAttributes::getDeprecated(const ASTContext &ctx) const {
       // We treat the declaration as deprecated if it is deprecated on
       // all deployment targets.
       // Once availability checking is enabled by default, we should
-      // query the type refinement context hierarchy to determine
+      // query the availability scope tree to determine
       // whether a declaration is deprecated on all versions
       // allowed by the context containing the reference.
       if (DeprecatedVersion.value() <= MinVersion) {
@@ -1289,18 +1306,13 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
       // Use @_functionBuilder in Swift interfaces to maintain backward
       // compatibility.
       Printer.printSimpleAttr("_functionBuilder", /*needAt=*/true);
+    } else if (getKind() == DeclAttrKind::MainType && Options.PrintForSIL) {
+      // Don't print into SIL. Necessary bits have already been generated.
+      return false;
     } else {
       Printer.printSimpleAttr(getAttrName(), /*needAt=*/true);
     }
     return true;
-
-  case DeclAttrKind::MainType: {
-    // Don't print into SIL. Necessary bits have already been generated.
-    if (Options.PrintForSIL)
-      return false;
-    Printer.printSimpleAttr(getAttrName(), /*needAt=*/true);
-    return true;
-  }
 
   case DeclAttrKind::SetterAccess:
     Printer.printKeyword(getAttrName(), Options, "(set)");
@@ -1889,8 +1901,6 @@ StringRef DeclAttribute::getAttrName() const {
     if (cast<ObjCImplementationAttr>(this)->isEarlyAdopter())
       return "_objcImplementation";
     return "implementation";
-  case DeclAttrKind::MainType:
-    return "main";
   case DeclAttrKind::DynamicReplacement:
     return "_dynamicReplacement";
   case DeclAttrKind::TypeEraser:
@@ -2133,9 +2143,9 @@ ObjCAttr *ObjCAttr::clone(ASTContext &context) const {
 
 PrivateImportAttr::PrivateImportAttr(SourceLoc atLoc, SourceRange baseRange,
                                      StringRef sourceFile,
-                                     SourceRange parenRange)
-    : DeclAttribute(DeclAttrKind::PrivateImport, atLoc, baseRange,
-                    /*Implicit=*/false),
+                                     SourceRange parenRange,
+                                     bool implicit)
+    : DeclAttribute(DeclAttrKind::PrivateImport, atLoc, baseRange, implicit),
       SourceFile(sourceFile) {}
 
 PrivateImportAttr *PrivateImportAttr::create(ASTContext &Ctxt, SourceLoc AtLoc,
@@ -2960,8 +2970,8 @@ MacroRoleAttr::MacroRoleAttr(SourceLoc atLoc, SourceRange range,
                              MacroSyntax syntax, SourceLoc lParenLoc,
                              MacroRole role,
                              ArrayRef<MacroIntroducedDeclName> names,
-                             ArrayRef<TypeExpr *> conformances,
-                             SourceLoc rParenLoc, bool implicit)
+                             ArrayRef<Expr *> conformances, SourceLoc rParenLoc,
+                             bool implicit)
     : DeclAttribute(DeclAttrKind::MacroRole, atLoc, range, implicit),
       syntax(syntax), role(role), numNames(names.size()),
       numConformances(conformances.size()), lParenLoc(lParenLoc),
@@ -2969,20 +2979,19 @@ MacroRoleAttr::MacroRoleAttr(SourceLoc atLoc, SourceRange range,
   auto *trailingNamesBuffer = getTrailingObjects<MacroIntroducedDeclName>();
   std::uninitialized_copy(names.begin(), names.end(), trailingNamesBuffer);
 
-  auto *trailingConformancesBuffer = getTrailingObjects<TypeExpr *>();
+  auto *trailingConformancesBuffer = getTrailingObjects<Expr *>();
   std::uninitialized_copy(conformances.begin(), conformances.end(),
                           trailingConformancesBuffer);
 }
 
-MacroRoleAttr *
-MacroRoleAttr::create(ASTContext &ctx, SourceLoc atLoc, SourceRange range,
-                      MacroSyntax syntax, SourceLoc lParenLoc, MacroRole role,
-                      ArrayRef<MacroIntroducedDeclName> names,
-                      ArrayRef<TypeExpr *> conformances,
-                      SourceLoc rParenLoc, bool implicit) {
-  unsigned size =
-      totalSizeToAlloc<MacroIntroducedDeclName, TypeExpr *>(
-          names.size(), conformances.size());
+MacroRoleAttr *MacroRoleAttr::create(ASTContext &ctx, SourceLoc atLoc,
+                                     SourceRange range, MacroSyntax syntax,
+                                     SourceLoc lParenLoc, MacroRole role,
+                                     ArrayRef<MacroIntroducedDeclName> names,
+                                     ArrayRef<Expr *> conformances,
+                                     SourceLoc rParenLoc, bool implicit) {
+  unsigned size = totalSizeToAlloc<MacroIntroducedDeclName, Expr *>(
+      names.size(), conformances.size());
   auto *mem = ctx.Allocate(size, alignof(MacroRoleAttr));
   return new (mem) MacroRoleAttr(atLoc, range, syntax, lParenLoc, role, names,
                                  conformances, rParenLoc, implicit);
@@ -2995,11 +3004,12 @@ ArrayRef<MacroIntroducedDeclName> MacroRoleAttr::getNames() const {
   };
 }
 
-ArrayRef<TypeExpr *> MacroRoleAttr::getConformances() const {
-  return {
-    getTrailingObjects<TypeExpr *>(),
-    numConformances
-  };
+ArrayRef<Expr *> MacroRoleAttr::getConformances() const {
+  return {getTrailingObjects<Expr *>(), numConformances};
+}
+
+MutableArrayRef<Expr *> MacroRoleAttr::getConformances() {
+  return {getTrailingObjects<Expr *>(), numConformances};
 }
 
 bool MacroRoleAttr::hasNameKind(MacroIntroducedDeclNameKind kind) const {

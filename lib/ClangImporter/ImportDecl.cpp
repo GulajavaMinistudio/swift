@@ -52,7 +52,6 @@
 #include "swift/ClangImporter/ClangImporterRequests.h"
 #include "swift/ClangImporter/ClangModule.h"
 #include "swift/Parse/Lexer.h"
-#include "swift/Parse/Parser.h"
 #include "swift/Strings.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
@@ -2186,7 +2185,10 @@ namespace {
       }
 
       if (Impl.SwiftContext.LangOpts.hasFeature(Feature::NonescapableTypes) &&
-          importer::hasNonEscapableAttr(decl)) {
+          evaluateOrDefault(
+              Impl.SwiftContext.evaluator,
+              ClangTypeEscapability({decl->getTypeForDecl(), Impl}),
+              CxxEscapability::Unknown) == CxxEscapability::NonEscapable) {
         result->getAttrs().add(new (Impl.SwiftContext)
                                    NonEscapableAttr(/*Implicit=*/true));
       }
@@ -3930,7 +3932,11 @@ namespace {
       else if (auto *ctordecl = dyn_cast<clang::CXXConstructorDecl>(decl)) {
         // Assume default constructed view types have no dependencies.
         if (ctordecl->isDefaultConstructor() &&
-            importer::hasNonEscapableAttr(ctordecl->getParent()))
+            evaluateOrDefault(
+                Impl.SwiftContext.evaluator,
+                ClangTypeEscapability(
+                    {ctordecl->getParent()->getTypeForDecl(), Impl}),
+                CxxEscapability::Unknown) == CxxEscapability::NonEscapable)
           lifetimeDependencies.push_back(immortalLifetime);
       }
       if (lifetimeDependencies.empty()) {
@@ -4117,8 +4123,17 @@ namespace {
 
       auto type = importedType.getType();
 
+      // Private C++ fields should also be private in Swift. Since Swift does
+      // not have a notion of protected field, map protected C++ fields to
+      // private Swift fields.
+      AccessLevel accessLevel =
+          (decl->getAccess() == clang::AccessSpecifier::AS_private ||
+           decl->getAccess() == clang::AccessSpecifier::AS_protected)
+              ? AccessLevel::Private
+              : AccessLevel::Public;
+
       auto result =
-        Impl.createDeclWithClangNode<VarDecl>(decl, AccessLevel::Public,
+        Impl.createDeclWithClangNode<VarDecl>(decl, accessLevel,
                               /*IsStatic*/ false,
                               VarDecl::Introducer::Var,
                               Impl.importSourceLoc(decl->getLocation()),
@@ -8185,29 +8200,38 @@ bool importer::hasSameUnderlyingType(const clang::Type *a,
   return a == b->getTypeForDecl();
 }
 
-unsigned ClangImporter::Implementation::getClangSwiftAttrSourceBuffer(
-    StringRef attributeText) {
-  auto known = ClangSwiftAttrSourceBuffers.find(attributeText);
-  if (known != ClangSwiftAttrSourceBuffers.end())
-    return known->second;
+SourceFile &ClangImporter::Implementation::getClangSwiftAttrSourceFile(
+    ModuleDecl &module,
+    StringRef attributeText
+) {
+  auto &sourceFiles = ClangSwiftAttrSourceFiles[attributeText];
 
-  // Create a new buffer with a copy of the attribute text, so we don't need to
-  // rely on Clang keeping it around.
+  // Check whether we've already created a source file.
+  for (auto sourceFile : sourceFiles) {
+    if (sourceFile->getParentModule() == &module)
+      return *sourceFile;
+  }
+
+  // Create a new buffer with a copy of the attribute text,
+  // so we don't need to rely on Clang keeping it around.
   auto &sourceMgr = SwiftContext.SourceMgr;
   auto bufferID = sourceMgr.addMemBufferCopy(attributeText);
-  ClangSwiftAttrSourceBuffers.insert({attributeText, bufferID});
-  return bufferID;
-}
 
-SourceFile &ClangImporter::Implementation::getClangSwiftAttrSourceFile(
-    ModuleDecl &module, unsigned bufferID) {
-  auto known = ClangSwiftAttrSourceFiles.find(&module);
-  if (known != ClangSwiftAttrSourceFiles.end())
-    return *known->second;
+  // Note that this is for an attribute.
+  sourceMgr.setGeneratedSourceInfo(
+      bufferID,
+      {
+        GeneratedSourceInfo::AttributeFromClang,
+        CharSourceRange(),
+        sourceMgr.getRangeForBuffer(bufferID),
+        &module
+      }
+  );
 
+  // Create the source file.
   auto sourceFile = new (SwiftContext)
       SourceFile(module, SourceFileKind::Library, bufferID);
-  ClangSwiftAttrSourceFiles.insert({&module, sourceFile});
+  sourceFiles.push_back(sourceFile);
 
   return *sourceFile;
 }
@@ -8222,8 +8246,10 @@ bool swift::importer::isMutabilityAttr(const clang::SwiftAttrAttr *swiftAttr) {
          swiftAttr->getAttribute() == "nonmutating";
 }
 
-static bool importAsUnsafe(ASTContext &context, const clang::NamedDecl *decl,
+static bool importAsUnsafe(ClangImporter::Implementation &impl,
+                           const clang::NamedDecl *decl,
                            const Decl *MappedDecl) {
+  auto &context = impl.SwiftContext;
   if (!context.LangOpts.hasFeature(Feature::SafeInterop) ||
       !context.LangOpts.hasFeature(Feature::AllowUnsafeAttribute))
     return false;
@@ -8237,10 +8263,10 @@ static bool importAsUnsafe(ASTContext &context, const clang::NamedDecl *decl,
     return false;
 
   if (const auto *record = dyn_cast<clang::RecordDecl>(decl))
-    return evaluateOrDefault(context.evaluator,
-                             ClangTypeEscapability({record->getTypeForDecl()}),
-                             CxxEscapability::Unknown) ==
-           CxxEscapability::Unknown;
+    return evaluateOrDefault(
+               context.evaluator,
+               ClangTypeEscapability({record->getTypeForDecl(), impl, false}),
+               CxxEscapability::Unknown) == CxxEscapability::Unknown;
 
   return false;
 }
@@ -8263,7 +8289,6 @@ ClangImporter::Implementation::importSwiftAttrAttributes(Decl *MappedDecl) {
 
   std::optional<const clang::SwiftAttrAttr *> seenMainActorAttr;
   const clang::SwiftAttrAttr *seenMutabilityAttr = nullptr;
-  PatternBindingInitializer *initContext = nullptr;
 
   auto importAttrsFromDecl = [&](const clang::NamedDecl *ClangDecl) {
     //
@@ -8383,48 +8408,21 @@ ClangImporter::Implementation::importSwiftAttrAttributes(Decl *MappedDecl) {
         continue;
       }
 
-      // Dig out a buffer with the attribute text.
-      unsigned bufferID = getClangSwiftAttrSourceBuffer(
-          swiftAttr->getAttribute());
-
       // Dig out a source file we can use for parsing.
       auto &sourceFile = getClangSwiftAttrSourceFile(
-          *MappedDecl->getDeclContext()->getParentModule(), bufferID);
+          *MappedDecl->getDeclContext()->getParentModule(),
+          swiftAttr->getAttribute());
 
-      // Spin up a parser.
-      swift::Parser parser(
-          bufferID, sourceFile, &SwiftContext.Diags, nullptr, nullptr);
-      // Prime the lexer.
-      parser.consumeTokenWithoutFeedingReceiver();
-
-      bool hadError = false;
-      if (parser.Tok.is(tok::at_sign)) {
-        SourceLoc atEndLoc = parser.Tok.getRange().getEnd();
-        SourceLoc atLoc = parser.consumeToken(tok::at_sign);
-        hadError = parser
-                       .parseDeclAttribute(MappedDecl->getAttrs(), atLoc,
-                                           atEndLoc, initContext,
-                                           /*isFromClangAttribute=*/true)
-                       .isError();
-      } else {
-        SourceLoc staticLoc;
-        StaticSpellingKind staticSpelling;
-        hadError = parser
-                       .parseDeclModifierList(MappedDecl->getAttrs(), staticLoc,
-                                              staticSpelling,
-                                              /*isFromClangAttribute=*/true)
-                       .isError();
-      }
-
-      if (hadError) {
-        // Complain about the unhandled attribute or modifier.
-        HeaderLoc attrLoc(swiftAttr->getLocation());
-        diagnose(attrLoc, diag::clang_swift_attr_unhandled,
-                 swiftAttr->getAttribute());
+      // Collect the attributes from the synthesized top-level declaration in
+      // the source file.
+      auto topLevelDecls = sourceFile.getTopLevelDecls();
+      for (auto decl : topLevelDecls) {
+        for (auto attr : decl->getAttrs())
+          MappedDecl->getAttrs().add(attr->clone(SwiftContext));
       }
     }
 
-    if (seenUnsafe || importAsUnsafe(SwiftContext, ClangDecl, MappedDecl)) {
+    if (seenUnsafe || importAsUnsafe(*this, ClangDecl, MappedDecl)) {
       auto attr = new (SwiftContext) UnsafeAttr(/*implicit=*/!seenUnsafe);
       MappedDecl->getAttrs().add(attr);
     }
@@ -8825,15 +8823,15 @@ ClangImporter::Implementation::importDeclImpl(const clang::NamedDecl *ClangDecl,
   if (ClangDecl->isInvalidDecl())
     return nullptr;
 
-  // Private and protected C++ class members should never be used, so we skip
-  // them entirely (instead of importing them with a corresponding Swift access
-  // level) to remove clutter from the module interface.
-  //
-  // We omit protected members in addition to private members because Swift
-  // structs can't inherit from C++ classes, so there's effectively no way to
-  // access them.
+  // Private and protected C++ class members should never be used from Swift,
+  // however, parts of the Swift typechecker rely on being able to iterate over
+  // all of the stored fields of a particular struct. This means we still need
+  // to add private fields to the Swift AST.
+  // 
+  // Other kinds of private and protected C++ decls are not relevant for Swift.
   clang::AccessSpecifier access = ClangDecl->getAccess();
-  if (access == clang::AS_protected || access == clang::AS_private)
+  if ((access == clang::AS_protected || access == clang::AS_private) &&
+      !isa<clang::FieldDecl>(ClangDecl))
     return nullptr;
 
   bool SkippedOverTypedef = false;
@@ -9530,15 +9528,18 @@ void ClangImporter::Implementation::loadAllMembersOfRecordDecl(
   for (auto member: members) {
     // This means we found a member in a C++ record's base class.
     if (swiftDecl->getClangDecl() != clangRecord) {
+      auto namedMember = cast<ValueDecl>(member);
+      if (namedMember->getFormalAccess() < AccessLevel::Public)
+        continue;
       // Do not clone the base member into the derived class
       // when the derived class already has a member of such
       // name and arity.
       auto memberArity =
-          getImportedBaseMemberDeclArity(cast<ValueDecl>(member));
+          getImportedBaseMemberDeclArity(namedMember);
       bool shouldAddBaseMember = true;
       for (const auto *currentMember : swiftDecl->getMembers()) {
         auto vd = dyn_cast<ValueDecl>(currentMember);
-        if (vd->getName() == cast<ValueDecl>(member)->getName()) {
+        if (vd->getName() == namedMember->getName()) {
           if (memberArity == getImportedBaseMemberDeclArity(vd)) {
             shouldAddBaseMember = false;
             break;
@@ -9548,7 +9549,7 @@ void ClangImporter::Implementation::loadAllMembersOfRecordDecl(
       if (!shouldAddBaseMember)
         continue;
       // So we need to clone the member into the derived class.
-      if (auto newDecl = importBaseMemberDecl(cast<ValueDecl>(member), swiftDecl)) {
+      if (auto newDecl = importBaseMemberDecl(namedMember, swiftDecl)) {
         swiftDecl->addMember(newDecl);
       }
       continue;

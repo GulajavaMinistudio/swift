@@ -93,7 +93,7 @@ split_embedded_sources(
   EMBEDDED Identifiable.swift
   EMBEDDED Indices.swift
   EMBEDDED InputStream.swift
-    NORMAL IntegerParsing.swift
+  EMBEDDED IntegerParsing.swift
   EMBEDDED Integers.swift
     NORMAL Join.swift
   EMBEDDED KeyPath.swift
@@ -403,12 +403,18 @@ if(BOOTSTRAPPING_MODE STREQUAL "BOOTSTRAPPING")
                     BOOTSTRAPPING 1)
 endif()
 
+set(tooling_stdlib_deps)
+if(TARGET libSwiftScan)
+  list(APPEND tooling_stdlib_deps libSwiftScan)
+endif()
+
 add_swift_target_library(swiftCore
                   ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES}
                   ${swiftCore_common_options}
                   ${compile_flags_for_final_build}
                   FILE_DEPENDS
                     ${swiftCore_common_dependencies}
+                  DEPENDS ${tooling_stdlib_deps}
                   INSTALL_IN_COMPONENT
                     stdlib
                   MACCATALYST_BUILD_FLAVOR
@@ -451,6 +457,7 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB)
       SDK "embedded"
       ARCHITECTURE "${arch}"
       FILE_DEPENDS ${swiftCore_common_dependencies}
+      DEPENDS ${tooling_stdlib_deps}
       INSTALL_IN_COMPONENT stdlib
       )
     add_dependencies(embedded-stdlib embedded-stdlib-${mod})

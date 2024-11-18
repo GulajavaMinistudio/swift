@@ -925,9 +925,19 @@ def enable_experimental_feature :
   Flags<[FrontendOption, ModuleInterfaceOption]>,
   HelpText<"Enable an experimental feature">;
 
+def disable_experimental_feature :
+  Separate<["-"], "disable-experimental-feature">,
+  Flags<[FrontendOption, ModuleInterfaceOption]>,
+  HelpText<"Disable an experimental feature">;
+
 def enable_upcoming_feature : Separate<["-"], "enable-upcoming-feature">,
   Flags<[FrontendOption, ModuleInterfaceOption]>,
   HelpText<"Enable a feature that will be introduced in an upcoming language "
+           "version">;
+
+def disable_upcoming_feature : Separate<["-"], "disable-upcoming-feature">,
+  Flags<[FrontendOption, ModuleInterfaceOption]>,
+  HelpText<"Disable a feature that will be introduced in an upcoming language "
            "version">;
 
 def Rpass_EQ : Joined<["-"], "Rpass=">,
@@ -1336,9 +1346,9 @@ def dump_scope_maps : Separate<["-"], "dump-scope-maps">,
   MetaVarName<"<expanded-or-list-of-line:column>">,
   ModeOpt,
   Flags<[FrontendOption, NoInteractiveOption, DoesNotAffectIncrementalBuild]>;
-def dump_type_refinement_contexts :
-  Flag<["-"], "dump-type-refinement-contexts">,
-  HelpText<"Type-check input file(s) and dump type refinement contexts(s)">,
+def dump_availability_scopes :
+  Flag<["-"], "dump-availability-scopes">,
+  HelpText<"Type-check input file(s) and dump availability scopes">,
   ModeOpt,
   Flags<[FrontendOption, NoInteractiveOption, DoesNotAffectIncrementalBuild]>;
 def dump_type_info : Flag<["-"], "dump-type-info">,
@@ -1669,6 +1679,15 @@ def omit_extension_block_symbols: Flag<["-"], "omit-extension-block-symbols">,
   Flags<[SwiftSymbolGraphExtractOption, FrontendOption,
         NoInteractiveOption, SupplementaryOutput, HelpHidden]>,
   HelpText<"Directly associate members and conformances with the extended nominal when generating symbol graphs instead of emitting 'swift.extension' symbols for extensions to external types">;
+
+// swift-synthesize-interface-only options
+def include_submodules : Flag<["-"], "include-submodules">,
+  Flags<[NoDriverOption, SwiftSynthesizeInterfaceOption]>,
+  HelpText<"Also print the declarations synthesized for any Clang submodules">;
+
+def print_fully_qualified_types : Flag<["-"], "print-fully-qualified-types">,
+  Flags<[NoDriverOption, SwiftSynthesizeInterfaceOption]>,
+  HelpText<"Always print fully qualified type names">;
 
 // swift-symbolgraph-extract-only options
 def output_dir : Separate<["-"], "output-dir">,

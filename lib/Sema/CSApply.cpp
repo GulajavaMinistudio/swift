@@ -121,10 +121,12 @@ Solution::computeSubstitutions(NullablePtr<ValueDecl> decl,
   auto lookupConformanceFn =
       [&](CanType original, Type replacement,
           ProtocolDecl *protoType) -> ProtocolConformanceRef {
+    assert(!replacement->is<GenericTypeParamType>());
+
     if (replacement->hasError() ||
         isOpenedAnyObject(replacement) ||
         replacement->is<GenericTypeParamType>()) {
-      return ProtocolConformanceRef(protoType);
+      return ProtocolConformanceRef::forAbstract(replacement, protoType);
     }
 
     // FIXME: Retrieve the conformance from the solution itself.
@@ -133,8 +135,10 @@ Solution::computeSubstitutions(NullablePtr<ValueDecl> decl,
 
     if (conformance.isInvalid()) {
       auto synthesized = SynthesizedConformances.find(locator);
-      if (synthesized != SynthesizedConformances.end())
-        return synthesized->second;
+      if (synthesized != SynthesizedConformances.end()) {
+        return ProtocolConformanceRef::forAbstract(
+            replacement, synthesized->second);
+      }
     }
 
     return conformance;
@@ -426,13 +430,24 @@ namespace {
           solution(solution), target(target),
           SuppressDiagnostics(suppressDiagnostics) {}
 
+    ASTContext &getASTContext() const { return cs.getASTContext(); }
     ConstraintSystem &getConstraintSystem() const { return cs; }
 
     void addLocalDeclToTypeCheck(Decl *D) {
+      // If we're doing code completion, avoid doing any further type-checking,
+      // that should instead be handled by TypeCheckASTNodeAtLocRequest.
+      if (getASTContext().CompletionCallback)
+        return;
+
       LocalDeclsToTypeCheck.push_back(D);
     }
 
     void addMacroToExpand(MacroExpansionExpr *E) {
+      // If we're doing code completion, avoid doing any further type-checking,
+      // that should instead be handled by TypeCheckASTNodeAtLocRequest.
+      if (getASTContext().CompletionCallback)
+        return;
+
       MacrosToExpand.push_back(E);
     }
 
