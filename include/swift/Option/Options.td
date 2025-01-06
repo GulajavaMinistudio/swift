@@ -794,12 +794,12 @@ def enable_experimental_concise_pound_file : Flag<["-"],
 
 def enable_experimental_cxx_interop :
   Flag<["-"], "enable-experimental-cxx-interop">,
-  Flags<[NoDriverOption, FrontendOption, HelpHidden, ModuleInterfaceOption]>,
+  Flags<[NoDriverOption, FrontendOption, HelpHidden]>,
   HelpText<"Enable experimental C++ interop code generation and config directives">;
 
 def cxx_interoperability_mode :
   Joined<["-"], "cxx-interoperability-mode=">,
-  Flags<[FrontendOption, ModuleInterfaceOption, SwiftSymbolGraphExtractOption,
+  Flags<[FrontendOption, SwiftSymbolGraphExtractOption,
          SwiftSynthesizeInterfaceOption]>,
   HelpText<"Enables C++ interoperability; pass 'default' to enable or 'off' to disable">;
 
@@ -1417,7 +1417,7 @@ def Xcc : Separate<["-"], "Xcc">,
   HelpText<"Pass <arg> to the C/C++/Objective-C compiler">;
 
 def Xclang_linker : Separate<["-"], "Xclang-linker">, Flags<[HelpHidden]>,
-  MetaVarName<"<arg>">, HelpText<"Pass <arg> to Clang when it is use for linking.">;
+  MetaVarName<"<arg>">, HelpText<"Pass <arg> to Clang when it is used for linking.">;
 
 def Xllvm : Separate<["-"], "Xllvm">,
   Flags<[FrontendOption, HelpHidden]>,
@@ -1485,7 +1485,7 @@ def profile_generate : Flag<["-"], "profile-generate">,
   HelpText<"Generate instrumented code to collect execution counts">;
 
 def debug_info_for_profiling : Flag<["-"], "debug-info-for-profiling">,
-  Flags<[FrontendOption, NoInteractiveOption]>,
+  Flags<[FrontendOption, NoInteractiveOption, NewDriverOnlyOption]>,
   HelpText<"Emit extra debug info (DWARF discriminators) to make sampling-based profiling more accurate">;
 
 def profile_use : CommaJoined<["-"], "profile-use=">,
@@ -1497,8 +1497,8 @@ def profile_coverage_mapping : Flag<["-"], "profile-coverage-mapping">,
   Flags<[FrontendOption, NoInteractiveOption]>,
   HelpText<"Generate coverage data for use with profiled execution counts">;
 
-def profile_sample_use : CommaJoined<["-"], "profile-sample-use=">,
-  Flags<[FrontendOption, NoInteractiveOption, ArgumentIsPath]>,
+def profile_sample_use : Joined<["-"], "profile-sample-use=">,
+  Flags<[FrontendOption, NoInteractiveOption, ArgumentIsPath, NewDriverOnlyOption]>,
   MetaVarName<"<profile data>">,
   HelpText<"Supply sampling-based profiling data from llvm-profdata to enable profile-guided optimization">;
 
@@ -1657,7 +1657,7 @@ def emit_symbol_graph: Flag<["-"], "emit-symbol-graph">,
 
 def emit_symbol_graph_dir : Separate<["-"], "emit-symbol-graph-dir">,
   Flags<[FrontendOption, NoInteractiveOption, ArgumentIsPath,
-         SupplementaryOutput, HelpHidden]>,
+         SupplementaryOutput, HelpHidden, CacheInvariant]>,
   HelpText<"Emit a symbol graph to directory <dir>">,
   MetaVarName<"<dir>">;
 
@@ -1785,6 +1785,10 @@ def compiler_style_diags: Flag<["-", "--"], "compiler-style-diags">,
   Flags<[NoDriverOption, SwiftAPIDigesterOption]>,
   HelpText<"Print compiler style diagnostics to stderr.">;
 
+def error_on_abi_breakage: Flag<["-", "--"], "error-on-abi-breakage">,
+  Flags<[NoDriverOption, SwiftAPIDigesterOption]>,
+  HelpText<"Always treat ABI checker issues as errors">;
+
 def json: Flag<["-", "--"], "json">,
   Flags<[NoDriverOption, SwiftAPIDigesterOption]>,
   HelpText<"Print output in JSON format.">;
@@ -1888,6 +1892,11 @@ def use_interface_for_module: Separate<["-", "--"], "use-interface-for-module">,
   HelpText<"Prefer loading these modules via interface">,
   MetaVarName<"<name>">;
 
+def load_pass_plugin_EQ : Joined<["-"], "load-pass-plugin=">,
+  Flags<[FrontendOption, ArgumentIsPath]>,
+  HelpText<"Load LLVM pass plugin from a dynamic shared object file.">,
+  MetaVarName<"<path>">;
+
 // ONLY SUPPORTED IN NEW DRIVER
 
 // These flags only exist here so that the old driver doesn't fail with unknown
@@ -1916,6 +1925,11 @@ def driver_scan_dependencies_non_lib:
   Flags<[HelpHidden, NewDriverOnlyOption]>,
   HelpText<"Use calls to `swift-frontend -scan-dependencies` instead of "
            "dedicated dependency scanning library">;
+
+def always_rebuild_module_dependencies:
+  Flag<["-"], "always-rebuild-module-dependencies">,
+  Flags<[HelpHidden, NewDriverOnlyOption]>,
+  HelpText<"Always rebuild module dependencies">;
 
 def driver_warn_unused_options:
   Flag<["-"], "driver-warn-unused-options">,

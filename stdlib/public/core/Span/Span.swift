@@ -18,7 +18,6 @@
 /// owning the contiguous memory, ensuring temporal safety and avoiding
 /// use-after-free errors. Operations on `Span` are bounds-checked,
 /// ensuring spcial safety and avoiding buffer overflow errors.
-@_disallowFeatureSuppression(NonescapableTypes)
 @frozen
 @available(SwiftStdlib 6.1, *)
 public struct Span<Element: ~Copyable & ~Escapable>
@@ -47,6 +46,15 @@ public struct Span<Element: ~Copyable & ~Escapable>
   @usableFromInline
   internal let _count: Int
 
+  /// FIXME: Remove once supported old compilers can recognize lifetime dependence 
+  @_unsafeNonescapableResult
+  @_alwaysEmitIntoClient
+  @inline(__always)
+  internal init() {
+    _pointer = nil
+    _count = 0
+  }
+
   /// Unsafely create a `Span` over initialized memory.
   ///
   /// `pointer` must point to a region of `count` initialized instances,
@@ -60,24 +68,21 @@ public struct Span<Element: ~Copyable & ~Escapable>
   /// - Parameters:
   ///   - pointer: a pointer to the first initialized element.
   ///   - count: the number of initialized elements in the span.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @inline(__always)
   @lifetime(borrow pointer)
   internal init(
-    _unchecked pointer: borrowing UnsafeRawPointer?,
+    _unchecked pointer: UnsafeRawPointer?,
     count: Int
   ) {
-    _pointer = copy pointer
+    _pointer = pointer
     _count = count
   }
 }
 
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span: @unchecked Sendable where Element: Sendable {}
 
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: ~Copyable {
 
@@ -89,19 +94,22 @@ extension Span where Element: ~Copyable {
   ///
   /// - Parameters:
   ///   - buffer: an `UnsafeBufferPointer` to initialized elements.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow buffer)
   public init(
-    _unsafeElements buffer: borrowing UnsafeBufferPointer<Element>
+    _unsafeElements buffer: UnsafeBufferPointer<Element>
   ) {
-    let baseAddress = buffer.baseAddress //FIXME: rdar://138665760
+    //FIXME: Workaround for https://github.com/swiftlang/swift/issues/77235
+    let baseAddress = UnsafeRawPointer(buffer.baseAddress)
     _precondition(
       ((Int(bitPattern: baseAddress) &
         (MemoryLayout<Element>.alignment &- 1)) == 0),
       "baseAddress must be properly aligned to access Element"
     )
-    self.init(_unchecked: baseAddress, count: buffer.count)
+    let span = Span(_unchecked: baseAddress, count: buffer.count)
+    // As a trivial value, 'baseAddress' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: buffer)
   }
 
   /// Unsafely create a `Span` over initialized memory.
@@ -112,13 +120,16 @@ extension Span where Element: ~Copyable {
   ///
   /// - Parameters:
   ///   - buffer: an `UnsafeMutableBufferPointer` to initialized elements.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow buffer)
   public init(
-    _unsafeElements buffer: borrowing UnsafeMutableBufferPointer<Element>
+    _unsafeElements buffer: UnsafeMutableBufferPointer<Element>
   ) {
-    self.init(_unsafeElements: UnsafeBufferPointer(buffer))
+    let buf = UnsafeBufferPointer(buffer)
+    let span = Span(_unsafeElements: buf)
+    // As a trivial value, 'buf' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: buffer)
   }
 
   /// Unsafely create a `Span` over initialized memory.
@@ -131,19 +142,21 @@ extension Span where Element: ~Copyable {
   /// - Parameters:
   ///   - pointer: a pointer to the first initialized element.
   ///   - count: the number of initialized elements in the span.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow pointer)
   public init(
-    _unsafeStart pointer: borrowing UnsafePointer<Element>,
+    _unsafeStart pointer: UnsafePointer<Element>,
     count: Int
   ) {
     _precondition(count >= 0, "Count must not be negative")
-    self.init(_unsafeElements: .init(start: copy pointer, count: count))
+    let buf = UnsafeBufferPointer(start: pointer, count: count)
+    let span = Span(_unsafeElements: buf)
+    // As a trivial value, 'buf' does not formally depend on the
+    // lifetime of 'pointer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: pointer)
   }
 }
 
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span {
 
@@ -155,13 +168,16 @@ extension Span {
   ///
   /// - Parameters:
   ///   - buffer: an `UnsafeBufferPointer` to initialized elements.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow buffer)
   public init(
     _unsafeElements buffer: borrowing Slice<UnsafeBufferPointer<Element>>
   ) {
-    self.init(_unsafeElements: UnsafeBufferPointer(rebasing: buffer))
+    let buf = UnsafeBufferPointer(rebasing: buffer)
+    let span = Span(_unsafeElements: buf)
+    // As a trivial value, 'buf' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: buffer)
   }
 
   /// Unsafely create a `Span` over initialized memory.
@@ -172,17 +188,19 @@ extension Span {
   ///
   /// - Parameters:
   ///   - buffer: an `UnsafeMutableBufferPointer` to initialized elements.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow buffer)
   public init(
     _unsafeElements buffer: borrowing Slice<UnsafeMutableBufferPointer<Element>>
   ) {
-    self.init(_unsafeElements: UnsafeBufferPointer(rebasing: buffer))
+    let buf = UnsafeBufferPointer(rebasing: buffer)
+    let span = Span(_unsafeElements: buf)
+    // As a trivial value, 'buf' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: buffer)
   }
 }
 
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: BitwiseCopyable {
 
@@ -198,13 +216,13 @@ extension Span where Element: BitwiseCopyable {
   ///
   /// - Parameters:
   ///   - buffer: a buffer to initialized elements.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow buffer)
   public init(
-    _unsafeBytes buffer: borrowing UnsafeRawBufferPointer
+    _unsafeBytes buffer: UnsafeRawBufferPointer
   ) {
-    let baseAddress = buffer.baseAddress //FIXME: rdar://138665760
+    //FIXME: Workaround for https://github.com/swiftlang/swift/issues/77235
+    let baseAddress = buffer.baseAddress
     _precondition(
       ((Int(bitPattern: baseAddress) &
         (MemoryLayout<Element>.alignment &- 1)) == 0),
@@ -215,7 +233,10 @@ extension Span where Element: BitwiseCopyable {
     _precondition(
       remainder == 0, "Span must contain a whole number of elements"
     )
-    self.init(_unchecked: baseAddress, count: count)
+    let span = Span(_unchecked: baseAddress, count: count)
+    // As a trivial value, 'baseAddress' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: buffer)
   }
 
   /// Unsafely create a `Span` over initialized memory.
@@ -230,13 +251,16 @@ extension Span where Element: BitwiseCopyable {
   ///
   /// - Parameters:
   ///   - buffer: a buffer to initialized elements.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow buffer)
   public init(
-    _unsafeBytes buffer: borrowing UnsafeMutableRawBufferPointer
+    _unsafeBytes buffer: UnsafeMutableRawBufferPointer
   ) {
-    self.init(_unsafeBytes: UnsafeRawBufferPointer(buffer))
+    let rawBuffer = UnsafeRawBufferPointer(buffer)
+    let span = Span(_unsafeBytes: rawBuffer)
+    // As a trivial value, 'buf' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: buffer)
   }
 
   /// Unsafely create a `Span` over initialized memory.
@@ -253,15 +277,18 @@ extension Span where Element: BitwiseCopyable {
   /// - Parameters:
   ///   - pointer: a pointer to the first initialized element.
   ///   - byteCount: the number of initialized elements in the span.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow pointer)
   public init(
-    _unsafeStart pointer: borrowing UnsafeRawPointer,
+    _unsafeStart pointer: UnsafeRawPointer,
     byteCount: Int
   ) {
     _precondition(byteCount >= 0, "Count must not be negative")
-    self.init(_unsafeBytes: .init(start: copy pointer, count: byteCount))
+    let rawBuffer = UnsafeRawBufferPointer(start: pointer, count: byteCount)
+    let span = Span(_unsafeBytes: rawBuffer)
+    // As a trivial value, 'rawBuffer' does not formally depend on the
+    // lifetime of 'pointer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: pointer)
   }
 
   /// Unsafely create a `Span` over initialized memory.
@@ -276,13 +303,16 @@ extension Span where Element: BitwiseCopyable {
   ///
   /// - Parameters:
   ///   - buffer: a buffer to initialized elements.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow buffer)
   public init(
     _unsafeBytes buffer: borrowing Slice<UnsafeRawBufferPointer>
   ) {
-    self.init(_unsafeBytes: UnsafeRawBufferPointer(rebasing: buffer))
+    let rawBuffer = UnsafeRawBufferPointer(rebasing: buffer)
+    let span = Span(_unsafeBytes: rawBuffer)
+    // As a trivial value, 'rawBuffer' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: buffer)
   }
 
   /// Unsafely create a `Span` over initialized memory.
@@ -297,13 +327,16 @@ extension Span where Element: BitwiseCopyable {
   ///
   /// - Parameters:
   ///   - buffer: a buffer to initialized elements.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(borrow buffer)
   public init(
     _unsafeBytes buffer: borrowing Slice<UnsafeMutableRawBufferPointer>
   ) {
-    self.init(_unsafeBytes: UnsafeRawBufferPointer(rebasing: buffer))
+    let rawBuffer = UnsafeRawBufferPointer(rebasing: buffer)
+    let span = Span(_unsafeBytes: rawBuffer)
+    // As a trivial value, 'rawBuffer' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    self = _overrideLifetime(span, borrowing: buffer)
   }
 
   /// Create a `Span` over the bytes represented by a `RawSpan`
@@ -311,98 +344,18 @@ extension Span where Element: BitwiseCopyable {
   /// - Parameters:
   ///   - bytes: An existing `RawSpan`, which will define both this
   ///            `Span`'s lifetime and the memory it represents.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(bytes)
   public init(_bytes bytes: consuming RawSpan) {
-    self.init(
-      _unsafeBytes: .init(start: bytes._pointer, count: bytes.byteCount)
-    )
+    let rawBuffer =
+      UnsafeRawBufferPointer(start: bytes._pointer, count: bytes.byteCount)
+    let span = Span(_unsafeBytes: rawBuffer)
+    // As a trivial value, 'rawBuffer' does not formally depend on the
+    // lifetime of 'bytes'. Make the dependence explicit.
+    self = _overrideLifetime(span, copying: bytes)
   }
 }
 
-@_disallowFeatureSuppression(NonescapableTypes)
-@available(SwiftStdlib 6.1, *)
-extension Span where Element: Equatable {
-
-  /// Returns a Boolean value indicating whether this and another span
-  /// contain equal elements in the same order.
-  ///
-  /// - Parameters:
-  ///   - other: A span to compare to this one.
-  /// - Returns: `true` if this sequence and `other` contain equivalent items,
-  ///   using `areEquivalent` as the equivalence test; otherwise, `false.`
-  ///
-  /// - Complexity: O(*m*), where *m* is the lesser of the length of the
-  ///   sequence and the length of `other`.
-  @_disallowFeatureSuppression(NonescapableTypes)
-  @_alwaysEmitIntoClient
-  public func _elementsEqual(_ other: Self) -> Bool {
-    guard count == other.count else { return false }
-    if count == 0 { return true }
-
-    // This could be short-cut with a layout constraint
-    // where stride equals size, as long as there is
-    // at most 1 unused bit pattern, e.g.:
-    // if Element is BitwiseEquatable {
-    // return _swift_stdlib_memcmp(lhs.baseAddress, rhs.baseAddress, count) == 0
-    // }
-    if _pointer != other._pointer {
-      for o in 0..<count {
-        if self[unchecked: o] != other[unchecked: o] { return false }
-      }
-    }
-    return true
-  }
-
-  /// Returns a Boolean value indicating whether this span and a Collection
-  /// contain equal elements in the same order.
-  ///
-  /// - Parameters:
-  ///   - other: A Collection to compare to this span.
-  /// - Returns: `true` if this sequence and `other` contain equivalent items,
-  ///   using `areEquivalent` as the equivalence test; otherwise, `false.`
-  ///
-  /// - Complexity: O(*m*), where *m* is the lesser of the length of the
-  ///   sequence and the length of `other`.
-  @_disallowFeatureSuppression(NonescapableTypes)
-  @_alwaysEmitIntoClient
-  public func _elementsEqual(_ other: some Collection<Element>) -> Bool {
-    let equal = other.withContiguousStorageIfAvailable {
-      _elementsEqual(Span(_unsafeElements: $0))
-    }
-    if let equal { return equal }
-
-    guard count == other.count else { return false }
-    if count == 0 { return true }
-
-    return _elementsEqual(AnySequence(other))
-  }
-
-  /// Returns a Boolean value indicating whether this span and a Sequence
-  /// contain equal elements in the same order.
-  ///
-  /// - Parameters:
-  ///   - other: A Sequence to compare to this span.
-  /// - Returns: `true` if this sequence and `other` contain equivalent items,
-  ///   using `areEquivalent` as the equivalence test; otherwise, `false.`
-  ///
-  /// - Complexity: O(*m*), where *m* is the lesser of the length of the
-  ///   sequence and the length of `other`.
-  @_disallowFeatureSuppression(NonescapableTypes)
-  @_alwaysEmitIntoClient
-  public func _elementsEqual(_ other: some Sequence<Element>) -> Bool {
-    var offset = 0
-    for otherElement in other {
-      if offset >= count { return false }
-      if self[unchecked: offset] != otherElement { return false }
-      offset += 1
-    }
-    return offset == count
-  }
-}
-
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: ~Copyable {
 
@@ -428,14 +381,12 @@ extension Span where Element: ~Copyable {
   /// order.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   public var indices: Range<Index> {
     Range(_uncheckedBounds: (0, _count))
   }
 }
 
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: ~Copyable {
 
@@ -445,7 +396,6 @@ extension Span where Element: ~Copyable {
   ///     must be greater or equal to zero, and less than `count`.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   public subscript(_ position: Index) -> Element {
     //FIXME: change to unsafeRawAddress when ready
@@ -464,7 +414,6 @@ extension Span where Element: ~Copyable {
   ///     must be greater or equal to zero, and less than `count`.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @unsafe
   @_alwaysEmitIntoClient
   public subscript(unchecked position: Index) -> Element {
@@ -474,7 +423,6 @@ extension Span where Element: ~Copyable {
     }
   }
 
-  @_disallowFeatureSuppression(NonescapableTypes)
   @unsafe
   @_alwaysEmitIntoClient
   internal func _unsafeAddressOfElement(
@@ -486,7 +434,6 @@ extension Span where Element: ~Copyable {
   }
 }
 
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: BitwiseCopyable {
 
@@ -496,7 +443,6 @@ extension Span where Element: BitwiseCopyable {
   ///     must be greater or equal to zero, and less than `count`.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   public subscript(_ position: Index) -> Element {
     get {
@@ -517,7 +463,6 @@ extension Span where Element: BitwiseCopyable {
   ///     must be greater or equal to zero, and less than `count`.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @unsafe
   @_alwaysEmitIntoClient
   public subscript(unchecked position: Index) -> Element {
@@ -530,7 +475,6 @@ extension Span where Element: BitwiseCopyable {
 }
 
 //MARK: sub-spans
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: ~Copyable {
 
@@ -547,7 +491,6 @@ extension Span where Element: ~Copyable {
   /// - Returns: A `Span` over the items within `bounds`
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(self)
   public func _extracting(_ bounds: Range<Index>) -> Self {
@@ -574,13 +517,16 @@ extension Span where Element: ~Copyable {
   /// - Returns: A `Span` over the items within `bounds`
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @unsafe
   @_alwaysEmitIntoClient
   @lifetime(self)
   public func _extracting(unchecked bounds: Range<Index>) -> Self {
     let delta = bounds.lowerBound &* MemoryLayout<Element>.stride
-    return Span(_unchecked: _pointer?.advanced(by: delta), count: bounds.count)
+    let newStart = _pointer?.advanced(by: delta)
+    let newSpan = Span(_unchecked: newStart, count: bounds.count)
+    // As a trivial value, 'newStart' does not formally depend on the
+    // lifetime of 'self'. Make the dependence explicit.
+    return _overrideLifetime(newSpan, copying: self)
   }
 
   /// Constructs a new span over the items within the supplied range of
@@ -596,7 +542,6 @@ extension Span where Element: ~Copyable {
   /// - Returns: A `Span` over the items within `bounds`
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(self)
   public func _extracting(_ bounds: some RangeExpression<Int>) -> Self {
@@ -618,7 +563,6 @@ extension Span where Element: ~Copyable {
   /// - Returns: A `Span` over the items within `bounds`
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @unsafe
   @_alwaysEmitIntoClient
   @lifetime(self)
@@ -637,7 +581,6 @@ extension Span where Element: ~Copyable {
   /// - Returns: A `Span` over all the items of this span.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(self)
   public func _extracting(_: UnboundedRange) -> Self {
@@ -646,7 +589,6 @@ extension Span where Element: ~Copyable {
 }
 
 //MARK: UnsafeBufferPointer access hatch
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: ~Copyable  {
 
@@ -662,7 +604,6 @@ extension Span where Element: ~Copyable  {
   ///   for the `withUnsafeBufferPointer(_:)` method. The closure's
   ///   parameter is valid only for the duration of its execution.
   /// - Returns: The return value of the `body` closure parameter.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   public func withUnsafeBufferPointer<E: Error, Result: ~Copyable>(
     _ body: (_ buffer: UnsafeBufferPointer<Element>) throws(E) -> Result
@@ -678,7 +619,6 @@ extension Span where Element: ~Copyable  {
   }
 }
 
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: BitwiseCopyable {
 
@@ -696,21 +636,20 @@ extension Span where Element: BitwiseCopyable {
   ///   The closure's parameter is valid only for the duration of
   ///   its execution.
   /// - Returns: The return value of the `body` closure parameter.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   public func withUnsafeBytes<E: Error, Result: ~Copyable>(
     _ body: (_ buffer: UnsafeRawBufferPointer) throws(E) -> Result
   ) throws(E) -> Result {
-    try RawSpan(_elements: self).withUnsafeBytes(body)
+    try body(
+      .init(start: _pointer, count: _count * MemoryLayout<Element>.stride)
+    )
   }
 }
 
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: ~Copyable {
   /// Returns a Boolean value indicating whether two `Span` instances
   /// refer to the same region in memory.
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   public func isIdentical(to other: Self) -> Bool {
     (self._pointer == other._pointer) && (self._count == other._count)
@@ -722,7 +661,6 @@ extension Span where Element: ~Copyable {
   /// Parameters:
   /// - span: a span that may be a subrange of `self`
   /// Returns: A range of indices within `self`, or `nil`
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   public func indices(of other: borrowing Self) -> Range<Index>? {
     if other._count > _count { return nil }
@@ -741,7 +679,6 @@ extension Span where Element: ~Copyable {
 }
 
 //MARK: prefixes and suffixes
-@_disallowFeatureSuppression(NonescapableTypes)
 @available(SwiftStdlib 6.1, *)
 extension Span where Element: ~Copyable {
 
@@ -760,7 +697,6 @@ extension Span where Element: ~Copyable {
   /// - Returns: A span with at most `maxLength` elements.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(self)
   public func _extracting(first maxLength: Int) -> Self {
@@ -783,7 +719,6 @@ extension Span where Element: ~Copyable {
   /// - Returns: A span leaving off the specified number of elements at the end.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(self)
   public func _extracting(droppingLast k: Int) -> Self {
@@ -807,7 +742,6 @@ extension Span where Element: ~Copyable {
   /// - Returns: A span with at most `maxLength` elements.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(self)
   public func _extracting(last maxLength: Int) -> Self {
@@ -815,7 +749,10 @@ extension Span where Element: ~Copyable {
     let newCount = min(maxLength, count)
     let offset = (count &- newCount) * MemoryLayout<Element>.stride
     let newStart = _pointer?.advanced(by: offset)
-    return Self(_unchecked: newStart, count: newCount)
+    let newSpan = Span(_unchecked: newStart, count: newCount)
+    // As a trivial value, 'newStart' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    return _overrideLifetime(newSpan, copying: self)
   }
 
   /// Returns a span over all but the given number of initial elements.
@@ -832,7 +769,6 @@ extension Span where Element: ~Copyable {
   /// - Returns: A span starting after the specified number of elements.
   ///
   /// - Complexity: O(1)
-  @_disallowFeatureSuppression(NonescapableTypes)
   @_alwaysEmitIntoClient
   @lifetime(self)
   public func _extracting(droppingFirst k: Int) -> Self {
@@ -840,6 +776,9 @@ extension Span where Element: ~Copyable {
     let droppedCount = min(k, count)
     let offset = droppedCount * MemoryLayout<Element>.stride
     let newStart = _pointer?.advanced(by: offset)
-    return Self(_unchecked: newStart, count: count &- droppedCount)
+    let newSpan = Span(_unchecked: newStart, count: count &- droppedCount)
+    // As a trivial value, 'newStart' does not formally depend on the
+    // lifetime of 'buffer'. Make the dependence explicit.
+    return _overrideLifetime(newSpan, copying: self)
   }
 }

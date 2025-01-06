@@ -17,7 +17,7 @@
 #ifndef SWIFT_AST_AVAILABILITY_CONSTRAINT_H
 #define SWIFT_AST_AVAILABILITY_CONSTRAINT_H
 
-#include "swift/AST/Availability.h"
+#include "swift/AST/AvailabilityRange.h"
 #include "swift/AST/PlatformKind.h"
 #include "swift/Basic/LLVM.h"
 
@@ -87,6 +87,10 @@ public:
   Kind getKind() const { return kind; }
   const AvailableAttr *getAttr() const { return attr; }
 
+  /// Returns the platform that this constraint applies to, or
+  /// `PlatformKind::none` if it is not platform specific.
+  PlatformKind getPlatform() const;
+
   /// Returns the required range for `IntroducedInNewerVersion` requirements, or
   /// `std::nullopt` otherwise.
   std::optional<AvailabilityRange>
@@ -95,6 +99,10 @@ public:
   /// Returns true if this unmet requirement can be satisfied by introducing an
   /// `if #available(...)` condition in source.
   bool isConditionallySatisfiable() const;
+
+  /// Some availability constraints are active for type-checking but cannot
+  /// be translated directly into an `if #available(...)` runtime query.
+  bool isActiveForRuntimeQueries(ASTContext &ctx) const;
 };
 
 } // end namespace swift

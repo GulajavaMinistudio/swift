@@ -11,9 +11,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/DeclContext.h"
-#include "swift/AST/AccessScope.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTWalker.h"
+#include "swift/AST/AccessScope.h"
+#include "swift/AST/AvailabilityInference.h"
 #include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/FileUnit.h"
@@ -23,16 +24,16 @@
 #include "swift/AST/Module.h"
 #include "swift/AST/ParseRequests.h"
 #include "swift/AST/SourceFile.h"
-#include "swift/AST/Types.h"
 #include "swift/AST/TypeCheckRequests.h"
+#include "swift/AST/Types.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/Statistic.h"
+#include "clang/AST/ASTContext.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/SaveAndRestore.h"
-#include "clang/AST/ASTContext.h"
+#include "llvm/Support/raw_ostream.h"
 using namespace swift;
 
 #define DEBUG_TYPE "Name lookup"
@@ -306,7 +307,7 @@ DeclContext *DeclContext::getParentForLookup() const {
     // outer types.
     return getModuleScopeContext();
   }
-  if (isa<ProtocolDecl>(this) && getParent()->isGenericContext()) {
+  if (isUnsupportedNestedProtocol()) {
     // Protocols in generic contexts must not look in to their parents,
     // as the parents may contain types with inferred implicit
     // generic parameters not present in the protocol's generic signature.
@@ -869,6 +870,9 @@ unsigned DeclContext::printContext(raw_ostream &OS, const unsigned indent,
       }
       break;
     }
+    case InitializerKind::CustomAttribute:
+      OS << " CustomAttribute";
+      break;
     }
     break;
   }
@@ -1529,12 +1533,16 @@ bool DeclContext::isInSpecializeExtensionContext() const {
    return isSpecializeExtensionContext(this);
 }
 
+bool DeclContext::isUnsupportedNestedProtocol() const {
+  return isa<ProtocolDecl>(this) && getParent()->isGenericContext();
+}
+
 bool DeclContext::isAlwaysAvailableConformanceContext() const {
   auto *ext = dyn_cast<ExtensionDecl>(this);
   if (ext == nullptr)
     return true;
 
-  if (AvailableAttr::isUnavailable(ext))
+  if (ext->isUnavailable())
     return false;
 
   auto &ctx = getASTContext();
@@ -1545,4 +1553,11 @@ bool DeclContext::isAlwaysAvailableConformanceContext() const {
   auto deploymentTarget = AvailabilityRange::forDeploymentTarget(ctx);
 
   return deploymentTarget.isContainedIn(conformanceAvailability);
+}
+
+bool DeclContext::allowsUnsafe() const {
+  if (auto decl = getAsDecl())
+    return decl->allowsUnsafe();
+
+  return false;
 }

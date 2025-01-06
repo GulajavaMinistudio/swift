@@ -20,6 +20,7 @@
 #include "swift/AST/ASTAllocated.h"
 #include "swift/AST/AttrKind.h"
 #include "swift/AST/AutoDiff.h"
+#include "swift/AST/AvailabilityDomain.h"
 #include "swift/AST/ConcreteDeclRef.h"
 #include "swift/AST/DeclNameLoc.h"
 #include "swift/AST/Identifier.h"
@@ -31,6 +32,7 @@
 #include "swift/AST/StorageImpl.h"
 #include "swift/Basic/Debug.h"
 #include "swift/Basic/EnumTraits.h"
+#include "swift/Basic/Feature.h"
 #include "swift/Basic/InlineBitfield.h"
 #include "swift/Basic/Located.h"
 #include "swift/Basic/OptimizationMode.h"
@@ -60,6 +62,7 @@ class AbstractFunctionDecl;
 class FuncDecl;
 class ClassDecl;
 class AccessorDecl;
+class CustomAttributeInitializer;
 class GenericFunctionType;
 class LazyConformanceLoader;
 class LazyMemberLoader;
@@ -147,7 +150,17 @@ protected:
       Value : 32
     );
 
-    SWIFT_INLINE_BITFIELD(AvailableAttr, DeclAttribute, 1+1,
+    SWIFT_INLINE_BITFIELD(AvailableAttr, DeclAttribute, 8+8+1+1+1+1,
+      /// A `PlatformKind` value.
+      Platform : 8,
+
+      /// A `PlatformAgnosticAvailabilityKind` value.
+      PlatformAgnostic : 8,
+
+      /// State storage for `RenamedDeclRequest`.
+      HasComputedRenamedDecl : 1,
+      HasRenamedDecl : 1,
+
       /// Whether this attribute was spelled `@_spi_available`.
       IsSPI : 1,
 
@@ -479,6 +492,8 @@ public:
   LLVM_READNONE
   static bool canAttributeAppearOnDeclKind(DeclAttrKind DAK, DeclKind DK);
 
+  static std::optional<Feature> getRequiredFeature(DeclAttrKind DK);
+
   /// Returns the source name of the attribute, without the @ or any arguments.
   StringRef getAttrName() const;
 
@@ -498,13 +513,17 @@ public:
 
   /// Create a copy of this attribute.
   DeclAttribute *clone(ASTContext &ctx) const;
+
+  /// Determine whether we can clone this attribute.
+  bool canClone() const;
 };
 
 #define UNIMPLEMENTED_CLONE(AttrType)    \
 AttrType *clone(ASTContext &ctx) const { \
     llvm_unreachable("unimplemented");   \
     return nullptr;                      \
-  }
+  }                                      \
+bool canClone() const { return false; }
 
 /// Describes a "simple" declaration attribute that carries no data.
 template<DeclAttrKind Kind>
@@ -700,7 +719,7 @@ enum class AvailableVersionComparison {
 };
 
 /// Describes the platform-agnostic availability of a declaration.
-enum class PlatformAgnosticAvailabilityKind {
+enum class PlatformAgnosticAvailabilityKind : uint8_t {
   /// The associated availability attribute is not platform-agnostic.
   None,
   /// The declaration is deprecated, but can still be used.
@@ -724,7 +743,7 @@ enum class PlatformAgnosticAvailabilityKind {
 class AvailableAttr : public DeclAttribute {
 public:
   AvailableAttr(SourceLoc AtLoc, SourceRange Range, PlatformKind Platform,
-                StringRef Message, StringRef Rename, ValueDecl *RenameDecl,
+                StringRef Message, StringRef Rename,
                 const llvm::VersionTuple &Introduced,
                 SourceRange IntroducedRange,
                 const llvm::VersionTuple &Deprecated,
@@ -742,13 +761,12 @@ public:
   /// This should take the form of an operator, identifier, or full function
   /// name, optionally with a prefixed type, similar to the syntax used for
   /// the `NS_SWIFT_NAME` annotation in Objective-C.
+  ///
+  /// \c ValueDecl::getRenamedDecl() can be used to look up the declaration
+  /// referred to by this string. Note that this attribute can have a rename
+  /// target that was provided directly when synthesized and therefore can have
+  /// a rename decl even when this string is empty.
   const StringRef Rename;
-
-  /// The declaration referred to by \c Rename. Note that this is only set for
-  /// deserialized attributes or inferred attributes from ObjectiveC code.
-  /// \c ValueDecl::getRenamedDecl should be used to find the declaration
-  /// corresponding to \c Rename.
-  ValueDecl *RenameDecl;
 
   /// Indicates when the symbol was introduced.
   const std::optional<llvm::VersionTuple> Introduced;
@@ -768,18 +786,6 @@ public:
   /// Indicates where the Obsoleted version was specified.
   const SourceRange ObsoletedRange;
 
-  /// Indicates if the declaration has platform-agnostic availability.
-  const PlatformAgnosticAvailabilityKind PlatformAgnostic;
-
-  /// The platform of the availability.
-  const PlatformKind Platform;
-
-  /// Whether this is a language-version-specific entity.
-  bool isLanguageVersionSpecific() const;
-
-  /// Whether this is a PackageDescription version specific entity.
-  bool isPackageDescriptionVersionSpecific() const;
-
   /// Whether this is an unconditionally unavailable entity.
   bool isUnconditionallyUnavailable() const;
 
@@ -795,46 +801,33 @@ public:
   /// Whether this attribute was spelled `@_unavailableInEmbedded`.
   bool isForEmbedded() const { return Bits.AvailableAttr.IsForEmbedded; }
 
-  /// Returns the platform-agnostic availability.
-  PlatformAgnosticAvailabilityKind getPlatformAgnosticAvailability() const {
-    return PlatformAgnostic;
+  /// Returns the platform that the attribute applies to (may be `none`).
+  PlatformKind getPlatform() const {
+    return static_cast<PlatformKind>(Bits.AvailableAttr.Platform);
   }
 
-  /// Determine if a given declaration should be considered unavailable given
-  /// the current settings.
-  ///
-  /// \returns The attribute responsible for making the declaration unavailable.
-  static const AvailableAttr *isUnavailable(const Decl *D);
+  /// Returns the platform-agnostic availability.
+  PlatformAgnosticAvailabilityKind getPlatformAgnosticAvailability() const {
+    return static_cast<PlatformAgnosticAvailabilityKind>(
+        Bits.AvailableAttr.PlatformAgnostic);
+  }
 
   /// Returns true if the availability applies to a specific
   /// platform.
-  bool hasPlatform() const {
-    return Platform != PlatformKind::none;
-  }
+  bool hasPlatform() const { return getPlatform() != PlatformKind::none; }
 
   /// Returns the string for the platform of the attribute.
   StringRef platformString() const {
-    return swift::platformString(Platform);
+    return swift::platformString(getPlatform());
   }
 
   /// Returns the human-readable string for the platform of the attribute.
   StringRef prettyPlatformString() const {
-    return swift::prettyPlatformString(Platform);
+    return swift::prettyPlatformString(getPlatform());
   }
 
   /// Returns true if this attribute is active given the current platform.
   bool isActivePlatform(const ASTContext &ctx) const;
-
-  /// Returns the active version from the AST context corresponding to
-  /// the available kind. For example, this will return the effective language
-  /// version for swift version-specific availability kind, PackageDescription
-  /// version for PackageDescription version-specific availability.
-  llvm::VersionTuple getActiveVersion(const ASTContext &ctx) const;
-
-  /// Compare this attribute's version information against the platform or
-  /// language version (assuming the this attribute pertains to the active
-  /// platform).
-  AvailableVersionComparison getVersionAvailability(const ASTContext &ctx) const;
 
   /// Create an AvailableAttr that indicates specific availability
   /// for all platforms.
@@ -845,11 +838,6 @@ public:
                          llvm::VersionTuple Obsoleted
                          = llvm::VersionTuple());
 
-  /// Create an AvailableAttr that indicates the given \p AsyncFunc should be
-  /// preferentially used in async contexts
-  static AvailableAttr *createForAlternative(ASTContext &C,
-                                             AbstractFunctionDecl *AsyncFunc);
-
   AvailableAttr *clone(ASTContext &C, bool implicit) const;
   AvailableAttr *clone(ASTContext &C) const {
     return clone(C, isImplicit());
@@ -857,6 +845,22 @@ public:
 
   static bool classof(const DeclAttribute *DA) {
     return DA->getKind() == DeclAttrKind::Available;
+  }
+
+  bool hasCachedRenamedDecl() const {
+    return Bits.AvailableAttr.HasRenamedDecl;
+  }
+
+private:
+  friend class RenamedDeclRequest;
+
+  bool hasComputedRenamedDecl() const {
+    return Bits.AvailableAttr.HasComputedRenamedDecl;
+  }
+
+  void setComputedRenamedDecl(bool hasRenamedDecl) {
+    Bits.AvailableAttr.HasComputedRenamedDecl = true;
+    Bits.AvailableAttr.HasRenamedDecl = hasRenamedDecl;
   }
 };
 
@@ -1548,7 +1552,6 @@ public:
          TrailingWhereClause *clause, bool exported, SpecializationKind kind,
          DeclNameRef targetFunctionName, ArrayRef<Identifier> spiGroups,
          ArrayRef<AvailableAttr *> availabilityAttrs,
-         size_t typeErasedParamsCount,
          GenericSignature specializedSignature = nullptr);
 
   static SpecializeAttr *create(ASTContext &ctx, bool exported,
@@ -1846,13 +1849,13 @@ public:
 class CustomAttr final : public DeclAttribute {
   TypeExpr *typeExpr;
   ArgumentList *argList;
-  PatternBindingInitializer *initContext;
+  CustomAttributeInitializer *initContext;
   Expr *semanticInit = nullptr;
 
   mutable unsigned isArgUnsafeBit : 1;
 
   CustomAttr(SourceLoc atLoc, SourceRange range, TypeExpr *type,
-             PatternBindingInitializer *initContext, ArgumentList *argList,
+             CustomAttributeInitializer *initContext, ArgumentList *argList,
              bool implicit);
 
 public:
@@ -1863,7 +1866,7 @@ public:
   }
 
   static CustomAttr *create(ASTContext &ctx, SourceLoc atLoc, TypeExpr *type,
-                            PatternBindingInitializer *initContext,
+                            CustomAttributeInitializer *initContext,
                             ArgumentList *argList, bool implicit = false);
 
   TypeExpr *getTypeExpr() const { return typeExpr; }
@@ -1896,7 +1899,7 @@ public:
   Expr *getSemanticInit() const { return semanticInit; }
   void setSemanticInit(Expr *expr) { semanticInit = expr; }
 
-  PatternBindingInitializer *getInitContext() const { return initContext; }
+  CustomAttributeInitializer *getInitContext() const { return initContext; }
 
   static bool classof(const DeclAttribute *DA) {
     return DA->getKind() == DeclAttrKind::Custom;
@@ -1904,8 +1907,12 @@ public:
 
   /// Create a copy of this attribute.
   CustomAttr *clone(ASTContext &ctx) const {
+    assert(argList == nullptr &&
+           "Cannot clone custom attribute with an argument list");
     return create(ctx, AtLoc, getTypeExpr(), initContext, argList, isImplicit());
   }
+
+  bool canClone() const { return argList == nullptr; }
 
 private:
   friend class CustomAttrNominalRequest;
@@ -2817,6 +2824,26 @@ public:
   UNIMPLEMENTED_CLONE(RawLayoutAttr)
 };
 
+class SafeAttr final : public DeclAttribute {
+public:
+  /// The optional message.
+  const StringRef message;
+
+  SafeAttr(SourceLoc atLoc, SourceRange range, StringRef message,
+           bool isImplicit = false)
+      : DeclAttribute(DeclAttrKind::Safe, atLoc, range, isImplicit),
+        message(message) { }
+
+  static bool classof(const DeclAttribute *DA) {
+    return DA->getKind() == DeclAttrKind::Safe;
+  }
+
+  /// Create a copy of this attribute.
+  SafeAttr *clone(ASTContext &ctx) const {
+    return new (ctx) SafeAttr(AtLoc, Range, message, isImplicit());
+  }
+};
+
 class LifetimeAttr final : public DeclAttribute {
   LifetimeEntry *entry;
 
@@ -2847,6 +2874,12 @@ template <typename ATTR, bool AllowInvalid> struct ToAttributeKind {
   ToAttributeKind() {}
 
   std::optional<const ATTR *> operator()(const DeclAttribute *Attr) const {
+    if (isa<ATTR>(Attr) && (Attr->isValid() || AllowInvalid))
+      return cast<ATTR>(Attr);
+    return std::nullopt;
+  }
+
+  std::optional<ATTR *> operator()(DeclAttribute *Attr) {
     if (isa<ATTR>(Attr) && (Attr->isValid() || AllowInvalid))
       return cast<ATTR>(Attr);
     return std::nullopt;
@@ -2884,6 +2917,31 @@ public:
   UNIMPLEMENTED_CLONE(AllowFeatureSuppressionAttr)
 };
 
+/// Defines the @abi attribute.
+class ABIAttr : public DeclAttribute {
+public:
+  ABIAttr(Decl *abiDecl, SourceLoc AtLoc, SourceRange Range, bool Implicit)
+      : DeclAttribute(DeclAttrKind::ABI, AtLoc, Range, Implicit),
+        abiDecl(abiDecl)
+  { }
+
+  ABIAttr(Decl *abiDecl, bool Implicit)
+      : ABIAttr(abiDecl, SourceLoc(), SourceRange(), Implicit) {}
+
+  /// The declaration which will be used to compute a mangled name.
+  ///
+  /// \note For a \c VarDecl with a parent \c PatternBindingDecl , this should
+  /// point to the parent \c PatternBindingDecl . (That accommodates the way
+  /// sibling \c VarDecl s share attributes.)
+  Decl *abiDecl;
+
+  static bool classof(const DeclAttribute *DA) {
+    return DA->getKind() == DeclAttrKind::ABI;
+  }
+
+  UNIMPLEMENTED_CLONE(ABIAttr)
+};
+
 /// Attributes that may be applied to declarations.
 class DeclAttributes {
   /// Linked list of declaration attributes.
@@ -2912,48 +2970,6 @@ public:
       return UnaryOperatorKind::Postfix;
     return UnaryOperatorKind::None;
   }
-
-  bool isUnavailable(const ASTContext &ctx) const {
-    return getUnavailable(ctx) != nullptr;
-  }
-
-  bool isDeprecated(const ASTContext &ctx) const {
-    return getDeprecated(ctx) != nullptr;
-  }
-
-  /// Determine whether there is a swiftVersionSpecific attribute that's
-  /// unavailable relative to the provided language version.
-  bool
-  isUnavailableInSwiftVersion(const version::Version &effectiveVersion) const;
-
-  /// Finds the most-specific platform-specific attribute that is
-  /// active for the current platform.
-  const AvailableAttr *
-  findMostSpecificActivePlatform(const ASTContext &ctx,
-                                 bool ignoreAppExtensions = false) const;
-
-  /// Returns the first @available attribute that indicates
-  /// a declaration is unavailable, or the first one that indicates it's
-  /// potentially unavailable, or null otherwise.
-  const AvailableAttr *getPotentiallyUnavailable(const ASTContext &ctx) const;
-
-  /// Returns the first @available attribute that indicates
-  /// a declaration is unavailable, or null otherwise.
-  const AvailableAttr *getUnavailable(const ASTContext &ctx,
-                                      bool ignoreAppExtensions = false) const;
-
-  /// Returns the first @available attribute that indicates
-  /// a declaration is deprecated on all deployment targets, or null otherwise.
-  const AvailableAttr *getDeprecated(const ASTContext &ctx) const;
-
-  /// Returns the first @available attribute that indicates
-  /// a declaration will be deprecated in the future, or null otherwise.
-  const AvailableAttr *getSoftDeprecated(const ASTContext &ctx) const;
-
-  /// Returns the first @available attribute that indicates
-  /// a declaration is unavailable from asynchronous contexts, or null
-  /// otherwise.
-  const AvailableAttr *getNoAsync(const ASTContext &ctx) const;
 
   /// Returns the `@backDeployed` attribute that is active for the current
   /// platform.
@@ -3065,17 +3081,25 @@ public:
   }
 
 public:
-  template <typename ATTR, bool AllowInvalid>
+  template <typename ATTR, typename Iterator, bool AllowInvalid>
   using AttributeKindRange =
-      OptionalTransformRange<iterator_range<const_iterator>,
+      OptionalTransformRange<iterator_range<Iterator>,
                              ToAttributeKind<ATTR, AllowInvalid>,
-                             const_iterator>;
+                             Iterator>;
 
   /// Return a range with all attributes in DeclAttributes with AttrKind
   /// ATTR.
   template <typename ATTR, bool AllowInvalid = false>
-  AttributeKindRange<ATTR, AllowInvalid> getAttributes() const {
-    return AttributeKindRange<ATTR, AllowInvalid>(
+  AttributeKindRange<ATTR, const_iterator, AllowInvalid> getAttributes() const {
+    return AttributeKindRange<ATTR, const_iterator, AllowInvalid>(
+        make_range(begin(), end()), ToAttributeKind<ATTR, AllowInvalid>());
+  }
+
+  /// Return a range with all attributes in DeclAttributes with AttrKind
+  /// ATTR.
+  template <typename ATTR, bool AllowInvalid = false>
+  AttributeKindRange<ATTR, iterator, AllowInvalid> getAttributes() {
+    return AttributeKindRange<ATTR, iterator, AllowInvalid>(
         make_range(begin(), end()), ToAttributeKind<ATTR, AllowInvalid>());
   }
 
@@ -3190,6 +3214,137 @@ public:
   bool hasAttribute(bool allowInvalid = false) const {
     return getAttribute<AttrType>(allowInvalid) != nullptr;
   }
+};
+
+/// A wrapper for `AvailableAttr` that is enriched with additional semantic
+/// informaton, like its corresponding `AvailabilityDomain`.
+class SemanticAvailableAttr final {
+  const AvailableAttr *attr;
+  const AvailabilityDomain domain;
+
+public:
+  SemanticAvailableAttr(const AvailableAttr *attr, AvailabilityDomain domain)
+      : attr(attr), domain(domain) {
+    assert(attr);
+  }
+
+  const AvailableAttr *getParsedAttr() const { return attr; }
+  const AvailabilityDomain getDomain() const { return domain; }
+
+  std::optional<llvm::VersionTuple> getIntroduced() const {
+    return attr->Introduced;
+  }
+
+  std::optional<llvm::VersionTuple> getDeprecated() const {
+    return attr->Deprecated;
+  }
+
+  std::optional<llvm::VersionTuple> getObsoleted() const {
+    return attr->Obsoleted;
+  }
+
+  /// Returns the `message:` field of the attribute, or an empty string.
+  StringRef getMessage() const { return attr->Message; }
+
+  /// Returns the `rename:` field of the attribute, or an empty string.
+  StringRef getRename() const { return attr->Rename; }
+
+  /// Returns the platform kind that the attribute applies to, or
+  /// `PlatformKind::none` if the attribute is not platform specific.
+  bool isPlatformSpecific() const { return getDomain().isPlatform(); }
+
+  /// Returns the platform kind that the attribute applies to, or
+  /// `PlatformKind::none` if the attribute is not platform specific.
+  PlatformKind getPlatform() const { return getDomain().getPlatformKind(); }
+
+  /// Whether this is attribute indicates unavailability in all versions.
+  bool isUnconditionallyUnavailable() const {
+    return attr->isUnconditionallyUnavailable();
+  }
+
+  /// Whether this is attribute indicates deprecation in all versions.
+  bool isUnconditionallyDeprecated() const {
+    return attr->isUnconditionallyDeprecated();
+  }
+
+  /// Whether this is a `noasync` attribute.
+  bool isNoAsync() const { return attr->isNoAsync(); }
+
+  /// Whether this attribute has an introduced, deprecated, or obsoleted
+  /// version.
+  bool isVersionSpecific() const {
+    return attr->Introduced || attr->Deprecated || attr->Obsoleted;
+  }
+
+  /// Whether this is a language mode specific attribute.
+  bool isSwiftLanguageModeSpecific() const {
+    return getDomain().isSwiftLanguage() && isVersionSpecific();
+  }
+
+  /// Whether this is a PackageDescription version specific attribute.
+  bool isPackageDescriptionVersionSpecific() const {
+    return getDomain().isPackageDescription() && isVersionSpecific();
+  }
+
+  /// Whether this attribute was spelled `@_unavailableInEmbedded`.
+  bool isEmbeddedSpecific() const { return attr->isForEmbedded(); }
+
+  /// Returns the active version from the AST context corresponding to
+  /// the available kind. For example, this will return the effective language
+  /// version for swift version-specific availability kind, PackageDescription
+  /// version for PackageDescription version-specific availability.
+  llvm::VersionTuple getActiveVersion(const ASTContext &ctx) const;
+
+  /// Compare this attribute's version information against the platform or
+  /// language version (assuming the this attribute pertains to the active
+  /// platform).
+  AvailableVersionComparison
+  getVersionAvailability(const ASTContext &ctx) const;
+
+  /// Returns true if this attribute is considered active in the current
+  /// compilation context.
+  bool isActive(ASTContext &ctx) const;
+
+  bool operator==(const SemanticAvailableAttr &other) const {
+    return other.attr == attr;
+  }
+
+  bool operator!=(const SemanticAvailableAttr &other) const {
+    return other.attr != attr;
+  }
+};
+
+/// An iterable range of `SemanticAvailableAttr`s.
+class SemanticAvailableAttributes {
+public:
+  class Filter final {
+    const Decl *decl;
+    bool includeInactive;
+
+  public:
+    Filter(const Decl *decl, bool includeInactive)
+        : decl(decl), includeInactive(includeInactive) {}
+
+    std::optional<SemanticAvailableAttr>
+    operator()(const DeclAttribute *attr) const;
+  };
+
+  using Range =
+      OptionalTransformRange<iterator_range<DeclAttributes::const_iterator>,
+                             Filter>;
+
+private:
+  Range attrRange;
+
+public:
+  SemanticAvailableAttributes(const DeclAttributes &attrs, const Decl *decl,
+                              bool includeInactive = false)
+      : attrRange(make_range(attrs.begin(), attrs.end()),
+                  Filter(decl, includeInactive)) {}
+
+  Range::iterator begin() const { return attrRange.begin(); }
+  Range::iterator end() const { return attrRange.end(); }
+  bool empty() const { return attrRange.empty(); }
 };
 
 class alignas(1 << AttrAlignInBits) TypeAttribute

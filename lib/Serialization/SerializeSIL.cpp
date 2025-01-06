@@ -162,6 +162,9 @@ namespace {
     using DebugScopeID = DeclID;
     using DebugScopeIDField = DeclIDField;
 
+    using LocationID = DeclID;
+    using LocationIDField = DeclIDField;
+
     Serializer &S;
 
     llvm::BitstreamWriter &Out;
@@ -226,6 +229,7 @@ namespace {
 
     llvm::DenseMap<PointerUnion<const SILDebugScope *, SILFunction *>, DeclID>
         DebugScopeMap;
+    llvm::DenseMap<const void *, unsigned> SourceLocMap;  
 
     /// Give each SILBasicBlock a unique ID.
     llvm::DenseMap<const SILBasicBlock *, unsigned> BasicBlockMap;
@@ -299,6 +303,7 @@ namespace {
 
     /// Serialize and write SILDebugScope graph in post order.
     void writeDebugScopes(const SILDebugScope *Scope, const SourceManager &SM);
+    void writeSourceLoc(SILLocation SLoc, const SourceManager &SM);
 
     void writeNoOperandLayout(const SILInstruction *I) {
       unsigned abbrCode = SILAbbrCodes[SILInstNoOperandLayout::Code];
@@ -600,6 +605,7 @@ void SILSerializer::writeSILFunction(const SILFunction &F, bool DeclOnly) {
   }
 
   DebugScopeMap.clear();
+  SourceLocMap.clear();
 
   if (SerializeDebugInfoSIL)
     writeDebugScopes(F.getDebugScope(), F.getModule().getSourceManager());
@@ -696,6 +702,9 @@ void SILSerializer::writeSILBasicBlock(const SILBasicBlock &BB) {
         Prev = SI.getDebugScope();
         writeDebugScopes(Prev, SM);
       }
+    }
+    if (SerializeDebugInfoSIL) {
+      writeSourceLoc(SI.getLoc(), SM);
     }
 
     writeSILInstruction(SI);
@@ -2797,7 +2806,7 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
     auto *dwfi = cast<DifferentiabilityWitnessFunctionInst>(&SI);
     auto *witness = dwfi->getWitness();
     DifferentiabilityWitnessesToEmit.insert(witness);
-    Mangle::ASTMangler mangler;
+    Mangle::ASTMangler mangler(witness->getOriginalFunction()->getASTContext());
     auto mangledKey = mangler.mangleSILDifferentiabilityWitness(
         witness->getOriginalFunction()->getName(), witness->getKind(),
         witness->getConfig());
@@ -2985,7 +2994,7 @@ void SILSerializer::writeSILVTable(const SILVTable &vt) {
 
   // Use the mangled name of the class as a key to distinguish between classes
   // which have the same name (but are in different contexts).
-  Mangle::ASTMangler mangler;
+  Mangle::ASTMangler mangler(vt.getClass()->getASTContext());
   std::string mangledClassName = mangler.mangleNominalType(vt.getClass());
   size_t nameLength = mangledClassName.size();
   char *stringStorage = (char *)StringTable.Allocate(nameLength, 1);
@@ -3036,7 +3045,7 @@ void SILSerializer::writeSILMoveOnlyDeinit(const SILMoveOnlyDeinit &deinit) {
 
   // Use the mangled name of the class as a key to distinguish between classes
   // which have the same name (but are in different contexts).
-  Mangle::ASTMangler mangler;
+  Mangle::ASTMangler mangler(deinit.getNominalDecl()->getASTContext());
   std::string mangledNominalName =
       mangler.mangleNominalType(deinit.getNominalDecl());
   size_t nameLength = mangledNominalName.size();
@@ -3072,6 +3081,51 @@ void SILSerializer::writeSILProperty(const SILProperty &prop) {
     S.addDeclRef(prop.getDecl()),
     prop.getSerializedKind(),
     componentValues);
+}
+
+void SILSerializer::writeSourceLoc(SILLocation Loc, const SourceManager &SM) {
+  auto SLoc = Loc.getSourceLoc();
+  auto OpaquePtr = SLoc.getOpaquePointerValue();
+  uint8_t LocationKind;
+  switch(Loc.getKind()) {
+    case SILLocation::ReturnKind:
+      LocationKind = SILLocation::ReturnKind;
+      break;
+    case SILLocation::ImplicitReturnKind:
+      LocationKind = SILLocation::ImplicitReturnKind;
+      break;
+    case SILLocation::InlinedKind:
+    case SILLocation::MandatoryInlinedKind:
+    case SILLocation::CleanupKind:
+    case SILLocation::ArtificialUnreachableKind:
+    case SILLocation::RegularKind:
+      LocationKind = SILLocation::RegularKind;
+      break;
+  }
+
+  if (SourceLocMap.find(OpaquePtr) != SourceLocMap.end()) {
+    SourceLocRefLayout::emitRecord(Out, ScratchRecord,
+                                   SILAbbrCodes[SourceLocRefLayout::Code],
+                                   SourceLocMap[OpaquePtr], LocationKind, (unsigned)Loc.isImplicit());
+    return;
+  }
+
+  ValueID Row = 0;
+  ValueID Column = 0;
+  ValueID FNameID = 0;
+
+  if (!SLoc.isValid()) {
+    //emit empty source loc
+    SourceLocRefLayout::emitRecord(Out, ScratchRecord, SILAbbrCodes[SourceLocRefLayout::Code], 0, 0, (unsigned)0);
+    return;
+  }
+
+  std::tie(Row, Column) = SM.getPresumedLineAndColumnForLoc(SLoc);
+  FNameID = S.addUniquedStringRef(SM.getDisplayNameForLoc(SLoc));
+  SourceLocMap.insert({OpaquePtr, SourceLocMap.size() + 1});
+  SourceLocLayout::emitRecord(Out, ScratchRecord,
+                              SILAbbrCodes[SourceLocLayout::Code], Row, Column,
+                              FNameID, LocationKind, (unsigned)Loc.isImplicit());
 }
 
 void SILSerializer::writeDebugScopes(const SILDebugScope *Scope,
@@ -3261,7 +3315,7 @@ writeSILDefaultWitnessTable(const SILDefaultWitnessTable &wt) {
 
 void SILSerializer::writeSILDifferentiabilityWitness(
     const SILDifferentiabilityWitness &dw) {
-  Mangle::ASTMangler mangler;
+  Mangle::ASTMangler mangler(dw.getOriginalFunction()->getASTContext());
   auto mangledKey = mangler.mangleSILDifferentiabilityWitness(
       dw.getOriginalFunction()->getName(), dw.getKind(), dw.getConfig());
   size_t nameLength = mangledKey.size();
@@ -3387,6 +3441,8 @@ void SILSerializer::writeSILBlock(const SILModule *SILMod) {
   registerSILAbbr<DifferentiabilityWitnessLayout>();
   registerSILAbbr<SILDebugScopeLayout>();
   registerSILAbbr<SILDebugScopeRefLayout>();
+  registerSILAbbr<SourceLocLayout>();
+  registerSILAbbr<SourceLocRefLayout>();
 
   // Write out VTables first because it may require serializations of
   // non-transparent SILFunctions (body is not needed).

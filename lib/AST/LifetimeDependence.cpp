@@ -17,6 +17,7 @@
 #include "swift/AST/DiagnosticsSema.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/ParameterList.h"
+#include "swift/AST/SourceFile.h"
 #include "swift/AST/Type.h"
 #include "swift/AST/TypeRepr.h"
 #include "swift/Basic/Assertions.h"
@@ -216,7 +217,15 @@ static Type getResultOrYield(AbstractFunctionDecl *afd) {
 }
 
 static bool hasEscapableResultOrYield(AbstractFunctionDecl *afd) {
-  return getResultOrYield(afd)->isEscapable();
+  auto resultType = getResultOrYield(afd);
+  // FIXME: This check is temporary until rdar://139976667 is fixed.
+  // ModuleType created with ModuleType::get methods are ~Copyable and
+  // ~Escapable because the Copyable and Escapable conformance is not added to
+  // them by default.
+  if (resultType->is<ModuleType>()) {
+    return true;
+  }
+  return resultType->isEscapable();
 }
 
 static std::optional<LifetimeDependenceKind>
@@ -433,8 +442,7 @@ std::optional<LifetimeDependenceInfo> LifetimeDependenceInfo::fromDependsOn(
     auto kind = descriptor.getParsedLifetimeDependenceKind();
 
     if (kind == ParsedLifetimeDependenceKind::Scope &&
-        (!isGuaranteedParameterInCallee(paramConvention) &&
-         !isMutatingParameter(paramConvention))) {
+        isConsumedParameterInCallee(paramConvention)) {
       diags.diagnose(loc, diag::lifetime_dependence_cannot_use_kind, "_scope",
                      getStringForParameterConvention(paramConvention));
       return true;
@@ -508,6 +516,10 @@ LifetimeDependenceInfo::infer(AbstractFunctionDecl *afd) {
     return std::nullopt;
   }
 
+  if (afd->getAttrs().hasAttribute<UnsafeNonEscapableResultAttr>()) {
+    return std::nullopt;
+  }
+
   // Setters infer 'self' dependence on 'newValue'.
   if (auto accessor = dyn_cast<AccessorDecl>(afd)) {
     if (accessor->getAccessorKind() == AccessorKind::Set) {
@@ -519,10 +531,6 @@ LifetimeDependenceInfo::infer(AbstractFunctionDecl *afd) {
     return std::nullopt;
   }
 
-  if (afd->getAttrs().hasAttribute<UnsafeNonEscapableResultAttr>()) {
-    return std::nullopt;
-  }
-
   auto &diags = ctx.Diags;
   auto returnTypeRepr = afd->getResultTypeRepr();
   auto returnLoc = returnTypeRepr ? returnTypeRepr->getLoc() : afd->getLoc();
@@ -531,10 +539,23 @@ LifetimeDependenceInfo::infer(AbstractFunctionDecl *afd) {
                              : afd->getParameters()->size();
 
   auto *cd = dyn_cast<ConstructorDecl>(afd);
-  if (cd && cd->isImplicit()) {
-    if (cd->getParameters()->size() == 0) {
+  if (cd && cd->getParameters()->size() == 0) {
+    if (cd->isImplicit()) {
       return std::nullopt;
     }
+    if (auto *sf = afd->getParentSourceFile()) {
+      // The AST printer makes implicit initializers explicit, but does not
+      // print the @lifetime annotations. Until that is fixed, avoid diagnosing
+      // this as an error.
+      if (sf->Kind == SourceFileKind::SIL) {
+        return std::nullopt;
+      }
+    }
+  }
+
+  if (!ctx.LangOpts.hasFeature(Feature::LifetimeDependence)) {
+    diags.diagnose(returnLoc, diag::lifetime_dependence_feature_required);
+    return std::nullopt;
   }
 
   if (!cd && afd->hasImplicitSelfDecl()) {

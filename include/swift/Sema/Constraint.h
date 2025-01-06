@@ -19,7 +19,7 @@
 #define SWIFT_SEMA_CONSTRAINT_H
 
 #include "swift/AST/ASTNode.h"
-#include "swift/AST/FunctionRefKind.h"
+#include "swift/AST/FunctionRefInfo.h"
 #include "swift/AST/Identifier.h"
 #include "swift/AST/Type.h"
 #include "swift/AST/TypeLoc.h"
@@ -150,17 +150,6 @@ enum class ConstraintKind : char {
   /// The key path type is chosen based on the selection of overloads for the
   /// member references along the path.
   KeyPath,
-  /// The first type will be equal to the second type, but only when the
-  /// second type has been fully determined (and mapped down to a concrete
-  /// type). At that point, this constraint will be treated like an `Equal`
-  /// constraint.
-  OneWayEqual,
-  /// The second type is the type of a function parameter, and the first type
-  /// is the type of a reference to that function parameter within the body.
-  /// Once the second type has been fully determined (and mapped down to a
-  /// concrete type), this constraint will be treated like a 'BindParam'
-  /// constraint.
-  OneWayBindParam,
   /// If there is no contextual info e.g. `_ = { 42 }` default first type
   /// to a second type. This is effectively a `Defaultable` constraint
   /// which one significant difference:
@@ -384,7 +373,7 @@ class Constraint final : public llvm::ilist_node<Constraint>,
   unsigned NumTypeVariables : 11;
 
   /// The kind of function reference, for member references.
-  unsigned TheFunctionRefKind : 2;
+  unsigned TheFunctionRefInfo : 3;
 
   /// The trailing closure matching for an applicable function constraint,
   /// if any. 0 = None, 1 = Forward, 2 = Backward.
@@ -471,14 +460,14 @@ class Constraint final : public llvm::ilist_node<Constraint>,
 
   /// Construct a new member constraint.
   Constraint(ConstraintKind kind, Type first, Type second, DeclNameRef member,
-             DeclContext *useDC, FunctionRefKind functionRefKind,
+             DeclContext *useDC, FunctionRefInfo functionRefInfo,
              ConstraintLocator *locator,
              SmallPtrSetImpl<TypeVariableType *> &typeVars);
 
   /// Construct a new value witness constraint.
   Constraint(ConstraintKind kind, Type first, Type second,
              ValueDecl *requirement, DeclContext *useDC,
-             FunctionRefKind functionRefKind, ConstraintLocator *locator,
+             FunctionRefInfo functionRefInfo, ConstraintLocator *locator,
              SmallPtrSetImpl<TypeVariableType *> &typeVars);
 
   /// Construct a new overload-binding constraint, which might have a fix.
@@ -534,21 +523,21 @@ public:
   /// alternatives.
   static Constraint *createMemberOrOuterDisjunction(
       ConstraintSystem &cs, ConstraintKind kind, Type first, Type second,
-      DeclNameRef member, DeclContext *useDC, FunctionRefKind functionRefKind,
+      DeclNameRef member, DeclContext *useDC, FunctionRefInfo functionRefInfo,
       ArrayRef<OverloadChoice> outerAlternatives, ConstraintLocator *locator);
 
   /// Create a new member constraint.
   static Constraint *createMember(ConstraintSystem &cs, ConstraintKind kind,
                                   Type first, Type second, DeclNameRef member,
                                   DeclContext *useDC,
-                                  FunctionRefKind functionRefKind,
+                                  FunctionRefInfo functionRefInfo,
                                   ConstraintLocator *locator);
 
   /// Create a new value witness constraint.
   static Constraint *createValueWitness(
       ConstraintSystem &cs, ConstraintKind kind, Type first, Type second,
       ValueDecl *requirement, DeclContext *useDC,
-      FunctionRefKind functionRefKind, ConstraintLocator *locator);
+      FunctionRefInfo functionRefInfo, ConstraintLocator *locator);
 
   /// Create an overload-binding constraint, possibly with a fix.
   static Constraint *createBindOverload(ConstraintSystem &cs, Type type, 
@@ -686,8 +675,6 @@ public:
     case ConstraintKind::DynamicCallableApplicableFunction:
     case ConstraintKind::BindOverload:
     case ConstraintKind::OptionalObject:
-    case ConstraintKind::OneWayEqual:
-    case ConstraintKind::OneWayBindParam:
     case ConstraintKind::FallbackType:
     case ConstraintKind::UnresolvedMemberChainBase:
     case ConstraintKind::PackElementOf:
@@ -798,14 +785,12 @@ public:
   }
 
   /// Determine the kind of function reference we have for a member reference.
-  FunctionRefKind getFunctionRefKind() const {
-    if (Kind == ConstraintKind::ValueMember ||
-        Kind == ConstraintKind::UnresolvedValueMember ||
-        Kind == ConstraintKind::ValueWitness)
-      return static_cast<FunctionRefKind>(TheFunctionRefKind);
+  FunctionRefInfo getFunctionRefInfo() const {
+    ASSERT(Kind == ConstraintKind::ValueMember ||
+           Kind == ConstraintKind::UnresolvedValueMember ||
+           Kind == ConstraintKind::ValueWitness);
 
-    // Conservative answer: drop all of the labels.
-    return FunctionRefKind::Compound;
+    return FunctionRefInfo::fromOpaque(TheFunctionRefInfo);
   }
 
   /// Retrieve the set of constraints in a disjunction.
@@ -827,11 +812,6 @@ public:
     });
   }
 
-  /// Returns the number of resolved argument types for an applied disjunction
-  /// constraint. This is always zero for disjunctions that do not represent
-  /// an applied overload.
-  unsigned countResolvedArgumentTypes(ConstraintSystem &cs) const;
-
   /// Determine if this constraint represents explicit conversion,
   /// e.g. coercion constraint "as X" which forms a disjunction.
   bool isExplicitConversion() const;
@@ -839,12 +819,6 @@ public:
   /// Determine whether this constraint should be solved in isolation
   /// from the rest of the constraint system.
   bool isIsolated() const { return IsIsolated; }
-
-  /// Whether this is a one-way constraint.
-  bool isOneWayConstraint() const {
-    return Kind == ConstraintKind::OneWayEqual ||
-        Kind == ConstraintKind::OneWayBindParam;
-  }
 
   /// Retrieve the overload choice for an overload-binding constraint.
   OverloadChoice getOverloadChoice() const {

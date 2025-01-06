@@ -795,13 +795,9 @@ static bool ParseEnabledFeatureArgs(LangOptions &Opts, ArgList &Args,
     // diagnose and skip it.
     if (auto firstVersion = getFeatureLanguageVersion(*feature)) {
       if (Opts.isSwiftVersionAtLeast(*firstVersion)) {
-        Diags
-            .diagnose(SourceLoc(), diag::error_upcoming_feature_on_by_default,
-                      getFeatureName(*feature), *firstVersion)
-            .limitBehaviorIf(!enableUpcoming, DiagnosticBehavior::Warning);
-        if (enableUpcoming)
-          HadError = true;
-
+        Diags.diagnose(SourceLoc(),
+                       diag::warning_upcoming_feature_on_by_default,
+                       getFeatureName(*feature), *firstVersion);
         continue;
       }
     }
@@ -867,8 +863,6 @@ static bool ParseEnabledFeatureArgs(LangOptions &Opts, ArgList &Args,
     Opts.enableFeature(Feature::NoImplicitCopy);
     Opts.enableFeature(Feature::OldOwnershipOperatorSpellings);
   }
-  if (Args.hasArg(OPT_experimental_one_way_closure_params))
-    Opts.enableFeature(Feature::OneWayClosureParameters);
   if (Args.hasArg(OPT_enable_experimental_forward_mode_differentiation))
     Opts.enableFeature(Feature::ForwardModeDifferentiation);
   if (Args.hasArg(OPT_enable_experimental_additive_arithmetic_derivation))
@@ -1777,6 +1771,10 @@ static bool ParseTypeCheckerArgs(TypeCheckerOptions &Opts, ArgList &Args,
                              Opts.DebugConstraintSolverAttempt);
   setUnsignedIntegerArgument(OPT_solver_memory_threshold,
                              Opts.SolverMemoryThreshold);
+  setUnsignedIntegerArgument(OPT_solver_scope_threshold_EQ,
+                             Opts.SolverScopeThreshold);
+  setUnsignedIntegerArgument(OPT_solver_trail_threshold_EQ,
+                             Opts.SolverTrailThreshold);
   setUnsignedIntegerArgument(OPT_solver_shrink_unsolved_threshold,
                              Opts.SolverShrinkUnsolvedThreshold);
 
@@ -2131,6 +2129,7 @@ static bool validateSwiftModuleFileArgumentAndAdd(const std::string &swiftModule
 static bool ParseSearchPathArgs(SearchPathOptions &Opts, ArgList &Args,
                                 DiagnosticEngine &Diags,
                                 const CASOptions &CASOpts,
+                                const FrontendOptions &FrontendOpts,
                                 StringRef workingDirectory) {
   using namespace options;
   namespace path = llvm::sys::path;
@@ -2299,6 +2298,16 @@ static bool ParseSearchPathArgs(SearchPathOptions &Opts, ArgList &Args,
   Opts.ScannerModuleValidation |= Args.hasFlag(OPT_scanner_module_validation,
                                                OPT_no_scanner_module_validation,
                                                CASOpts.EnableCaching);
+  bool buildingFromInterface =
+      FrontendOptions::doesActionBuildModuleFromInterface(
+          FrontendOpts.RequestedAction);
+  auto firstInputPath =
+      FrontendOpts.InputsAndOutputs.hasInputs()
+          ? FrontendOpts.InputsAndOutputs.getFilenameOfFirstInput()
+          : "";
+  Opts.ResolveInPackageModuleDependencies |=
+      !buildingFromInterface ||
+      StringRef(firstInputPath).ends_with(".package.swiftinterface");
 
   std::optional<std::string> forceModuleLoadingMode;
   if (auto *A = Args.getLastArg(OPT_module_load_mode))
@@ -2813,6 +2822,7 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
 
   Opts.VerifyAll |= Args.hasArg(OPT_sil_verify_all);
   Opts.VerifyNone |= Args.hasArg(OPT_sil_verify_none);
+  Opts.VerifyOwnershipAll |= Args.hasArg(OPT_sil_ownership_verify_all);
   Opts.DebugSerialization |= Args.hasArg(OPT_sil_debug_serialization);
   Opts.EmitVerboseSIL |= Args.hasArg(OPT_emit_verbose_sil);
   Opts.EmitSortedSIL |= Args.hasArg(OPT_emit_sorted_sil);
@@ -3220,6 +3230,10 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
       }
       Opts.DumpJIT = *artifact;
     }
+  }
+
+  for (const Arg *A : Args.filtered(OPT_load_pass_plugin_EQ)) {
+    Opts.LLVMPassPlugins.push_back(A->getValue());
   }
 
   for (const Arg *A : Args.filtered(OPT_verify_type_layout)) {
@@ -3759,7 +3773,7 @@ bool CompilerInvocation::parseArgs(
   ParseSymbolGraphArgs(SymbolGraphOpts, ParsedArgs, Diags, LangOpts);
 
   if (ParseSearchPathArgs(SearchPathOpts, ParsedArgs, Diags,
-                          CASOpts, workingDirectory)) {
+                          CASOpts, FrontendOpts, workingDirectory)) {
     return true;
   }
 
@@ -3817,6 +3831,13 @@ bool CompilerInvocation::parseArgs(
     if (SILOpts.NoAllocations) {
       Diags.diagnose(SourceLoc(), diag::no_allocations_without_embedded);
       return true;
+    }
+  }
+
+  if (LangOpts.hasFeature(Feature::WarnUnsafe)) {
+    if (SILOpts.RemoveRuntimeAsserts ||
+        SILOpts.AssertConfig == SILOptions::Unchecked) {
+      Diags.diagnose(SourceLoc(), diag::Ounchecked_with_strict_safety);
     }
   }
 

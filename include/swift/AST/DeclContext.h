@@ -586,6 +586,10 @@ public:
   /// context.
   bool isInSpecializeExtensionContext() const;
 
+  /// Returns whether this declaration context is a protocol in an unsupported
+  /// context.
+  bool isUnsupportedNestedProtocol() const;
+
   /// Get the most optimal resilience expansion for code in this context.
   /// If the body is able to be inlined into functions in other resilience
   /// domains, this ensures that only sufficiently-conservative access patterns
@@ -712,6 +716,10 @@ public:
   /// Returns if this extension is always available on the current deployment
   /// target. Used for conformance lookup disambiguation.
   bool isAlwaysAvailableConformanceContext() const;
+
+  /// Determines whether this context is explicitly allowed to use unsafe
+  /// constructs.
+  bool allowsUnsafe() const;
 
   /// \returns true if traversal was aborted, false otherwise.
   bool walkContext(ASTWalker &Walker);

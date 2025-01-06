@@ -228,6 +228,9 @@ ERROR(let_cannot_be_addressed_property,none,
 ERROR(disallowed_var_multiple_getset,none,
       "'var' declarations with multiple variables cannot have explicit"
       " getters/setters", ())
+ERROR(stub_decl_cannot_have_body,none,
+      "stub %0 cannot have body",
+      (DescriptiveDeclKind))
 
 ERROR(disallowed_init,none,
       "initial value is not allowed here", ())
@@ -552,6 +555,8 @@ ERROR(sil_value_def_type_mismatch,none,
       "value '%0' used with mismatching type %1 (expected %2)", (StringRef, Type, Type))
 ERROR(sil_use_of_undefined_value,none,
       "use of undefined value '%0'", (StringRef))
+ERROR(sil_forward_ref_value_needs_type,none,
+      "forward-referenced value '%0' needs a type annotation", (StringRef))
 NOTE(sil_prior_reference,none,
      "prior reference was here", ())
 
@@ -2103,6 +2108,9 @@ ERROR(parser_round_trip_error,none,
 ERROR(parser_new_parser_errors,none,
       "new Swift parser generated errors for code that C++ parser accepted",
        ())
+
+ERROR(safe_attr_unchecked,none,
+      "'@safe' attribute must be written as '@safe(unchecked)'", ())
 
 // MARK: Reference Binding Diagnostics
 ERROR(sil_markuncheckedreferencebinding_requires_attribute,none,

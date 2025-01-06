@@ -172,6 +172,7 @@ SILValue swift::stripCasts(SILValue v) {
     if (auto *svi = dyn_cast<SingleValueInstruction>(v)) {
       if (isIdentityPreservingRefCast(svi) ||
           isa<UncheckedTrivialBitCastInst>(v) || isa<MarkDependenceInst>(v) ||
+          isa<UncheckedOwnershipConversionInst>(v) ||
           isa<BeginAccessInst>(v)) {
         v = cast<SingleValueInstruction>(v)->getOperand(0);
         continue;
@@ -463,6 +464,27 @@ static RuntimeEffect metadataEffect(SILType ty) {
   if (cl && !cl->hasKnownSwiftImplementation())
     return RuntimeEffect::MetaData | RuntimeEffect::ObjectiveC;
   return RuntimeEffect::MetaData;
+}
+
+/// Whether this particular SIL function is known a prior not to use the
+/// generic metadata it is given.
+static bool knownToNotUseGenericMetadata(SILFunction &f) {
+  // swift_willThrowTypedImpl only uses the generic metadata when a global
+  // hook has been installed, so we treat it as if the generic metadata is
+  // unused.
+  if (f.getName() == "swift_willThrowTypedImpl")
+    return true;
+
+  return false;
+}
+
+/// Whether this apply site is a call to a functio that is known not to use
+/// the generic metadata it is given.
+static bool knownToNotUseGenericMetadata(ApplySite &as) {
+  if (auto *callee = as.getCalleeFunction()) {
+    return knownToNotUseGenericMetadata(*callee);
+  }
+  return false;
 }
 
 RuntimeEffect swift::getRuntimeEffect(SILInstruction *inst, SILType &impactType) {
@@ -1017,7 +1039,7 @@ RuntimeEffect swift::getRuntimeEffect(SILInstruction *inst, SILType &impactType)
       }
     }
 
-    if (!as.getSubstitutionMap().empty())
+    if (!as.getSubstitutionMap().empty() && !knownToNotUseGenericMetadata(as))
       rt |= RuntimeEffect::MetaData;
     if (auto *pa = dyn_cast<PartialApplyInst>(inst)) {
       if (!pa->isOnStack())

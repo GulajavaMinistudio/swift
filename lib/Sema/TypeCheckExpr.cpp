@@ -513,8 +513,11 @@ bool TypeChecker::requireArrayLiteralIntrinsics(ASTContext &ctx,
 
 Expr *TypeChecker::buildRefExpr(ArrayRef<ValueDecl *> Decls,
                                 DeclContext *UseDC, DeclNameLoc NameLoc,
-                                bool Implicit, FunctionRefKind functionRefKind) {
+                                bool Implicit, FunctionRefInfo functionRefInfo) {
   assert(!Decls.empty() && "Must have at least one declaration");
+  ASSERT(llvm::any_of(Decls, [](ValueDecl *VD) {
+            return ABIRoleInfo(VD).providesAPI();
+          }) && "DeclRefExpr can't refer to ABI-only decl");
 
   auto &Context = UseDC->getASTContext();
 
@@ -525,7 +528,7 @@ Expr *TypeChecker::buildRefExpr(ArrayRef<ValueDecl *> Decls,
 
   Decls = Context.AllocateCopy(Decls);
   auto result = new (Context) OverloadedDeclRefExpr(Decls, NameLoc, 
-                                                    functionRefKind,
+                                                    functionRefInfo,
                                                     Implicit);
   return result;
 }

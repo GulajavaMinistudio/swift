@@ -3104,6 +3104,7 @@ done:
 
       case ActorIsolation::Unspecified:
       case ActorIsolation::Nonisolated:
+      case ActorIsolation::CallerIsolationInheriting:
       case ActorIsolation::NonisolatedUnsafe:
         llvm_unreachable("Not isolated");
       }
@@ -3409,14 +3410,49 @@ Expr *ArgumentSource::findStorageReferenceExprForBorrow() && {
   return lvExpr;
 }
 
+ManagedValue
+SILGenFunction::tryEmitAddressableParameterAsAddress(ArgumentSource &&arg,
+                                                     ValueOwnership ownership) {
+  // If the function takes an addressable parameter, and its argument is
+  // a reference to an addressable declaration with compatible ownership,
+  // forward the address along in-place.
+  if (arg.isExpr()) {
+    auto origExpr = std::move(arg).asKnownExpr();
+    auto expr = origExpr;
+    
+    if (auto le = dyn_cast<LoadExpr>(expr)) {
+      expr = le->getSubExpr();
+    }
+    if (auto dre = dyn_cast<DeclRefExpr>(expr)) {
+      if (auto param = dyn_cast<ParamDecl>(dre->getDecl())) {
+        if (VarLocs.count(param)
+            && VarLocs[param].addressable
+            && param->getValueOwnership() == ownership) {
+          auto addr = VarLocs[param].value;
+          return ManagedValue::forBorrowedAddressRValue(addr);
+        }
+      }
+    }
+    arg = ArgumentSource(origExpr);
+  }
+  return ManagedValue();
+}
+
 namespace {
 
 class ArgEmitter {
+public:
+  enum Flag {
+    IsYield = 0x1,
+    IsForCoroutine = 0x2,
+  };
+  using OptionSet = OptionSet<Flag>;
+
+private:
   SILGenFunction &SGF;
   SILLocation ApplyLoc;
   SILFunctionTypeRepresentation Rep;
-  bool IsYield;
-  bool IsForCoroutine;
+  OptionSet Options;
   ForeignInfo Foreign;
   ClaimedParamsRef ParamInfos;
   SmallVectorImpl<ManagedValue> &Args;
@@ -3427,19 +3463,18 @@ class ArgEmitter {
 
 public:
   ArgEmitter(SILGenFunction &SGF, SILLocation applyLoc,
-             SILFunctionTypeRepresentation Rep,
-             bool isYield, bool isForCoroutine, ClaimedParamsRef paramInfos,
-             SmallVectorImpl<ManagedValue> &args,
+             SILFunctionTypeRepresentation Rep, OptionSet options,
+             ClaimedParamsRef paramInfos, SmallVectorImpl<ManagedValue> &args,
              SmallVectorImpl<DelayedArgument> &delayedArgs,
              const ForeignInfo &foreign)
-      : SGF(SGF), ApplyLoc(applyLoc),
-        Rep(Rep), IsYield(isYield), IsForCoroutine(isForCoroutine),
+      : SGF(SGF), ApplyLoc(applyLoc), Rep(Rep), Options(options),
         Foreign(foreign), ParamInfos(paramInfos), Args(args),
         DelayedArguments(delayedArgs) {}
 
   // origParamType is a parameter type.
   void
   emitSingleArg(ArgumentSource &&arg, AbstractionPattern origParamType,
+                bool addressable,
                 std::optional<AnyFunctionType::Param> param = std::nullopt) {
     // If this is delayed default argument, prepare to emit the default argument
     // generator later.
@@ -3455,7 +3490,7 @@ public:
       maybeEmitForeignArgument();
       return;
     }
-    emit(std::move(arg), origParamType, param);
+    emit(std::move(arg), origParamType, addressable, param);
     maybeEmitForeignArgument();
   }
 
@@ -3481,7 +3516,9 @@ public:
       // single argument.
       if (!origFormalParamType.isPackExpansion()) {
         emitSingleArg(std::move(argSources[nextArgSourceIndex]),
-                      origFormalParamType, params[nextArgSourceIndex]);
+                    origFormalParamType,
+                    origFormalType.isFunctionParamAddressable(SGF.SGM.Types, i),
+                    params[nextArgSourceIndex]);
         ++nextArgSourceIndex;
         // Otherwise we need to emit a pack argument.
       } else {
@@ -3500,7 +3537,20 @@ public:
 
 private:
   void emit(ArgumentSource &&arg, AbstractionPattern origParamType,
+            bool isAddressable,
             std::optional<AnyFunctionType::Param> origParam = std::nullopt) {
+    if (isAddressable && origParam) {
+      // If the function takes an addressable parameter, and its argument is
+      // a reference to an addressable declaration with compatible ownership,
+      // forward the address along in-place.
+      if (auto addr = SGF.tryEmitAddressableParameterAsAddress(std::move(arg),
+                                             origParam->getValueOwnership())) {
+        claimNextParameters(1);
+        Args.push_back(addr);
+        return;
+      }
+    }
+            
     if (!arg.hasLValueType()) {
       // If the unsubstituted function type has a parameter of tuple type,
       // explode the tuple value.
@@ -3559,7 +3609,7 @@ private:
     // If we have a guaranteed +0 parameter...
     if (param.isGuaranteedInCaller() || isShared) {
       // And this is a yield, emit a borrowed r-value.
-      if (IsYield) {
+      if (Options.contains(Flag::IsYield)) {
         if (tryEmitBorrowed(std::move(arg), loweredSubstArgType,
                             loweredSubstParamType, origParamType, paramSlice))
           return;
@@ -3610,7 +3660,7 @@ private:
 
     // Handle yields of storage reference expressions specially so that we
     // don't emit them as +1 r-values and then expand.
-    if (IsYield) {
+    if (Options.contains(Flag::IsYield)) {
       if (auto result = std::move(arg).findStorageReferenceExprForBorrow()) {
         emitExpandedBorrowed(result, origParamType);
         return;
@@ -3626,7 +3676,8 @@ private:
       if (!origElt.isOrigPackExpansion()) {
         expander.withElement(origElt.getSubstIndex(),
                              [&](ArgumentSource &&eltSource) {
-          emit(std::move(eltSource), origElt.getOrigType());
+          emit(std::move(eltSource), origElt.getOrigType(),
+               /*addressable*/ false);
         });
         return;
       }
@@ -3858,7 +3909,8 @@ private:
 
     auto convertOwnershipConvention = [&](ManagedValue value) {
       return convertOwnershipConventionGivenParamInfo(
-          SGF, param, origParam, value, loc, IsForCoroutine);
+          SGF, param, origParam, value, loc,
+          Options.contains(Flag::IsForCoroutine));
     };
 
     auto contexts = getRValueEmissionContexts(loweredSubstArgType, param);
@@ -4423,13 +4475,13 @@ void DelayedArgument::emitDefaultArgument(SILGenFunction &SGF,
 
   SmallVector<ManagedValue, 4> loweredArgs;
   SmallVector<DelayedArgument, 4> delayedArgs;
-  auto emitter = ArgEmitter(SGF, info.loc, info.functionRepresentation,
-                            /*yield*/ false, /*coroutine*/ false,
-                            info.paramsToEmit, loweredArgs,
-                            delayedArgs, ForeignInfo{});
+  auto emitter =
+      ArgEmitter(SGF, info.loc, info.functionRepresentation, {},
+                 info.paramsToEmit, loweredArgs, delayedArgs, ForeignInfo{});
 
   emitter.emitSingleArg(ArgumentSource(info.loc, std::move(value)),
-                        info.origResultType);
+                        info.origResultType,
+                        /*addressable*/ false);
   assert(delayedArgs.empty());
   
   // Splice the emitted default argument into the argument list.
@@ -4752,6 +4804,8 @@ struct ParamLowering {
     return ClaimedParamsRef(result, (unsigned)-1);
   }
 
+  void claimImplicitParameters() { Params = Params.drop_front(); }
+
   ArrayRef<SILParameterInfo>
   claimCaptureParams(ArrayRef<ManagedValue> captures) {
     auto firstCapture = Params.size() - captures.size();
@@ -4818,9 +4872,11 @@ public:
             const ForeignInfo &foreign) && {
     auto params = lowering.claimParams(origFormalType, getParams(), foreign);
 
-    ArgEmitter emitter(SGF, Loc, lowering.Rep, /*yield*/ false,
-                       /*isForCoroutine*/ substFnType->isCoroutine(), params,
-                       args, delayedArgs, foreign);
+    ArgEmitter::OptionSet options;
+    if (substFnType->isCoroutine())
+      options |= ArgEmitter::IsForCoroutine;
+    ArgEmitter emitter(SGF, Loc, lowering.Rep, options, params, args,
+                       delayedArgs, foreign);
     emitter.emitPreparedArgs(std::move(Args), origFormalType);
   }
 
@@ -5412,6 +5468,18 @@ ApplyOptions CallEmission::emitArgumentsForNormalApply(
       options |= ApplyFlags::DoesNotAwait;
     }
 
+    // Before we do anything, claim the implicit parameters. This prevents us
+    // from attempting to handle the implicit parameters when we emit explicit
+    // parameters.
+    //
+    // NOTE: The actual work needs to be done /after/ we emit the normal
+    // parameters since we are going to reverse the order.
+    if (auto isolated = substFnType->maybeGetIsolatedParameter();
+        isolated && isolated->hasOption(SILParameterInfo::ImplicitLeading)) {
+      assert(SGF.ExpectedExecutor.isNecessary());
+      paramLowering.claimImplicitParameters();
+    }
+
     // Collect the captures, if any.
     if (callee.hasCaptures()) {
       (void)paramLowering.claimCaptureParams(callee.getCaptures());
@@ -5441,6 +5509,18 @@ ApplyOptions CallEmission::emitArgumentsForNormalApply(
     // Claim the method formal params.
     std::move(*callSite).emit(SGF, origFormalType, substFnType, paramLowering,
                               args.back(), delayedArgs, siteForeignError);
+  }
+
+  // Now, actually handle the implicit parameters.
+  if (auto isolated = substFnType->maybeGetIsolatedParameter();
+      isolated && isolated->hasOption(SILParameterInfo::ImplicitLeading)) {
+    auto executor =
+        ManagedValue::forBorrowedObjectRValue(SGF.ExpectedExecutor.getEager());
+    args.push_back({});
+    // NOTE: Even though this calls emitActorInstanceIsolation, this also
+    // handles glboal actor isolated cases.
+    args.back().push_back(SGF.emitActorInstanceIsolation(
+        callSite->Loc, executor, executor.getType().getASTType()));
   }
 
   uncurriedLoc = callSite->Loc;
@@ -5714,6 +5794,7 @@ RValue SILGenFunction::emitApply(
 
     case ActorIsolation::Unspecified:
     case ActorIsolation::Nonisolated:
+    case ActorIsolation::CallerIsolationInheriting:
     case ActorIsolation::NonisolatedUnsafe:
       llvm_unreachable("Not isolated");
       break;
@@ -6069,12 +6150,13 @@ void SILGenFunction::emitYield(SILLocation loc,
          origYield.getConvention()});
   }
 
-  ArgEmitter emitter(*this, loc, fnType->getRepresentation(), /*yield*/ true,
-                     /*isForCoroutine*/ false, ClaimedParamsRef(substYieldTys),
+  ArgEmitter emitter(*this, loc, fnType->getRepresentation(),
+                     ArgEmitter::IsYield, ClaimedParamsRef(substYieldTys),
                      yieldArgs, delayedArgs, ForeignInfo{});
 
   for (auto i : indices(valueSources)) {
-    emitter.emitSingleArg(std::move(valueSources[i]), origTypes[i]);
+    emitter.emitSingleArg(std::move(valueSources[i]), origTypes[i],
+                          /*addressable*/ false);
   }
 
   if (!delayedArgs.empty())
@@ -7077,10 +7159,9 @@ static void emitPseudoFunctionArguments(SILGenFunction &SGF,
   SmallVector<ManagedValue, 4> argValues;
   SmallVector<DelayedArgument, 2> delayedArgs;
 
-  ArgEmitter emitter(SGF, applyLoc, SILFunctionTypeRepresentation::Thin,
-                     /*yield*/ false,
-                     /*isForCoroutine*/ false, ClaimedParamsRef(substParamTys),
-                     argValues, delayedArgs, ForeignInfo{});
+  ArgEmitter emitter(SGF, applyLoc, SILFunctionTypeRepresentation::Thin, {},
+                     ClaimedParamsRef(substParamTys), argValues, delayedArgs,
+                     ForeignInfo{});
 
   emitter.emitPreparedArgs(std::move(args), origFnType);
 
@@ -7273,22 +7354,32 @@ ManagedValue SILGenFunction::emitAddressorAccessor(
   emission.apply().getAll(results);
 
   assert(results.size() == 1);
-  auto pointer = results[0].getUnmanagedValue();
+  auto result = results[0].getUnmanagedValue();
 
   // Drill down to the raw pointer using intrinsic knowledge of those types.
   auto pointerType =
-    pointer->getType().castTo<BoundGenericStructType>()->getDecl();
+    result->getType().castTo<BoundGenericStructType>()->getDecl();
   auto props = pointerType->getStoredProperties();
   assert(props.size() == 1);
   VarDecl *rawPointerField = props[0];
-  pointer = B.createStructExtract(loc, pointer, rawPointerField,
-                                  SILType::getRawPointerType(getASTContext()));
+  auto rawPointer =
+    B.createStructExtract(loc, result, rawPointerField,
+                          SILType::getRawPointerType(getASTContext()));
 
   // Convert to the appropriate address type and return.
-  SILValue address = B.createPointerToAddress(loc, pointer, addressType,
+  SILValue address = B.createPointerToAddress(loc, rawPointer, addressType,
                                               /*isStrict*/ true,
                                               /*isInvariant*/ false);
-
+  // Create a dependency on self: the pointer is only valid as long as self is
+  // alive.
+  auto apply = cast<ApplyInst>(result);
+  // global addressors don't have a source value. Presumably, the addressor
+  // is the only way to get at them.
+  if (apply->hasSelfArgument()) {
+    auto selfSILValue = apply->getSelfArgument();
+    address = B.createMarkDependence(loc, address, selfSILValue,
+                                     MarkDependenceKind::Unresolved);
+  }
   return ManagedValue::forLValue(address);
 }
 
@@ -7765,9 +7856,7 @@ SmallVector<ManagedValue, 4> SILGenFunction::emitKeyPathSubscriptOperands(
 
   SmallVector<ManagedValue, 4> argValues;
   SmallVector<DelayedArgument, 2> delayedArgs;
-  ArgEmitter emitter(*this, loc, fnType->getRepresentation(),
-                     /*yield*/ false,
-                     /*isForCoroutine*/ false,
+  ArgEmitter emitter(*this, loc, fnType->getRepresentation(), {},
                      ClaimedParamsRef(fnType->getParameters()), argValues,
                      delayedArgs, ForeignInfo{});
 

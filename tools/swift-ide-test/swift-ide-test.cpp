@@ -457,6 +457,11 @@ FileCheckPath("filecheck", llvm::cl::value_desc("path"),
 static llvm::cl::opt<bool>
 SkipFileCheck("skip-filecheck", llvm::cl::desc("Skip 'FileCheck' checking"),
                                 llvm::cl::cat(Category));
+static llvm::cl::opt<std::string>
+FileCheckSuffix("filecheck-additional-suffix",
+                           llvm::cl::value_desc("check-prefix-suffix"),
+                           llvm::cl::desc("Additional suffix to add to check prefixes as an alternative"),
+                           llvm::cl::cat(Category));
 
 // '-code-completion' options.
 
@@ -1537,11 +1542,32 @@ static int doBatchCodeCompletion(const CompilerInvocation &InitInvok,
         options::CodeCompletionToken != Token.Name)
       continue;
 
+    SmallVector<std::string, 4> expandedCheckPrefixes;
+
     llvm::errs() << "----\n";
     llvm::errs() << "Token: " << Token.Name << "; offset=" << Token.Offset
                  << "; pos=" << Token.Line << ":" << Token.Column;
-    for (auto Prefix : Token.CheckPrefixes) {
-      llvm::errs() << "; check=" << Prefix;
+    for (auto joinedPrefix : Token.CheckPrefixes) {
+      if (options::FileCheckSuffix.empty()) {
+        // Simple case: just copy what we have
+        expandedCheckPrefixes.push_back(joinedPrefix.str());
+      } else {
+        // For each comma-separated prefix, insert a variant with the suffix
+        // added to it: "X,Y" with suffix "_FOO" -> "X,X_FOO,Y,Y_FOO"
+        std::string expandedPrefix;
+        llvm::raw_string_ostream os(expandedPrefix);
+
+        SmallVector<StringRef, 4> splitPrefix;
+        joinedPrefix.split(splitPrefix, ',');
+
+        llvm::interleaveComma(splitPrefix, os, [&](StringRef prefix) {
+          os << prefix << ',' << prefix << options::FileCheckSuffix;
+        });
+
+        expandedCheckPrefixes.push_back(expandedPrefix);
+      }
+
+      llvm::errs() << "; check=" << expandedCheckPrefixes.back();
     }
     llvm::errs() << "\n";
 
@@ -1662,7 +1688,7 @@ static int doBatchCodeCompletion(const CompilerInvocation &InitInvok,
     assert(!options::FileCheckPath.empty());
 
     bool isFileCheckFailed = false;
-    for (auto Prefix : Token.CheckPrefixes) {
+    for (auto Prefix : expandedCheckPrefixes) {
       StringRef FileCheckArgs[] = {options::FileCheckPath, SourceFilename,
                                    "--check-prefixes",     Prefix,
                                    "--input-file",         resultFilename};
@@ -1762,12 +1788,15 @@ static int doREPLCodeCompletion(const CompilerInvocation &InitInvok,
   // implicit stdlib import.
   ImplicitImportInfo importInfo;
   importInfo.StdlibKind = ImplicitStdlibKind::Stdlib;
-  auto *M = ModuleDecl::create(ctx.getIdentifier(Invocation.getModuleName()),
-                               ctx, importInfo);
-  auto bufferID = ctx.SourceMgr.addMemBufferCopy("// nothing\n");
-  auto *SF =
-      new (ctx) SourceFile(*M, SourceFileKind::Main, bufferID);
-  M->addFile(*SF);
+
+  auto *M = ModuleDecl::create(
+      ctx.getIdentifier(Invocation.getModuleName()), ctx, importInfo,
+      [&](ModuleDecl *M, auto addFile) {
+    auto bufferID = ctx.SourceMgr.addMemBufferCopy("// nothing\n");
+    addFile(new (ctx) SourceFile(*M, SourceFileKind::Main, bufferID));
+  });
+
+  auto *SF = &M->getMainSourceFile();
   performImportResolution(*SF);
 
   REPLCompletions REPLCompl;
@@ -2698,7 +2727,7 @@ static int doPrintLocalTypes(const CompilerInvocation &InitInvok,
 
     // Simulate already having mangled names
     for (auto LTD : LocalTypeDecls) {
-      Mangle::ASTMangler Mangler;
+      Mangle::ASTMangler Mangler(M->getASTContext());
       std::string MangledName = Mangler.mangleTypeForDebugger(
           LTD->getDeclaredInterfaceType(),
           LTD->getInnermostDeclContext()->getGenericSignatureOfContext());
@@ -2753,7 +2782,7 @@ static int doPrintLocalTypes(const CompilerInvocation &InitInvok,
       while (node->getKind() != NodeKind::LocalDeclName)
         node = node->getChild(1); // local decl name
 
-      auto mangling = Demangle::mangleNode(typeNode);
+      auto mangling = Demangle::mangleNode(typeNode, Mangle::ManglingFlavor::Default);
       if (!mangling.isSuccess()) {
         llvm::errs() << "Couldn't remangle type (failed at Node "
                      << mangling.error().node << " with error "
@@ -3904,7 +3933,7 @@ public:
 
 private:
   void tryDemangleType(Type T, const DeclContext *DC, CharSourceRange range) {
-    Mangle::ASTMangler Mangler;
+    Mangle::ASTMangler Mangler(Ctx);
     auto sig = DC->getGenericSignatureOfContext();
     std::string mangledName(Mangler.mangleTypeForDebugger(T, sig));
     Type ReconstructedType = DC->mapTypeIntoContext(

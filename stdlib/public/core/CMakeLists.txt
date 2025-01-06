@@ -71,16 +71,16 @@ split_embedded_sources(
   EMBEDDED DictionaryCasting.swift
   EMBEDDED DictionaryStorage.swift
   EMBEDDED DictionaryVariant.swift
-    NORMAL DiscontiguousSlice.swift
-    NORMAL DropWhile.swift
+  EMBEDDED DiscontiguousSlice.swift
+  EMBEDDED DropWhile.swift
     NORMAL Dump.swift
   EMBEDDED EmptyCollection.swift
   EMBEDDED Equatable.swift
   EMBEDDED ErrorType.swift
   EMBEDDED ExistentialCollection.swift
-    NORMAL Filter.swift
-    NORMAL FlatMap.swift
-    NORMAL Flatten.swift
+  EMBEDDED Filter.swift
+  EMBEDDED FlatMap.swift
+  EMBEDDED Flatten.swift
   EMBEDDED FloatingPoint.swift
   EMBEDDED Hashable.swift
   # WORKAROUND: This file name is not sorted alphabetically in the list because
@@ -95,7 +95,7 @@ split_embedded_sources(
   EMBEDDED InputStream.swift
   EMBEDDED IntegerParsing.swift
   EMBEDDED Integers.swift
-    NORMAL Join.swift
+  EMBEDDED Join.swift
   EMBEDDED KeyPath.swift
   EMBEDDED KeyValuePairs.swift
   EMBEDDED LazyCollection.swift
@@ -104,7 +104,7 @@ split_embedded_sources(
   EMBEDDED LifetimeManager.swift
     NORMAL Macros.swift
   EMBEDDED ManagedBuffer.swift
-    NORMAL Map.swift
+  EMBEDDED Map.swift
   EMBEDDED MemoryLayout.swift
   EMBEDDED UnicodeScalar.swift # ORDER DEPENDENCY: Must precede Mirrors.swift
     NORMAL Mirrors.swift
@@ -121,7 +121,7 @@ split_embedded_sources(
   EMBEDDED OutputStream.swift
   EMBEDDED Pointer.swift
   EMBEDDED Policy.swift
-    NORMAL PrefixWhile.swift
+  EMBEDDED PrefixWhile.swift
     NORMAL Prespecialize.swift
     NORMAL Print.swift
   EMBEDDED PtrAuth.swift
@@ -220,9 +220,9 @@ split_embedded_sources(
     ### "NON-ESSENTIAL" SOURCES, LAYERED ON TOP OF THE "ESSENTIAL" ONES
     ### -- PLEASE KEEP THIS LIST IN ALPHABETICAL ORDER ###
   EMBEDDED Availability.swift
-    NORMAL CollectionDifference.swift
+  EMBEDDED CollectionDifference.swift
   EMBEDDED CollectionOfOne.swift
-    NORMAL Diffing.swift
+  EMBEDDED Diffing.swift
   EMBEDDED Duration.swift
   EMBEDDED DurationProtocol.swift
   EMBEDDED FloatingPointRandom.swift
@@ -230,11 +230,12 @@ split_embedded_sources(
   EMBEDDED Int128.swift
   EMBEDDED Mirror.swift
     NORMAL PlaygroundDisplay.swift
+  EMBEDDED SwiftifyImport.swift
     NORMAL CommandLine.swift
   EMBEDDED SliceBuffer.swift
-    NORMAL StaticBigInt.swift
+  EMBEDDED StaticBigInt.swift
   EMBEDDED UInt128.swift
-    NORMAL UnfoldSequence.swift
+  EMBEDDED UnfoldSequence.swift
   EMBEDDED UnsafeBufferPointerSlice.swift
     NORMAL VarArgs.swift
   EMBEDDED Zip.swift
@@ -261,11 +262,6 @@ if(SWIFT_STDLIB_ENABLE_VECTOR_TYPES)
 
   list(APPEND SWIFTLIB_EMBEDDED_SOURCES SIMDVector.swift)
   list(APPEND SWIFTLIB_EMBEDDED_GYB_SOURCES SIMDConcreteOperations.swift.gyb SIMDVectorTypes.swift.gyb)
-endif()
-
-if (SWIFT_ENABLE_EXPERIMENTAL_POINTER_BOUNDS)
-  list(APPEND SWIFTLIB_SOURCES PointerBounds.swift)
-  list(APPEND SWIFTLIB_EMBEDDED_SOURCES PointerBounds.swift)
 endif()
 
 # Freestanding and Linux/Android builds both have failures to resolve.
@@ -331,8 +327,8 @@ else()
   set(swift_lib_dir "${SWIFT_NATIVE_SWIFT_TOOLS_PATH}/../lib")
 endif()
 
+# For `@DebugDescription`.
 list(APPEND swift_stdlib_compile_flags "-plugin-path" "${swift_lib_dir}/swift/host/plugins")
-list(APPEND swift_stdlib_compile_flags "-enable-experimental-feature" "DebugDescriptionMacro")
 
 set(swift_core_incorporate_object_libraries)
 list(APPEND swift_core_incorporate_object_libraries swiftRuntime)
@@ -433,6 +429,15 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB)
   set(SWIFT_STDLIB_STABLE_ABI OFF)
   set(SWIFT_STDLIB_ENABLE_OBJC_INTEROP OFF)
   set(SWIFT_STDLIB_ENABLE_VECTOR_TYPES OFF)
+
+  # Under Embedded Swift, all stdlib APIs should be available always. Replace
+  # all availability macros with very very old OS versions.
+  set(SWIFT_STDLIB_AVAILABILITY_DEFINITIONS_EMBEDDED)
+  foreach(def ${SWIFT_STDLIB_AVAILABILITY_DEFINITIONS})
+    string(REGEX REPLACE ":.*" ":macOS 10.9, iOS 7.0, watchOS 2.0, tvOS 9.0, visionOS 1.0" replaced "${def}")
+    list(APPEND SWIFT_STDLIB_AVAILABILITY_DEFINITIONS_EMBEDDED "${replaced}")
+  endforeach()
+  set(SWIFT_STDLIB_AVAILABILITY_DEFINITIONS "${SWIFT_STDLIB_AVAILABILITY_DEFINITIONS_EMBEDDED}")
 
   foreach(entry ${EMBEDDED_STDLIB_TARGET_TRIPLES})
     string(REGEX REPLACE "[ \t]+" ";" list "${entry}")

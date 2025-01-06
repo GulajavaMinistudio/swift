@@ -827,6 +827,10 @@ def enable_volatile_modules : Flag<["-"], "enable-volatile-modules">,
 
 def solver_expression_time_threshold_EQ : Joined<["-"], "solver-expression-time-threshold=">;
 
+def solver_scope_threshold_EQ : Joined<["-"], "solver-scope-threshold=">;
+
+def solver_trail_threshold_EQ : Joined<["-"], "solver-trail-threshold=">;
+
 def solver_disable_shrink :
   Flag<["-"], "solver-disable-shrink">,
   HelpText<"Disable the shrink phase of expression type checking">;
@@ -937,6 +941,9 @@ def sil_verify_all : Flag<["-"], "sil-verify-all">,
   
 def sil_verify_none : Flag<["-"], "sil-verify-none">,
   HelpText<"Completely disable SIL verification">;
+
+def sil_ownership_verify_all : Flag<["-"], "sil-ownership-verify-all">,
+  HelpText<"Verify ownership after each transform">;
   
 def verify_all_substitution_maps : Flag<["-"], "verify-all-substitution-maps">,
   HelpText<"Verify all SubstitutionMaps on construction">;
@@ -1067,10 +1074,6 @@ def experimental_print_full_convention :
  HelpText<"When emitting a module interface or SIL, emit additional @convention"
           " arguments, regardless of whether they were written in the source."
           " Also requires -use-clang-function-types to be enabled.">;
-
-def experimental_one_way_closure_params :
-  Flag<["-"], "experimental-one-way-closure-params">,
-  HelpText<"Enable experimental support for one-way closure parameters">;
 
 def force_public_linkage : Flag<["-"], "force-public-linkage">,
    HelpText<"Force public linkage for private symbols. Used by LLDB.">;
@@ -1240,6 +1243,10 @@ def skip_import_in_public_interface:
   Separate<["-"], "skip-import-in-public-interface">,
   HelpText<"Skip the import statement corresponding to a module name "
            "when printing the public interface.">;
+
+def disable_fine_module_tracing:
+  Flag<["-"], "disable-fine-module-tracing">,
+  HelpText<"Skip the emission of fine grained module tracing file.">;
 
 def clang_header_expose_decls:
   Joined<["-"], "clang-header-expose-decls=">,

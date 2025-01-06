@@ -148,6 +148,8 @@ add_library(swiftCore
   Slice.swift
   SmallString.swift
   Sort.swift
+  Span/Span.swift
+  Span/RawSpan.swift
   StaticString.swift
   StaticPrint.swift
   Stride.swift
@@ -239,6 +241,11 @@ add_library(swiftCore
   "${CMAKE_CURRENT_BINARY_DIR}/UnsafeRawBufferPointer.swift"
   "${CMAKE_CURRENT_BINARY_DIR}/Tuple.swift")
 
+# https://github.com/swiftlang/swift/issues/77705 - Freestanding and Linux/Android builds both have failures to resolve.
+if(NOT LINUX AND NOT ANDROID)
+  target_sources(swiftCore PRIVATE ObjectIdentifier+DebugDescription.swift)
+endif()
+
 set_target_properties(swiftCore PROPERTIES Swift_MODULE_NAME Swift)
 
 if(SwiftCore_ENABLE_COMMANDLINE_SUPPORT)
@@ -260,6 +267,10 @@ if(SwiftCore_ENABLE_VECTOR_TYPES)
     "${CMAKE_CURRENT_BINARY_DIR}/SIMDVectorTypes.swift")
 endif()
 
+if(APPLE AND BUILD_SHARED_LIBS)
+  target_link_options(swiftCore PRIVATE "SHELL:-Xlinker -headerpad_max_install_names")
+endif()
+
 target_compile_options(swiftCore PRIVATE
   $<$<COMPILE_LANGUAGE:Swift>:-parse-stdlib>
   $<$<COMPILE_LANGUAGE:Swift>:-nostdimport>
@@ -274,13 +285,13 @@ target_compile_options(swiftCore PRIVATE
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature SE427NoInferenceOnExtension>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature AllowUnsafeAttribute>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature NonescapableTypes>"
+  "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature LifetimeDependence>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature MemberImportVisibility>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature TypedThrows>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature Macros>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature FreestandingMacros>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature BitwiseCopyable>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature Extern>"
-  "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature DebugDescriptionMacro>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -group-info-path -Xfrontend ${CMAKE_CURRENT_SOURCE_DIR}/GroupInfo.json>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -enable-experimental-concise-pound-file>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -disable-autolinking-runtime-compatibility-concurrency>"
@@ -303,7 +314,7 @@ target_compile_definitions(swiftCore PRIVATE
   $<$<BOOL:${SwiftCore_ENABLE_COMPACT_ABSOLUTE_FUNCTION_POINTERS}>:-DSWIFT_COMPACT_ABSOLUTE_FUNCTION_POINTER>
   $<$<COMPILE_LANGUAGE:C,CX>:-DSWIFT_TARGET_LIBRARY_NAME=swiftCore>)
 target_compile_options(swiftCore PRIVATE
-  "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -DswiftCore_EXPORTS>")
+  "$<$<AND:$<BOOL:${BUILD_SHARED_LIBS}>,$<COMPILE_LANGUAGE:Swift>>:SHELL:-Xcc -DswiftCore_EXPORTS>")
 
 target_link_libraries(swiftCore PRIVATE swiftShims)
 target_link_libraries(swiftCore
@@ -313,6 +324,8 @@ target_link_libraries(swiftCore
     swiftDemangling
     swiftStdlibStubs
     swiftThreading)
+target_link_options(swiftCore PRIVATE
+  -nostartfiles)
 if(NOT POLICY CMP0157)
   target_compile_options(swiftCore PRIVATE
     $<TARGET_OBJECTS:swiftRuntime>
@@ -335,6 +348,11 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/Swift.swiftmodule"
   RENAME "${SwiftCore_MODULE_TRIPLE}.swiftmodule")
 emit_swift_interface(swiftCore)
 install_swift_interface(swiftCore)
+
+# Configure plist creation for Darwin platforms.
+generate_plist("${CMAKE_PROJECT_NAME}" "${CMAKE_PROJECT_VERSION}" swiftCore)
+
+include("${SwiftCore_VENDOR_MODULE_DIR}/swiftCore.cmake" OPTIONAL)
 
 # TODO: Embedded SwiftCore builds
 # FIXME: Embedded builds should be separate CMake invocations because they are

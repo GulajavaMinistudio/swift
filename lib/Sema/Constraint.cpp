@@ -74,8 +74,6 @@ Constraint::Constraint(ConstraintKind Kind, Type First, Type Second,
   case ConstraintKind::EscapableFunctionOf:
   case ConstraintKind::OpenedExistentialOf:
   case ConstraintKind::OptionalObject:
-  case ConstraintKind::OneWayEqual:
-  case ConstraintKind::OneWayBindParam:
   case ConstraintKind::UnresolvedMemberChainBase:
   case ConstraintKind::PropertyWrapper:
   case ConstraintKind::BindTupleOfFunctionParams:
@@ -163,8 +161,6 @@ Constraint::Constraint(ConstraintKind Kind, Type First, Type Second, Type Third,
   case ConstraintKind::BindOverload:
   case ConstraintKind::Disjunction:
   case ConstraintKind::Conjunction:
-  case ConstraintKind::OneWayEqual:
-  case ConstraintKind::OneWayBindParam:
   case ConstraintKind::FallbackType:
   case ConstraintKind::UnresolvedMemberChainBase:
   case ConstraintKind::PropertyWrapper:
@@ -192,7 +188,7 @@ Constraint::Constraint(ConstraintKind Kind, Type First, Type Second, Type Third,
 
 Constraint::Constraint(ConstraintKind kind, Type first, Type second,
                        DeclNameRef member, DeclContext *useDC,
-                       FunctionRefKind functionRefKind,
+                       FunctionRefInfo functionRefInfo,
                        ConstraintLocator *locator,
                        SmallPtrSetImpl<TypeVariableType *> &typeVars)
     : Kind(kind), HasFix(false), HasRestriction(false), IsActive(false),
@@ -202,8 +198,8 @@ Constraint::Constraint(ConstraintKind kind, Type first, Type second,
       Locator(locator) {
   assert(kind == ConstraintKind::ValueMember ||
          kind == ConstraintKind::UnresolvedValueMember);
-  TheFunctionRefKind = static_cast<unsigned>(functionRefKind);
-  assert(getFunctionRefKind() == functionRefKind);
+  TheFunctionRefInfo = functionRefInfo.getOpaqueValue();
+  assert(getFunctionRefInfo() == functionRefInfo);
   assert(member && "Member constraint has no member");
   assert(useDC && "Member constraint has no use DC");
 
@@ -212,7 +208,7 @@ Constraint::Constraint(ConstraintKind kind, Type first, Type second,
 
 Constraint::Constraint(ConstraintKind kind, Type first, Type second,
                        ValueDecl *requirement, DeclContext *useDC,
-                       FunctionRefKind functionRefKind,
+                       FunctionRefInfo functionRefInfo,
                        ConstraintLocator *locator,
                        SmallPtrSetImpl<TypeVariableType *> &typeVars)
     : Kind(kind), HasFix(false), HasRestriction(false), IsActive(false),
@@ -223,10 +219,10 @@ Constraint::Constraint(ConstraintKind kind, Type first, Type second,
   Member.Second = second;
   Member.Member.Ref = requirement;
   Member.UseDC = useDC;
-  TheFunctionRefKind = static_cast<unsigned>(functionRefKind);
+  TheFunctionRefInfo = functionRefInfo.getOpaqueValue();
 
   assert(kind == ConstraintKind::ValueWitness);
-  assert(getFunctionRefKind() == functionRefKind);
+  assert(getFunctionRefInfo() == functionRefInfo);
   assert(requirement && "Value witness constraint has no requirement");
   assert(useDC && "Member constraint has no use DC");
 
@@ -397,8 +393,6 @@ void Constraint::print(llvm::raw_ostream &Out, SourceManager *sm,
   case ConstraintKind::DynamicTypeOf: Out << " dynamicType type of "; break;
   case ConstraintKind::EscapableFunctionOf: Out << " @escaping type of "; break;
   case ConstraintKind::OpenedExistentialOf: Out << " opened archetype of "; break;
-  case ConstraintKind::OneWayEqual: Out << " one-way bind to "; break;
-  case ConstraintKind::OneWayBindParam: Out << " one-way bind param to "; break;
   case ConstraintKind::FallbackType:
     Out << " can fallback to ";
     break;
@@ -678,8 +672,6 @@ gatherReferencedTypeVars(Constraint *constraint,
   case ConstraintKind::ConformsTo:
   case ConstraintKind::LiteralConformsTo:
   case ConstraintKind::TransitivelyConformsTo:
-  case ConstraintKind::OneWayEqual:
-  case ConstraintKind::OneWayBindParam:
   case ConstraintKind::FallbackType:
   case ConstraintKind::UnresolvedMemberChainBase:
   case ConstraintKind::PropertyWrapper:
@@ -709,17 +701,6 @@ gatherReferencedTypeVars(Constraint *constraint,
                     constraint->getTypeVariables().end());
     break;
   }
-}
-
-unsigned Constraint::countResolvedArgumentTypes(ConstraintSystem &cs) const {
-  auto *argumentFuncType = cs.getAppliedDisjunctionArgumentFunction(this);
-  if (!argumentFuncType)
-    return 0;
-
-  return llvm::count_if(argumentFuncType->getParams(), [&](const AnyFunctionType::Param arg) {
-    auto argType = cs.getFixedTypeRecursive(arg.getPlainType(), /*wantRValue=*/true);
-    return !argType->isTypeVariableOrMember();
-  });
 }
 
 bool Constraint::isExplicitConversion() const {
@@ -786,10 +767,10 @@ Constraint *Constraint::create(ConstraintSystem &cs, ConstraintKind kind,
 
 Constraint *Constraint::createMemberOrOuterDisjunction(
     ConstraintSystem &cs, ConstraintKind kind, Type first, Type second,
-    DeclNameRef member, DeclContext *useDC, FunctionRefKind functionRefKind,
+    DeclNameRef member, DeclContext *useDC, FunctionRefInfo functionRefInfo,
     ArrayRef<OverloadChoice> outerAlternatives, ConstraintLocator *locator) {
   auto memberConstraint = createMember(cs, kind, first, second, member,
-                             useDC, functionRefKind, locator);
+                             useDC, functionRefInfo, locator);
 
   if (outerAlternatives.empty())
     return memberConstraint;
@@ -808,7 +789,7 @@ Constraint *Constraint::createMemberOrOuterDisjunction(
 Constraint *Constraint::createMember(ConstraintSystem &cs, ConstraintKind kind, 
                                      Type first, Type second,
                                      DeclNameRef member, DeclContext *useDC,
-                                     FunctionRefKind functionRefKind,
+                                     FunctionRefInfo functionRefInfo,
                                      ConstraintLocator *locator) {
   // Collect type variables.
   SmallPtrSet<TypeVariableType *, 4> typeVars;
@@ -823,13 +804,13 @@ Constraint *Constraint::createMember(ConstraintSystem &cs, ConstraintKind kind,
       typeVars.size(), /*hasFix=*/0, /*hasOverloadChoice=*/0);
   void *mem = cs.getAllocator().Allocate(size, alignof(Constraint));
   return new (mem) Constraint(kind, first, second, member, useDC,
-                              functionRefKind, locator, typeVars);
+                              functionRefInfo, locator, typeVars);
 }
 
 Constraint *Constraint::createValueWitness(
     ConstraintSystem &cs, ConstraintKind kind, Type first, Type second,
     ValueDecl *requirement, DeclContext *useDC,
-    FunctionRefKind functionRefKind, ConstraintLocator *locator) {
+    FunctionRefInfo functionRefInfo, ConstraintLocator *locator) {
   assert(kind == ConstraintKind::ValueWitness);
 
   // Collect type variables.
@@ -845,7 +826,7 @@ Constraint *Constraint::createValueWitness(
       typeVars.size(), /*hasFix=*/0, /*hasOverloadChoice=*/0);
   void *mem = cs.getAllocator().Allocate(size, alignof(Constraint));
   return new (mem) Constraint(kind, first, second, requirement, useDC,
-                              functionRefKind, locator, typeVars);
+                              functionRefInfo, locator, typeVars);
 }
 
 Constraint *Constraint::createBindOverload(ConstraintSystem &cs, Type type, 

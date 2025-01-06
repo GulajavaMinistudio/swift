@@ -219,14 +219,14 @@ bool shouldParseViaASTGen(SourceFile &SF) {
     return false;
 
   switch (SF.Kind) {
-  case SourceFileKind::SIL:
-    return false;
-  case SourceFileKind::Library:
-  case SourceFileKind::Main:
-  case SourceFileKind::Interface:
-  case SourceFileKind::MacroExpansion:
-  case SourceFileKind::DefaultArgument:
-    break;
+    case SourceFileKind::SIL:
+      return false;
+    case SourceFileKind::Library:
+    case SourceFileKind::Main:
+    case SourceFileKind::Interface:
+    case SourceFileKind::MacroExpansion:
+    case SourceFileKind::DefaultArgument:
+      break;
   }
 
   // TODO: Migrate SourceKit features to Syntax based.
@@ -241,6 +241,13 @@ bool shouldParseViaASTGen(SourceFile &SF) {
   if (ctx.SourceMgr.getIDEInspectionTargetBufferID() == SF.getBufferID())
     return false;
 
+  if (auto *generatedInfo = SF.getGeneratedSourceFileInfo()) {
+    // TODO: Handle generated.
+    if (generatedInfo->kind == GeneratedSourceInfo::Kind::AttributeFromClang) {
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -252,6 +259,7 @@ void appendToVector(BridgedASTNode cNode, void *vecPtr) {
 SourceFileParsingResult parseSourceFileViaASTGen(SourceFile &SF) {
   ASTContext &Ctx = SF.getASTContext();
   DiagnosticEngine &Diags = Ctx.Diags;
+  SourceManager &SM = Ctx.SourceMgr;
   const LangOptions &langOpts = Ctx.LangOpts;
   const GeneratedSourceInfo *genInfo = SF.getGeneratedSourceFileInfo();
 
@@ -263,6 +271,24 @@ SourceFileParsingResult parseSourceFileViaASTGen(SourceFile &SF) {
   // Parse the file.
   auto *exportedSourceFile = SF.getExportedSourceFile();
   assert(exportedSourceFile && "Couldn't parse via SyntaxParser");
+
+  // Collect virtual files.
+  // FIXME: Avoid side effects in the request.
+  // FIXME: Do this lazily in SourceManager::getVirtualFile().
+  BridgedVirtualFile *virtualFiles = nullptr;
+  size_t numVirtualFiles =
+      swift_ASTGen_virtualFiles(exportedSourceFile, &virtualFiles);
+  SourceLoc bufferStart = SM.getLocForBufferStart(SF.getBufferID());
+  for (size_t i = 0; i != numVirtualFiles; ++i) {
+    auto &VF = virtualFiles[i];
+    Ctx.SourceMgr.createVirtualFile(
+        bufferStart.getAdvancedLoc(VF.StartPosition), VF.Name.unbridged(),
+        VF.LineOffset, VF.EndPosition - VF.StartPosition);
+    StringRef name = Ctx.AllocateCopy(VF.Name.unbridged());
+    SF.VirtualFilePaths.emplace_back(
+        name, bufferStart.getAdvancedLoc(VF.NamePosition));
+  }
+  swift_ASTGen_freeBridgedVirtualFiles(virtualFiles, numVirtualFiles);
 
   // Emit parser diagnostics.
   (void)swift_ASTGen_emitParserDiagnostics(
@@ -276,10 +302,16 @@ SourceFileParsingResult parseSourceFileViaASTGen(SourceFile &SF) {
       &Diags, exportedSourceFile, declContext, Ctx,
       static_cast<SmallVectorImpl<ASTNode> *>(&items), appendToVector);
 
+  // Fingerprint.
+  // FIXME: Split request (SourceFileFingerprintRequest).
+  std::optional<Fingerprint> fp;
+  if (SF.hasInterfaceHash())
+    fp = swift_ASTGen_getSourceFileFingerprint(exportedSourceFile, Ctx)
+             .unbridged();
+
   return SourceFileParsingResult{/*TopLevelItems=*/Ctx.AllocateCopy(items),
                                  /*CollectedTokens=*/std::nullopt,
-                                 // FIXME: Implement interface hash.
-                                 /*InterfaceHasher=*/std::nullopt};
+                                 /*Fingerprint=*/fp};
 }
 #endif // SWIFT_BUILD_SWIFT_SYNTAX
 
@@ -405,8 +437,11 @@ SourceFileParsingResult parseSourceFile(SourceFile &SF) {
   if (auto tokens = parser.takeTokenReceiver()->finalize())
     tokensRef = ctx.AllocateCopy(*tokens);
 
-  return SourceFileParsingResult{ctx.AllocateCopy(items), tokensRef,
-                                 parser.CurrentTokenHash};
+  std::optional<Fingerprint> fp;
+  if (parser.CurrentTokenHash)
+    fp = Fingerprint(std::move(*parser.CurrentTokenHash));
+
+  return SourceFileParsingResult{ctx.AllocateCopy(items), tokensRef, fp};
 }
 
 } // namespace
@@ -446,7 +481,7 @@ ParseSourceFileRequest::getCachedResult() const {
     return std::nullopt;
 
   return SourceFileParsingResult{*items, SF->AllCollectedTokens,
-                                 SF->InterfaceHasher};
+                                 SF->InterfaceHash};
 }
 
 void ParseSourceFileRequest::cacheResult(SourceFileParsingResult result) const {
@@ -454,7 +489,7 @@ void ParseSourceFileRequest::cacheResult(SourceFileParsingResult result) const {
   assert(!SF->Items);
   SF->Items = result.TopLevelItems;
   SF->AllCollectedTokens = result.CollectedTokens;
-  SF->InterfaceHasher = result.InterfaceHasher;
+  SF->InterfaceHash = result.Fingerprint;
 
   // Verify the parsed source file.
   verify(*SF);

@@ -309,11 +309,13 @@ private:
   llvm::Error handleSwiftInterfaceModuleDependency(
       ModuleDependencyID depModuleID,
       const SwiftInterfaceModuleDependenciesStorage &interfaceDepDetails) {
-    auto &path = interfaceDepDetails.moduleCacheKey.empty()
-                     ? interfaceDepDetails.moduleOutputPath
-                     : interfaceDepDetails.moduleCacheKey;
-    commandline.push_back("-swift-module-file=" + depModuleID.ModuleName + "=" +
-                          path);
+    if (!resolvingDepInfo.isSwiftSourceModule()) {
+      auto &path = interfaceDepDetails.moduleCacheKey.empty()
+                       ? interfaceDepDetails.moduleOutputPath
+                       : interfaceDepDetails.moduleCacheKey;
+      commandline.push_back("-swift-module-file=" + depModuleID.ModuleName +
+                            "=" + path);
+    }
     addMacroDependencies(depModuleID, interfaceDepDetails);
     return llvm::Error::success();
   }
@@ -321,24 +323,27 @@ private:
   llvm::Error handleSwiftBinaryModuleDependency(
       ModuleDependencyID depModuleID,
       const SwiftBinaryModuleDependencyStorage &binaryDepDetails) {
-    auto &path = binaryDepDetails.moduleCacheKey.empty()
-                     ? binaryDepDetails.compiledModulePath
-                     : binaryDepDetails.moduleCacheKey;
-    commandline.push_back("-swift-module-file=" + depModuleID.ModuleName + "=" +
-                          path);
-    // If this binary module was built with a header, the header's module
-    // dependencies must also specify a .modulemap to the compilation, in
-    // order to resolve the header's own header include directives.
-    for (const auto &bridgingHeaderDepID :
-         binaryDepDetails.headerModuleDependencies) {
-      auto optionalBridgingHeaderDepModuleInfo = cache.findKnownDependency(
-          bridgingHeaderDepID);
-      const auto bridgingHeaderDepModuleDetails =
-          optionalBridgingHeaderDepModuleInfo.getAsClangModule();
-      commandline.push_back("-Xcc");
-      commandline.push_back("-fmodule-map-file=" +
-                            cache.getScanService().remapPath(
-                                bridgingHeaderDepModuleDetails->moduleMapFile));
+    if (!resolvingDepInfo.isSwiftSourceModule()) {
+      auto &path = binaryDepDetails.moduleCacheKey.empty()
+                       ? binaryDepDetails.compiledModulePath
+                       : binaryDepDetails.moduleCacheKey;
+      commandline.push_back("-swift-module-file=" + depModuleID.ModuleName +
+                            "=" + path);
+      // If this binary module was built with a header, the header's module
+      // dependencies must also specify a .modulemap to the compilation, in
+      // order to resolve the header's own header include directives.
+      for (const auto &bridgingHeaderDepID :
+           binaryDepDetails.headerModuleDependencies) {
+        auto optionalBridgingHeaderDepModuleInfo =
+            cache.findKnownDependency(bridgingHeaderDepID);
+        const auto bridgingHeaderDepModuleDetails =
+            optionalBridgingHeaderDepModuleInfo.getAsClangModule();
+        commandline.push_back("-Xcc");
+        commandline.push_back(
+            "-fmodule-map-file=" +
+            cache.getScanService().remapPath(
+                bridgingHeaderDepModuleDetails->moduleMapFile));
+      }
     }
     addMacroDependencies(depModuleID, binaryDepDetails);
     return llvm::Error::success();
@@ -347,26 +352,29 @@ private:
   llvm::Error handleSwiftPlaceholderModuleDependency(
       ModuleDependencyID depModuleID,
       const SwiftPlaceholderModuleDependencyStorage &placeholderDetails) {
-    commandline.push_back("-swift-module-file=" + depModuleID.ModuleName + "=" +
-                          placeholderDetails.compiledModulePath);
+    if (!resolvingDepInfo.isSwiftSourceModule())
+      commandline.push_back("-swift-module-file=" + depModuleID.ModuleName +
+                            "=" + placeholderDetails.compiledModulePath);
     return llvm::Error::success();
   }
 
   llvm::Error handleClangModuleDependency(
       ModuleDependencyID depModuleID,
       const ClangModuleDependencyStorage &clangDepDetails) {
-    if (!resolvingDepInfo.isClangModule()) {
-      commandline.push_back("-Xcc");
-      commandline.push_back("-fmodule-file=" + depModuleID.ModuleName + "=" +
-                            clangDepDetails.mappedPCMPath);
-    }
-    if (!clangDepDetails.moduleCacheKey.empty()) {
-      commandline.push_back("-Xcc");
-      commandline.push_back("-fmodule-file-cache-key");
-      commandline.push_back("-Xcc");
-      commandline.push_back(clangDepDetails.mappedPCMPath);
-      commandline.push_back("-Xcc");
-      commandline.push_back(clangDepDetails.moduleCacheKey);
+    if (!resolvingDepInfo.isSwiftSourceModule()) {
+      if (!resolvingDepInfo.isClangModule()) {
+        commandline.push_back("-Xcc");
+        commandline.push_back("-fmodule-file=" + depModuleID.ModuleName + "=" +
+                              clangDepDetails.mappedPCMPath);
+      }
+      if (!clangDepDetails.moduleCacheKey.empty()) {
+        commandline.push_back("-Xcc");
+        commandline.push_back("-fmodule-file-cache-key");
+        commandline.push_back("-Xcc");
+        commandline.push_back(clangDepDetails.mappedPCMPath);
+        commandline.push_back("-Xcc");
+        commandline.push_back(clangDepDetails.moduleCacheKey);
+      }
     }
 
     // Collect CAS deppendencies from clang modules.
@@ -451,6 +459,11 @@ private:
   }
 
   void pruneUnusedVFSOverlay() {
+    // Pruning of unused VFS overlay options for Clang dependencies is performed
+    // by the Clang dependency scanner.
+    if (moduleID.Kind == ModuleDependencyKind::Clang)
+      return;
+
     std::vector<std::string> resolvedCommandLine;
     size_t skip = 0;
     for (auto it = commandline.begin(), end = commandline.end();
@@ -1263,24 +1276,24 @@ forEachBatchEntry(CompilerInstance &invocationInstance,
 } // namespace
 
 static void serializeDependencyCache(CompilerInstance &instance,
-                                     const SwiftDependencyScanningService &service) {
+                                     const ModuleDependenciesCache &cache) {
   const FrontendOptions &opts = instance.getInvocation().getFrontendOptions();
   ASTContext &Context = instance.getASTContext();
   auto savePath = opts.SerializedDependencyScannerCachePath;
   module_dependency_cache_serialization::writeInterModuleDependenciesCache(
-      Context.Diags, instance.getOutputBackend(), savePath, service);
+      Context.Diags, instance.getOutputBackend(), savePath, cache);
   if (opts.EmitDependencyScannerCacheRemarks) {
     Context.Diags.diagnose(SourceLoc(), diag::remark_save_cache, savePath);
   }
 }
 
 static void deserializeDependencyCache(CompilerInstance &instance,
-                                       SwiftDependencyScanningService &service) {
+                                       ModuleDependenciesCache &cache) {
   const FrontendOptions &opts = instance.getInvocation().getFrontendOptions();
   ASTContext &Context = instance.getASTContext();
   auto loadPath = opts.SerializedDependencyScannerCachePath;
   if (module_dependency_cache_serialization::readInterModuleDependenciesCache(
-          loadPath, service)) {
+          loadPath, cache)) {
     Context.Diags.diagnose(SourceLoc(), diag::warn_scanner_deserialize_failed,
                            loadPath);
   } else if (opts.EmitDependencyScannerCacheRemarks) {
@@ -1295,16 +1308,18 @@ bool swift::dependencies::scanDependencies(CompilerInstance &instance) {
   // `-scan-dependencies` invocations use a single new instance
   // of a module cache
   SwiftDependencyScanningService *service = Context.Allocate<SwiftDependencyScanningService>();
-  if (opts.ReuseDependencyScannerCache)
-    deserializeDependencyCache(instance, *service);
-
-  if (service->setupCachingDependencyScanningService(instance))
-    return true;
-
   ModuleDependenciesCache cache(
       *service, instance.getMainModule()->getNameStr().str(),
       instance.getInvocation().getFrontendOptions().ExplicitModulesOutputPath,
       instance.getInvocation().getModuleScanningHash());
+
+  if (opts.ReuseDependencyScannerCache)
+    deserializeDependencyCache(instance, cache);
+
+  if (service->setupCachingDependencyScanningService(instance))
+    return true;
+
+
 
   // Execute scan
   llvm::ErrorOr<swiftscan_dependency_graph_t> dependenciesOrErr =
@@ -1313,7 +1328,7 @@ bool swift::dependencies::scanDependencies(CompilerInstance &instance) {
   // Serialize the dependency cache if -serialize-dependency-scan-cache
   // is specified
   if (opts.SerializeDependencyScannerCache)
-    serializeDependencyCache(instance, *service);
+    serializeDependencyCache(instance, cache);
 
   if (dependenciesOrErr.getError())
     return true;
@@ -1384,7 +1399,7 @@ bool swift::dependencies::batchScanDependencies(
     return true;
 
   auto batchScanResults = performBatchModuleScan(
-      instance, /*DependencyScanDiagnosticCollector*/ nullptr, 
+      instance, /*DependencyScanDiagnosticCollector*/ nullptr,
       cache, /*versionedPCMInstanceCache*/ nullptr, saver,
       *batchInput);
 
@@ -1500,7 +1515,7 @@ static void resolveImplicitLinkLibraries(const CompilerInstance &instance,
     addLinkLibrary({"objc", LibraryKind::Library});
 
   if (langOpts.EnableCXXInterop) {
-    auto OptionalCxxDep = cache.findDependency("Cxx");
+    auto OptionalCxxDep = cache.findDependency(CXX_MODULE_NAME);
     auto OptionalCxxStdLibDep = cache.findDependency("CxxStdlib");
     bool hasStaticCxx =
         OptionalCxxDep.has_value() && OptionalCxxDep.value()->isStaticLibrary();
@@ -1645,7 +1660,7 @@ swift::dependencies::performBatchModuleScan(
           }
           allDependencies = scanner.performDependencyScan(moduleID, cache);
         }
-        
+
         batchScanResult.push_back(
             generateFullDependencyGraph(instance, diagnosticCollector, cache,
                                         allDependencies));

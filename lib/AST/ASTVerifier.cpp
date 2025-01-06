@@ -1219,7 +1219,32 @@ public:
         Out << "\n";
         abort();
       }
+      if (E->getDecl() && !ABIRoleInfo(E->getDecl()).providesAPI()) {
+        PrettyStackTraceExpr debugStack(Ctx, "verifying decl reference", E);
+        Out << "reference to ABI-only decl in user code\n";
+        E->dump(Out);
+        Out << "\n";
+        E->getDecl()->dump(Out);
+        Out << "\n";
+        abort();
+      }
       verifyCheckedBase(E);
+    }
+
+    void verifyParsed(OverloadedDeclRefExpr *E) {
+      for (auto D : E->getDecls()) {
+        if (!ABIRoleInfo(D).providesAPI()) {
+          PrettyStackTraceExpr debugStack(Ctx,
+                                      "verifying overloaded decl reference", E);
+          Out << "reference to ABI-only decl in user code\n";
+          E->dump(Out);
+          Out << "\n";
+          D->dump(Out);
+          Out << "\n";
+          abort();
+        }
+      }
+      verifyParsedBase(E);
     }
 
     void verifyChecked(AssignExpr *S) {
@@ -2931,7 +2956,7 @@ public:
 
         if (auto req = dyn_cast<ValueDecl>(member)) {
           if (!normal->hasWitness(req)) {
-            if ((req->getAttrs().isUnavailable(Ctx) ||
+            if ((req->isUnavailable() ||
                  req->getAttrs().hasAttribute<OptionalAttr>()) &&
                 proto->isObjC()) {
               continue;

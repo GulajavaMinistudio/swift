@@ -27,6 +27,7 @@
 namespace swift {
 
 class PersistentParserState;
+struct SourceFileExtras;
 
 /// Kind of import affecting how a decl can be reexported.
 ///
@@ -153,7 +154,7 @@ private:
   /// this source file.
   ///
   /// We only collect interface hash for primary input files.
-  std::optional<StableHasher> InterfaceHasher;
+  std::optional<Fingerprint> InterfaceHash;
 
   /// The ID for the memory buffer containing this file's source.
   unsigned BufferID;
@@ -242,6 +243,9 @@ private:
   /// The cached computation of which import flags are present in the file.
   /// Storage for \c HasImportsMatchingFlagRequest.
   ImportOptions cachedImportOptions;
+
+  /// Extra information for the source file, allocated as needed.
+  SourceFileExtras *extras = nullptr;
 
   friend ASTContext;
 
@@ -367,6 +371,11 @@ public:
   /// identifiers in this source file, including virtual filenames introduced by
   /// \c #sourceLocation(file:) declarations.
   llvm::StringMap<SourceFilePathInfo> getInfoForUsedFilePaths() const;
+
+  /// Retrieve "extra" information associated with this source file, which is
+  /// lazily and separately constructed. Use this for scratch information
+  /// that isn't needed for all source files.
+  SourceFileExtras &getExtras() const;
 
   SourceFile(ModuleDecl &M, SourceFileKind K, unsigned bufferID,
              ParsingOptions parsingOpts = {}, bool isPrimary = false);
@@ -756,19 +765,14 @@ public:
     return ParsingOpts.contains(ParsingFlags::EnableInterfaceHash);
   }
 
-  /// Retrieve a fingerprint value that summarizes the declarations in this
-  /// source file.
+  /// Retrieve a fingerprint value that summarizes the top-level declarations in
+  /// this source file.
   ///
   /// Note that the interface hash merely summarizes the top-level declarations
   /// in this file. Type body fingerprints are currently implemented such that
   /// they divert tokens away from the hasher used for fingerprints. That is,
   /// changes to the bodies of types and extensions will not result in a change
-  /// to the interface hash.
-  ///
-  /// In order for the interface hash to be enabled, this source file must be a
-  /// primary and the compiler must be set in incremental mode. If this is not
-  /// the case, this function will try to signal with an assert. It is useful
-  /// to guard requests for the interface hash with \c hasInterfaceHash().
+  /// to the source file interface hash.
   Fingerprint getInterfaceHash() const;
 
   void dumpInterfaceHash(llvm::raw_ostream &out) {
@@ -823,8 +827,8 @@ inline SourceFile::ParsingOptions operator|(SourceFile::ParsingFlags lhs,
 }
 
 inline SourceFile &ModuleDecl::getMainSourceFile() const {
-  assert(!Files.empty() && "No files added yet");
-  return *cast<SourceFile>(Files.front());
+  assert(!getFiles().empty() && "No files in module");
+  return *cast<SourceFile>(getFiles().front());
 }
 
 inline FileUnit *ModuleDecl::EntryPointInfoTy::getEntryPointFile() const {

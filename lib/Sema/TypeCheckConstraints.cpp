@@ -75,7 +75,7 @@ void TypeVariableType::Implementation::print(llvm::raw_ostream &OS) {
   if (isPackExpansion())
     bindingOptions.push_back(TypeVariableOptions::TVO_PackExpansion);
   if (!bindingOptions.empty()) {
-    OS << " [allows bindings to: ";
+    OS << " [can bind to: ";
     interleave(bindingOptions, OS,
                [&](TypeVariableOptions option) {
                   (OS << getTypeVariableOptions(option));},
@@ -175,16 +175,6 @@ bool TypeVariableType::Implementation::isSubscriptResultType() const {
              KeyPathExpr::Component::Kind::UnresolvedSubscript;
 }
 
-bool TypeVariableType::Implementation::isApplicationResultType() const {
-  if (!(locator && locator->getAnchor()))
-    return false;
-
-  if (!locator->isLastElement<LocatorPathElt::FunctionResult>())
-    return false;
-
-  return isExpr<ApplyExpr>(locator->getAnchor()) || isSubscriptResultType();
-}
-
 bool TypeVariableType::Implementation::isParameterPack() const {
   return locator
       && locator->isForGenericParameter()
@@ -212,6 +202,14 @@ bool TypeVariableType::Implementation::isOpaqueType() const {
 bool TypeVariableType::Implementation::isCollectionLiteralType() const {
   return locator && (locator->directlyAt<ArrayExpr>() ||
                      locator->directlyAt<DictionaryExpr>());
+}
+
+bool TypeVariableType::Implementation::isNumberLiteralType() const {
+  return locator && locator->directlyAt<NumberLiteralExpr>();
+}
+
+bool TypeVariableType::Implementation::isFunctionResult() const {
+  return locator && locator->isLastElement<LocatorPathElt::FunctionResult>();
 }
 
 void *operator new(size_t bytes, ConstraintSystem& cs,
@@ -460,10 +458,6 @@ TypeChecker::typeCheckTarget(SyntacticElementTarget &target,
     // diagnostics and is a hint for various performance optimizations.
     cs.setContextualInfo(expr, target.getExprContextualTypeInfo());
 
-    // Try to shrink the system by reducing disjunction domains. This
-    // goes through every sub-expression and generate its own sub-system, to
-    // try to reduce the domains of those subexpressions.
-    cs.shrink(expr);
     target.setExpr(expr);
   }
 
@@ -573,7 +567,7 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
   // If both of aforementioned conditions are true, let's attempt
   // to open generic parameter and infer the type of this default
   // expression.
-  OpenedTypeMap genericParameters;
+  SmallVector<OpenedType, 4> genericParameters;
 
   ConstraintSystemOptions options;
   options |= ConstraintSystemFlags::AllowFixes;
@@ -584,8 +578,13 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
       defaultValue, LocatorPathElt::ContextualType(
                         defaultExprTarget.getExprContextualTypePurpose()));
 
-  auto getCanonicalGenericParamTy = [](GenericTypeParamType *GP) {
-    return cast<GenericTypeParamType>(GP->getCanonicalType());
+  auto findParam = [&](GenericTypeParamType *GP) -> TypeVariableType * {
+    for (auto pair : genericParameters) {
+      if (pair.first->isEqual(GP))
+        return pair.second;
+    }
+
+    return nullptr;
   };
 
   // Find and open all of the generic parameters used by the parameter
@@ -594,29 +593,29 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
     assert(!type->is<UnboundGenericType>());
 
     if (auto *GP = type->getAs<GenericTypeParamType>()) {
-      auto openedVar = genericParameters.find(getCanonicalGenericParamTy(GP));
-      if (openedVar != genericParameters.end()) {
-        return openedVar->second;
-      }
-      return cs.openGenericParameter(DC->getParent(), GP, genericParameters,
-                                     locator);
+      if (auto *typeVar = findParam(GP))
+        return typeVar;
+
+      auto *typeVar = cs.openGenericParameter(GP, locator);
+      genericParameters.emplace_back(GP, typeVar);
+
+      return typeVar;
     }
     return std::nullopt;
   });
 
-  auto containsTypes = [&](Type type, OpenedTypeMap &toFind) {
-    return type.findIf([&](Type nested) {
+  auto containsTypes = [&](Type type) {
+    return type.findIf([&](Type nested) -> bool {
       if (auto *GP = nested->getAs<GenericTypeParamType>())
-        return toFind.count(getCanonicalGenericParamTy(GP)) > 0;
+        return findParam(GP);
       return false;
     });
   };
 
-  auto containsGenericParamsExcluding = [&](Type type,
-                                            OpenedTypeMap &exclusions) -> bool {
-    return type.findIf([&](Type type) {
+  auto containsGenericParamsExcluding = [&](Type type) -> bool {
+    return type.findIf([&](Type type) -> bool {
       if (auto *GP = type->getAs<GenericTypeParamType>())
-        return !exclusions.count(getCanonicalGenericParamTy(GP));
+        return !findParam(GP);
       return false;
     });
   };
@@ -637,7 +636,7 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
     for (unsigned i : indices(anchorTy->getParams())) {
       const auto &param = anchorTy->getParams()[i];
 
-      if (containsTypes(param.getPlainType(), genericParameters))
+      if (containsTypes(param.getPlainType()))
         affectedParams.push_back(i);
     }
 
@@ -704,8 +703,8 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
         auto rhsTy = requirement.getSecondType();
 
         // Unrelated requirement.
-        if (!containsTypes(lhsTy, genericParameters) &&
-            !containsTypes(rhsTy, genericParameters))
+        if (!containsTypes(lhsTy) &&
+            !containsTypes(rhsTy))
           continue;
 
         // If both sides are dependent members, that's okay because types
@@ -716,8 +715,8 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
 
         // Allow a subset of generic same-type requirements that only mention
         // "in scope" generic parameters e.g. `T.X == Int` or `T == U.Z`
-        if (!containsGenericParamsExcluding(lhsTy, genericParameters) &&
-            !containsGenericParamsExcluding(rhsTy, genericParameters)) {
+        if (!containsGenericParamsExcluding(lhsTy) &&
+            !containsGenericParamsExcluding(rhsTy)) {
           recordRequirement(reqIdx, requirement, requirementBaseLocator);
           continue;
         }
@@ -737,12 +736,12 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
         auto adheringTy = requirement.getFirstType();
 
         // Unrelated requirement.
-        if (!containsTypes(adheringTy, genericParameters))
+        if (!containsTypes(adheringTy))
           continue;
 
         // If adhering type has a mix or in- and out-of-scope parameters
         // mentioned we need to diagnose.
-        if (containsGenericParamsExcluding(adheringTy, genericParameters)) {
+        if (containsGenericParamsExcluding(adheringTy)) {
           diagnoseInvalidRequirement(requirement);
           return Type();
         }
@@ -750,7 +749,7 @@ Type TypeChecker::typeCheckParameterDefault(Expr *&defaultValue,
         if (requirement.getKind() == RequirementKind::Superclass) {
           auto superclassTy = requirement.getSecondType();
 
-          if (containsGenericParamsExcluding(superclassTy, genericParameters)) {
+          if (containsGenericParamsExcluding(superclassTy)) {
             diagnoseInvalidRequirement(requirement);
             return Type();
           }
@@ -791,11 +790,9 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
                                    TypeCheckExprOptions options) {
   SyntacticElementTarget target =
       PBD ? SyntacticElementTarget::forInitialization(
-                initializer, patternType, PBD, patternNumber,
-                /*bindPatternVarsOneWay=*/false)
+                initializer, patternType, PBD, patternNumber)
           : SyntacticElementTarget::forInitialization(
-                initializer, DC, patternType, pattern,
-                /*bindPatternVarsOneWay=*/false);
+                initializer, DC, patternType, pattern);
 
   // Type-check the initializer.
   auto resultTarget = typeCheckExpression(target, options);
@@ -893,10 +890,25 @@ bool TypeChecker::typeCheckForEachPreamble(DeclContext *dc, ForEachStmt *stmt,
     return true;
   };
 
-  auto target = SyntacticElementTarget::forForEachPreamble(
-      stmt, dc, /*ignoreWhereClause=*/false, packElementEnv);
+  auto target =
+      SyntacticElementTarget::forForEachPreamble(stmt, dc, packElementEnv);
   if (!typeCheckTarget(target))
     return failed();
+
+  if (auto *where = stmt->getWhere()) {
+    auto boolType = dc->getASTContext().getBoolType();
+    if (!boolType)
+      return failed();
+
+    SyntacticElementTarget whereClause(stmt->getWhere(), dc,
+                                       {boolType, CTP_Condition},
+                                       /*isDiscarded=*/false);
+    auto result = typeCheckTarget(whereClause);
+    if (!result)
+      return true;
+
+    stmt->setWhere(result->getAsExpr());
+  }
 
   // Check to see if the sequence expr is throwing (in async context),
   // if so require the stmt to have a `try`.

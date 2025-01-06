@@ -368,28 +368,6 @@ namespace {
                                   ClangFieldInfo> {
     const clang::RecordDecl *ClangDecl;
 
-    template <class Fn>
-    void forEachNonEmptyBase(Fn fn) const {
-      auto &layout = ClangDecl->getASTContext().getASTRecordLayout(ClangDecl);
-
-      if (auto cxxRecord = dyn_cast<clang::CXXRecordDecl>(ClangDecl)) {
-        for (auto base : cxxRecord->bases()) {
-          auto baseType = base.getType().getCanonicalType();
-
-          auto baseRecord = cast<clang::RecordType>(baseType)->getDecl();
-          auto baseCxxRecord = cast<clang::CXXRecordDecl>(baseRecord);
-
-          if (baseCxxRecord->isEmpty())
-            continue;
-
-          auto offset = layout.getBaseClassOffset(baseCxxRecord);
-          auto size =
-              ClangDecl->getASTContext().getTypeSizeInChars(baseType);
-          fn(baseType, offset, size);
-        }
-      }
-    }
-
   public:
     LoadableClangRecordTypeInfo(ArrayRef<ClangFieldInfo> fields,
                                 unsigned explosionSize, llvm::Type *storageType,
@@ -446,10 +424,11 @@ namespace {
 
     void addToAggLowering(IRGenModule &IGM, SwiftAggLowering &lowering,
                           Size offset) const override {
-      forEachNonEmptyBase([&](clang::QualType type, clang::CharUnits offset,
-                              clang::CharUnits) {
-        lowering.addTypedData(type, offset);
-      });
+      if (auto cxxRecordDecl = dyn_cast<clang::CXXRecordDecl>(ClangDecl)) {
+        for (auto base : getBasesAndOffsets(cxxRecordDecl)) {
+          lowering.addTypedData(base.decl, base.offset.asCharUnits());
+        }
+      }
 
       lowering.addTypedData(ClangDecl, offset.asCharUnits());
     }
@@ -563,36 +542,25 @@ namespace {
     const clang::RecordDecl *ClangDecl;
 
     const clang::CXXConstructorDecl *findCopyConstructor() const {
-      const clang::CXXRecordDecl *cxxRecordDecl =
-          dyn_cast<clang::CXXRecordDecl>(ClangDecl);
+      const auto *cxxRecordDecl = dyn_cast<clang::CXXRecordDecl>(ClangDecl);
       if (!cxxRecordDecl)
         return nullptr;
-      for (auto method : cxxRecordDecl->methods()) {
-        if (auto ctor = dyn_cast<clang::CXXConstructorDecl>(method)) {
-          if (ctor->isCopyConstructor() &&
-              ctor->getAccess() == clang::AS_public &&
-              // rdar://106964356
-              // ctor->doesThisDeclarationHaveABody() &&
-              !ctor->isDeleted())
-            return ctor;
-        }
+      for (auto ctor : cxxRecordDecl->ctors()) {
+        if (ctor->isCopyConstructor() &&
+            ctor->getAccess() == clang::AS_public && !ctor->isDeleted())
+          return ctor;
       }
       return nullptr;
     }
 
     const clang::CXXConstructorDecl *findMoveConstructor() const {
-      const clang::CXXRecordDecl *cxxRecordDecl =
-          dyn_cast<clang::CXXRecordDecl>(ClangDecl);
+      const auto *cxxRecordDecl = dyn_cast<clang::CXXRecordDecl>(ClangDecl);
       if (!cxxRecordDecl)
         return nullptr;
-      for (auto method : cxxRecordDecl->methods()) {
-        if (auto ctor = dyn_cast<clang::CXXConstructorDecl>(method)) {
-          if (ctor->isMoveConstructor() &&
-              ctor->getAccess() == clang::AS_public &&
-              ctor->doesThisDeclarationHaveABody() &&
-              !ctor->isDeleted())
-            return ctor;
-        }
+      for (auto ctor : cxxRecordDecl->ctors()) {
+        if (ctor->isMoveConstructor() &&
+            ctor->getAccess() == clang::AS_public && !ctor->isDeleted())
+          return ctor;
       }
       return nullptr;
     }
@@ -1393,25 +1361,13 @@ private:
   }
 
   void collectBases(const clang::RecordDecl *decl) {
-    auto &layout = decl->getASTContext().getASTRecordLayout(decl);
     if (auto cxxRecord = dyn_cast<clang::CXXRecordDecl>(decl)) {
-      for (auto base : cxxRecord->bases()) {
-        if (base.isVirtual())
-          continue;
-
-        auto baseType = base.getType().getCanonicalType();
-
-        auto baseRecord = cast<clang::RecordType>(baseType)->getDecl();
-        auto baseCxxRecord = cast<clang::CXXRecordDecl>(baseRecord);
-
-        if (baseCxxRecord->isEmpty())
-          continue;
-
-        auto baseOffset = Size(layout.getBaseClassOffset(baseCxxRecord).getQuantity());
-        SubobjectAdjustment += baseOffset;
-        collectBases(baseCxxRecord);
-        collectStructFields(baseCxxRecord);
-        SubobjectAdjustment -= baseOffset;
+      auto bases = getBasesAndOffsets(cxxRecord);
+      for (auto base : bases) {
+        SubobjectAdjustment += base.offset;
+        collectBases(base.decl);
+        collectStructFields(base.decl);
+        SubobjectAdjustment -= base.offset;
       }
     }
   }

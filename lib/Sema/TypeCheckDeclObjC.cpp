@@ -14,11 +14,12 @@
 // aspects of declarations.
 //
 //===----------------------------------------------------------------------===//
-#include "TypeCheckObjC.h"
-#include "TypeChecker.h"
 #include "TypeCheckConcurrency.h"
+#include "TypeCheckObjC.h"
 #include "TypeCheckProtocol.h"
+#include "TypeChecker.h"
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/AvailabilityInference.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/ForeignErrorConvention.h"
@@ -504,6 +505,7 @@ static bool checkObjCActorIsolation(const ValueDecl *VD, ObjCReason Reason) {
     llvm_unreachable("decl cannot have dynamic isolation");
 
   case ActorIsolation::Nonisolated:
+  case ActorIsolation::CallerIsolationInheriting:
   case ActorIsolation::NonisolatedUnsafe:
   case ActorIsolation::Unspecified:
     return false;
@@ -3314,16 +3316,13 @@ private:
     if (!VD)
       return;
 
-    ASTContext &ctx = VD->getASTContext();
-
     // Also skip overrides, unless they override an unavailable decl, which
     // makes them not formally overrides anymore.
-    if (VD->getOverriddenDecl() &&
-          !VD->getOverriddenDecl()->getAttrs().isUnavailable(ctx))
+    if (VD->getOverriddenDecl() && !VD->getOverriddenDecl()->isUnavailable())
       return;
 
     // Skip alternate Swift names for other language modes.
-    if (VD->getAttrs().isUnavailable(ctx))
+    if (VD->isUnavailable())
       return;
 
     // Skip async versions of members. We'll match against the completion

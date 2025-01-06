@@ -259,6 +259,10 @@ public:
         Apply = dyn_cast<ApplyExpr>(parentExpr);
   }
 
+  virtual SourceLoc getLoc() const override {
+    return FailureDiagnostic::getLoc();
+  }
+
   unsigned getRequirementIndex() const {
     auto reqElt =
         getLocator()->castLastElementTo<LocatorPathElt::AnyRequirement>();
@@ -340,6 +344,8 @@ public:
            reqElt.getRequirementKind() == RequirementKind::Layout);
 #endif
   }
+
+  virtual SourceLoc getLoc() const override;
 
   bool diagnoseAsError() override;
 
@@ -1068,17 +1074,6 @@ public:
     std::sort(Indices.begin(), Indices.end());
     assert(getFromType()->is<AnyFunctionType>() && getToType()->is<AnyFunctionType>());
   }
-
-  bool diagnoseAsError() override;
-};
-
-/// Diagnose situations when @autoclosure argument is passed to @autoclosure
-/// parameter directly without calling it first.
-class AutoClosureForwardingFailure final : public FailureDiagnostic {
-public:
-  AutoClosureForwardingFailure(const Solution &solution,
-                               ConstraintLocator *locator)
-      : FailureDiagnostic(solution, locator) {}
 
   bool diagnoseAsError() override;
 };

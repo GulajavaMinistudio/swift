@@ -51,6 +51,7 @@ extension ASTGenVisitor {
       switch attrKind {
       // Simple type attributes.
       case .autoclosure,
+        .addressable,
         .escaping,
         .noEscape,
         .noDerivative,
@@ -58,6 +59,7 @@ extension ASTGenVisitor {
         .sendable,
         .retroactive,
         .unchecked,
+        .unsafe,
         .preconcurrency,
         .local,
         .noMetadata,
@@ -89,6 +91,9 @@ extension ASTGenVisitor {
       case .isolated:
         return self.generateIsolatedTypeAttr(attribute: node)
 
+      case .safe:
+        fatalError("unimplemented")
+
       // SIL type attributes are not supported.
       case .autoreleased,
         .blockStorage,
@@ -117,6 +122,7 @@ extension ASTGenVisitor {
         .silUnowned,
         .silWeak,
         .silSending,
+        .silImplicitLeadingParam,
         .unownedInnerPointer:
         break;
 

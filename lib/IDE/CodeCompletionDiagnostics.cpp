@@ -13,6 +13,7 @@
 #include "CodeCompletionDiagnostics.h"
 
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/AvailabilityInference.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/DiagnosticsIDE.h"
@@ -55,6 +56,11 @@ public:
                  llvm::raw_ostream &Out, Diag<ArgTypes...> ID,
                  typename swift::detail::PassArgument<ArgTypes>::type... VArgs);
 
+  bool getDiagnosticForDeprecated(const ValueDecl *D, const AvailableAttr *Attr,
+                                  bool isSoftDeprecated,
+                                  CodeCompletionDiagnosticSeverity &severity,
+                                  llvm::raw_ostream &Out);
+
   bool getDiagnosticForDeprecated(const ValueDecl *D,
                                   CodeCompletionDiagnosticSeverity &severity,
                                   llvm::raw_ostream &Out);
@@ -67,7 +73,7 @@ bool CodeCompletionDiagnostics::getDiagnostics(
     typename swift::detail::PassArgument<ArgTypes>::type... VArgs) {
   DiagID id = ID.ID;
   std::vector<DiagnosticArgument> DiagArgs{std::move(VArgs)...};
-  auto format = Engine.diagnosticStringFor(id, PrintDiagnosticNamesMode::None);
+  auto format = Engine.diagnosticStringFor(id);
   DiagnosticEngine::formatDiagnosticText(Out, format, DiagArgs);
   severity = getSeverity(Engine.declaredDiagnosticKindFor(id));
 
@@ -75,16 +81,9 @@ bool CodeCompletionDiagnostics::getDiagnostics(
 }
 
 bool CodeCompletionDiagnostics::getDiagnosticForDeprecated(
-    const ValueDecl *D, CodeCompletionDiagnosticSeverity &severity,
-    llvm::raw_ostream &Out) {
-  bool isSoftDeprecated = false;
-  const AvailableAttr *Attr = D->getAttrs().getDeprecated(Ctx);
-  if (!Attr) {
-    Attr = D->getAttrs().getSoftDeprecated(Ctx);
-    isSoftDeprecated = true;
-  }
-  if (!Attr)
-    return true;
+    const ValueDecl *D, const AvailableAttr *Attr, bool isSoftDeprecated,
+    CodeCompletionDiagnosticSeverity &severity, llvm::raw_ostream &Out) {
+  assert(Attr);
 
   // FIXME: Code completion doesn't offer accessors. It only emits 'VarDecl's.
   // So getter/setter specific availability doesn't work in code completion.
@@ -142,6 +141,20 @@ bool CodeCompletionDiagnostics::getDiagnosticForDeprecated(
     }
   }
   return false;;
+}
+
+bool CodeCompletionDiagnostics::getDiagnosticForDeprecated(
+    const ValueDecl *D, CodeCompletionDiagnosticSeverity &severity,
+    llvm::raw_ostream &Out) {
+  if (auto attr = D->getDeprecatedAttr())
+    return getDiagnosticForDeprecated(D, attr->getParsedAttr(), false, severity,
+                                      Out);
+
+  if (auto attr = D->getSoftDeprecatedAttr())
+    return getDiagnosticForDeprecated(D, attr->getParsedAttr(), true, severity,
+                                      Out);
+
+  return true;
 }
 
 } // namespace

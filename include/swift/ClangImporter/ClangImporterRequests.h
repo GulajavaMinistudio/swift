@@ -135,9 +135,11 @@ private:
 struct ClangRecordMemberLookupDescriptor final {
   NominalTypeDecl *recordDecl;
   DeclName name;
+  bool inherited;
 
-  ClangRecordMemberLookupDescriptor(NominalTypeDecl *recordDecl, DeclName name)
-      : recordDecl(recordDecl), name(name) {
+  ClangRecordMemberLookupDescriptor(NominalTypeDecl *recordDecl, DeclName name,
+                                    bool inherited = false)
+      : recordDecl(recordDecl), name(name), inherited(inherited) {
     assert(isa<clang::RecordDecl>(recordDecl->getClangDecl()));
   }
 
@@ -327,9 +329,15 @@ struct CxxRecordSemanticsDescriptor final {
   const clang::RecordDecl *decl;
   ASTContext &ctx;
 
-  CxxRecordSemanticsDescriptor(const clang::RecordDecl *decl,
-                               ASTContext &ctx)
-      : decl(decl), ctx(ctx) {}
+  /// Whether to emit warnings for missing destructor or copy constructor
+  /// whenever the classification of the type assumes that they exist (e.g. for
+  /// a value type).
+  bool shouldDiagnoseLifetimeOperations;
+
+  CxxRecordSemanticsDescriptor(const clang::RecordDecl *decl, ASTContext &ctx,
+                               bool shouldDiagnoseLifetimeOperations = true)
+      : decl(decl), ctx(ctx),
+        shouldDiagnoseLifetimeOperations(shouldDiagnoseLifetimeOperations) {}
 
   friend llvm::hash_code hash_value(const CxxRecordSemanticsDescriptor &desc) {
     return llvm::hash_combine(desc.decl);

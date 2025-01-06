@@ -314,7 +314,8 @@ ModuleFile::getTransitiveLoadingBehavior(const Dependency &dependency,
 
   return Core->getTransitiveLoadingBehavior(
       dependency.Core, ctx.LangOpts.ImportNonPublicDependencies,
-      isPartialModule, ctx.LangOpts.PackageName, forTestable);
+      isPartialModule, ctx.LangOpts.PackageName,
+      ctx.SearchPathOpts.ResolveInPackageModuleDependencies, forTestable);
 }
 
 bool ModuleFile::mayHaveDiagnosticsPointingAtBuffer() const {
@@ -329,6 +330,7 @@ bool ModuleFile::mayHaveDiagnosticsPointingAtBuffer() const {
 ModuleFile::~ModuleFile() { }
 
 void ModuleFile::lookupValue(DeclName name,
+                             OptionSet<ModuleLookupFlags> flags,
                              SmallVectorImpl<ValueDecl*> &results) {
   PrettyStackTraceModuleFile stackEntry(*this);
 
@@ -349,7 +351,8 @@ void ModuleFile::lookupValue(DeclName name,
         }
         auto VD = cast<ValueDecl>(declOrError.get());
         if (name.isSimpleName() || VD->getName().matchesRef(name))
-          results.push_back(VD);
+          if (ABIRoleInfo(VD).matchesOptions(flags))
+            results.push_back(VD);
       }
     }
   }
@@ -367,7 +370,8 @@ void ModuleFile::lookupValue(DeclName name,
           continue;
         }
         auto VD = cast<ValueDecl>(declOrError.get());
-        results.push_back(VD);
+        if (ABIRoleInfo(VD).matchesOptions(flags))
+          results.push_back(VD);
       }
     }
   }
@@ -452,7 +456,8 @@ TypeDecl *ModuleFile::lookupNestedType(Identifier name,
           diagnoseAndConsumeError(typeOrErr.takeError());
           continue;
         }
-        return cast<TypeDecl>(typeOrErr.get());
+        if (ABIRoleInfo(typeOrErr.get()).providesAPI()) // FIXME: flags?
+          return cast<TypeDecl>(typeOrErr.get());
       }
     }
   }
@@ -621,6 +626,8 @@ void ModuleFile::lookupVisibleDecls(ImportPath::Access accessPath,
       diagnoseAndConsumeError(declOrError.takeError());
       return;
     }
+    if (!ABIRoleInfo(declOrError.get()).providesAPI()) // FIXME: flags?
+      return;
     consumer.foundDecl(cast<ValueDecl>(declOrError.get()),
                        DeclVisibilityKind::VisibleAtTopLevel);
   };
@@ -672,7 +679,7 @@ void ModuleFile::loadExtensions(NominalTypeDecl *nominal) {
     }
   } else {
     std::string mangledName =
-        Mangle::ASTMangler().mangleNominalType(nominal);
+        Mangle::ASTMangler(nominal->getASTContext()).mangleNominalType(nominal);
     for (auto item : *iter) {
       if (item.first != mangledName)
         continue;
@@ -701,7 +708,7 @@ void ModuleFile::loadObjCMethods(
     return;
   }
 
-  std::string ownerName = Mangle::ASTMangler().mangleNominalType(typeDecl);
+  std::string ownerName = Mangle::ASTMangler(typeDecl->getASTContext()).mangleNominalType(typeDecl);
   auto results = *known;
   for (const auto &result : results) {
     // If the method is the wrong kind (instance vs. class), skip it.
@@ -733,7 +740,7 @@ void ModuleFile::loadDerivativeFunctionConfigurations(
   if (!Core->DerivativeFunctionConfigurations)
     return;
   auto &ctx = originalAFD->getASTContext();
-  Mangle::ASTMangler Mangler;
+  Mangle::ASTMangler Mangler(ctx);
   auto mangledName = Mangler.mangleDeclAsUSR(originalAFD, "");
   auto configs = Core->DerivativeFunctionConfigurations->find(mangledName);
   if (configs == Core->DerivativeFunctionConfigurations->end())
@@ -1004,6 +1011,8 @@ void ModuleFile::getTopLevelDecls(
       consumeError(declOrError.takeError());
       continue;
     }
+    if (!ABIRoleInfo(declOrError.get()).providesAPI()) // FIXME: flags
+      continue;
     results.push_back(declOrError.get());
   }
 }
@@ -1052,6 +1061,8 @@ ModuleFile::getLocalTypeDecls(SmallVectorImpl<TypeDecl *> &results) {
 
   for (auto DeclID : Core->LocalTypeDecls->data()) {
     auto TD = cast<TypeDecl>(getDecl(DeclID));
+    if (!ABIRoleInfo(TD).providesAPI()) // FIXME: flags
+      continue;
     results.push_back(TD);
   }
 }
@@ -1416,6 +1427,6 @@ StringRef SerializedASTFile::getPublicModuleName() const {
   return File.getPublicModuleName();
 }
 
-llvm::VersionTuple SerializedASTFile::getSwiftInterfaceCompilerVersion() const {
+version::Version SerializedASTFile::getSwiftInterfaceCompilerVersion() const {
   return File.getSwiftInterfaceCompilerVersion();
 }

@@ -1116,7 +1116,7 @@ static StringRef calculateMangledName(SDKContext &Ctx, ValueDecl *VD) {
   if (auto *attr = VD->getAttrs().getAttribute<SILGenNameAttr>()) {
     return Ctx.buffer(attr->Name);
   }
-  Mangle::ASTMangler NewMangler;
+  Mangle::ASTMangler NewMangler(VD->getASTContext());
   return Ctx.buffer(NewMangler.mangleAnyDecl(VD, true,
                                     /*bool respectOriginallyDefinedIn*/true));
 }
@@ -1339,14 +1339,16 @@ std::optional<uint8_t> SDKContext::getFixedBinaryOrder(ValueDecl *VD) const {
 // check for if it has @available(macOS 9999, iOS 9999, tvOS 9999, watchOS 9999, *)
 static bool isABIPlaceHolder(Decl *D) {
   llvm::SmallSet<PlatformKind, 4> Platforms;
-  for (auto *ATT: D->getAttrs()) {
-    if (auto *AVA = dyn_cast<AvailableAttr>(ATT)) {
-      if (AVA->Platform != PlatformKind::none && AVA->Introduced &&
-          AVA->Introduced->getMajor() == 9999) {
-        Platforms.insert(AVA->Platform);
-      }
+  for (auto semanticAttr : D->getSemanticAvailableAttrs()) {
+    auto attr = semanticAttr.getParsedAttr();
+    auto domain = semanticAttr.getDomain();
+    if (domain.isPlatform() && attr->Introduced &&
+        attr->Introduced->getMajor() == 9999) {
+      Platforms.insert(attr->getPlatform());
     }
   }
+
+  // FIXME: This probably isn't correct anymore, now that visionOS exists
   return Platforms.size() == 4;
 }
 
@@ -1361,11 +1363,11 @@ static bool isABIPlaceholderRecursive(Decl *D) {
 StringRef SDKContext::getPlatformIntroVersion(Decl *D, PlatformKind Kind) {
   if (!D)
     return StringRef();
-  for (auto *ATT: D->getAttrs()) {
-    if (auto *AVA = dyn_cast<AvailableAttr>(ATT)) {
-      if (AVA->Platform == Kind && AVA->Introduced) {
-        return buffer(AVA->Introduced->getAsString());
-      }
+  for (auto semanticAttr : D->getSemanticAvailableAttrs()) {
+    auto attr = semanticAttr.getParsedAttr();
+    auto domain = semanticAttr.getDomain();
+    if (domain.getPlatformKind() == Kind && attr->Introduced) {
+      return buffer(attr->Introduced->getAsString());
     }
   }
   return StringRef();
@@ -1374,11 +1376,12 @@ StringRef SDKContext::getPlatformIntroVersion(Decl *D, PlatformKind Kind) {
 StringRef SDKContext::getLanguageIntroVersion(Decl *D) {
   if (!D)
     return StringRef();
-  for (auto *ATT: D->getAttrs()) {
-    if (auto *AVA = dyn_cast<AvailableAttr>(ATT)) {
-      if (AVA->isLanguageVersionSpecific() && AVA->Introduced) {
-        return buffer(AVA->Introduced->getAsString());
-      }
+  for (auto semanticAttr : D->getSemanticAvailableAttrs()) {
+    auto attr = semanticAttr.getParsedAttr();
+    auto domain = semanticAttr.getDomain();
+
+    if (domain.isSwiftLanguage() && attr->Introduced) {
+      return buffer(attr->Introduced->getAsString());
     }
   }
   return getLanguageIntroVersion(D->getDeclContext()->getAsDecl());
@@ -1473,7 +1476,7 @@ SDKNodeInitInfo::SDKNodeInitInfo(SDKContext &Ctx, Decl *D):
       ObjCName(Ctx.getObjcName(D)),
       InitKind(Ctx.getInitKind(D)),
       IsImplicit(D->isImplicit()),
-      IsDeprecated(D->getAttrs().isDeprecated(D->getASTContext())),
+      IsDeprecated(D->isDeprecated()),
       IsABIPlaceholder(isABIPlaceholderRecursive(D)),
       IsFromExtension(isDeclaredInExtension(D)),
       DeclAttrs(collectDeclAttributes(D)) {
@@ -1767,8 +1770,8 @@ SDKContext::shouldIgnore(Decl *D, const Decl* Parent) const {
     if (D->isPrivateSystemDecl(false))
       return true;
   }
-  if (AvailableAttr::isUnavailable(D))
-     return true;
+  if (D->isUnavailable())
+    return true;
   if (auto VD = dyn_cast<ValueDecl>(D)) {
     switch (getAccessLevel(VD)) {
     case AccessLevel::Internal:

@@ -252,13 +252,11 @@ public:
   // NOTE: The load optimized in this method is a load [trivial].
   SILInstruction *optimizeLoadFromStringLiteral(LoadInst *li);
 
-  SILInstruction *visitLoadBorrowInst(LoadBorrowInst *LI);
   SILInstruction *visitIndexAddrInst(IndexAddrInst *IA);
   bool optimizeStackAllocatedEnum(AllocStackInst *AS);
   SILInstruction *visitAllocStackInst(AllocStackInst *AS);
   SILInstruction *visitSwitchEnumAddrInst(SwitchEnumAddrInst *SEAI);
   SILInstruction *visitInjectEnumAddrInst(InjectEnumAddrInst *IEAI);
-  SILInstruction *visitPointerToAddressInst(PointerToAddressInst *PTAI);
   SILInstruction *visitUncheckedAddrCastInst(UncheckedAddrCastInst *UADCI);
   SILInstruction *visitUncheckedRefCastInst(UncheckedRefCastInst *URCI);
   SILInstruction *visitEndCOWMutationInst(EndCOWMutationInst *URCI);
@@ -282,7 +280,6 @@ public:
   SILInstruction *visitThickToObjCMetatypeInst(ThickToObjCMetatypeInst *TTOCMI);
   SILInstruction *visitObjCToThickMetatypeInst(ObjCToThickMetatypeInst *OCTTMI);
   SILInstruction *visitTupleExtractInst(TupleExtractInst *TEI);
-  SILInstruction *visitFixLifetimeInst(FixLifetimeInst *FLI);
   SILInstruction *visitSwitchValueInst(SwitchValueInst *SVI);
   SILInstruction *
   visitCheckedCastAddrBranchInst(CheckedCastAddrBranchInst *CCABI);
@@ -366,8 +363,6 @@ public:
   SILInstruction *tryFoldComposedUnaryForwardingInstChain(
       SingleValueInstruction *user, SingleValueInstruction *value,
       function_ref<SILValue()> newValueGenerator);
-
-  SILInstruction *optimizeAlignment(PointerToAddressInst *ptrAdrInst);
 
   InstModCallbacks &getInstModCallbacks() { return deleter.getCallbacks(); }
 

@@ -17,6 +17,7 @@
 #include "swift/AST/AvailabilityScope.h"
 
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/AvailabilityInference.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/Module.h"
@@ -301,7 +302,7 @@ getAvailabilityConditionVersionSourceRange(const DeclAttributes &DeclAttrs,
   for (auto *Attr : DeclAttrs) {
     if (auto *AA = dyn_cast<AvailableAttr>(Attr)) {
       if (AA->Introduced.has_value() && AA->Introduced.value() == Version &&
-          AA->Platform == Platform) {
+          AA->getPlatform() == Platform) {
 
         // More than one: return invalid range.
         if (Range.isValid())

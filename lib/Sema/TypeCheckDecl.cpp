@@ -32,8 +32,10 @@
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/AccessScope.h"
 #include "swift/AST/Attr.h"
+#include "swift/AST/AvailabilityInference.h"
 #include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/ConformanceLookup.h"
+#include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticsParse.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/Expr.h"
@@ -47,6 +49,7 @@
 #include "swift/AST/PropertyWrappers.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/SourceFile.h"
+#include "swift/AST/Type.h"
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/AST/TypeWalker.h"
 #include "swift/Basic/Assertions.h"
@@ -2145,7 +2148,7 @@ ResultTypeRequest::evaluate(Evaluator &evaluator, ValueDecl *decl) const {
     // Mark the imported Swift function as unavailable.
     // That will ensure that the function will not be
     // usable from Swift, even though it is imported.
-    if (!decl->getAttrs().isUnavailable(ctx)) {
+    if (!decl->isUnavailable()) {
       StringRef unavailabilityMsgRef = "return type is unavailable in Swift";
       auto ua =
           AvailableAttr::createPlatformAgnostic(ctx, unavailabilityMsgRef);
@@ -2432,16 +2435,18 @@ InterfaceTypeRequest::evaluate(Evaluator &eval, ValueDecl *D) const {
   case DeclKind::TypeAlias: {
     auto typeAlias = cast<TypeAliasDecl>(D);
 
-    auto genericSig = typeAlias->getGenericSignature();
-    SubstitutionMap subs;
-    if (genericSig)
-      subs = genericSig->getIdentitySubstitutionMap();
+    SmallVector<Type, 2> genericArgs;
+    if (auto *params = typeAlias->getGenericParams()) {
+      for (auto *param : *params) {
+        genericArgs.push_back(param->getDeclaredInterfaceType());
+      }
+    }
 
     Type parent;
     auto parentDC = typeAlias->getDeclContext();
     if (parentDC->isTypeContext())
       parent = parentDC->getSelfInterfaceType();
-    auto sugaredType = TypeAliasType::get(typeAlias, parent, subs,
+    auto sugaredType = TypeAliasType::get(typeAlias, parent, genericArgs,
                                           typeAlias->getUnderlyingType());
     return MetatypeType::get(sugaredType, Context);
   }
@@ -2453,7 +2458,9 @@ InterfaceTypeRequest::evaluate(Evaluator &eval, ValueDecl *D) const {
   case DeclKind::BuiltinTuple: {
     auto nominal = cast<NominalTypeDecl>(D);
     Type declaredInterfaceTy = nominal->getDeclaredInterfaceType();
-    // FIXME: For a protocol, this returns a MetatypeType wrapping a ProtocolType, but should be a MetatypeType wrapping an ExistentialType ('(any P).Type', not 'P.Type').
+    // FIXME: For a protocol, this returns a MetatypeType wrapping a
+    // ProtocolType, but should be a MetatypeType wrapping an
+    // ExistentialType ('(any P).Type', not 'P.Type').
     return MetatypeType::get(declaredInterfaceTy, Context);
   }
 
@@ -3206,6 +3213,10 @@ bool IsUnsafeRequest::evaluate(Evaluator &evaluator, Decl *decl) const {
   if (auto enclosingDC = decl->getDeclContext()) {
     if (auto enclosingNominal = enclosingDC->getSelfNominalTypeDecl())
       if (enclosingNominal->isUnsafe())
+        return true;
+
+    if (auto ext = dyn_cast<ExtensionDecl>(enclosingDC))
+      if (ext->getAttrs().hasAttribute<UnsafeAttr>())
         return true;
   }
 

@@ -18,8 +18,9 @@
 #ifndef SWIFT_AST_AVAILABILITY_CONTEXT_H
 #define SWIFT_AST_AVAILABILITY_CONTEXT_H
 
-#include "swift/AST/Availability.h"
+#include "swift/AST/AvailabilityRange.h"
 #include "swift/AST/PlatformKind.h"
+#include "swift/Basic/Debug.h"
 #include "swift/Basic/LLVM.h"
 #include <optional>
 
@@ -44,18 +45,27 @@ private:
 
   AvailabilityContext(const Storage *info) : Info(info) { assert(info); };
 
-  /// Retrieves a uniqued `AvailabilityContext` with the given platform
-  /// availability parameters.
+  /// Retrieves an `AvailabilityContext` with the given platform availability
+  /// parameters.
   static AvailabilityContext
   get(const AvailabilityRange &platformAvailability,
       std::optional<PlatformKind> unavailablePlatform, bool deprecated,
       ASTContext &ctx);
 
 public:
-  /// Retrieves the default `AvailabilityContext`, which is maximally available.
-  /// The platform availability range will be set to the deployment target (or
-  /// minimum inlining target when applicable).
-  static AvailabilityContext getDefault(ASTContext &ctx);
+  /// Retrieves an `AvailabilityContext` constrained by the given platform
+  /// availability range.
+  static AvailabilityContext forPlatformRange(const AvailabilityRange &range,
+                                              ASTContext &ctx);
+
+  /// Retrieves the maximally available `AvailabilityContext` for the
+  /// compilation. The platform availability range will be set to the minimum
+  /// inlining target (which may just be the deployment target).
+  static AvailabilityContext forInliningTarget(ASTContext &ctx);
+
+  /// Retrieves an `AvailabilityContext` with the platform availability range
+  /// set to the deployment target.
+  static AvailabilityContext forDeploymentTarget(ASTContext &ctx);
 
   /// Returns the range of platform versions which may execute code in the
   /// availability context, starting at its introduction version.
@@ -77,6 +87,10 @@ public:
   /// Returns true if this context is `@_unavailableInEmbedded`.
   bool isUnavailableInEmbedded() const;
 
+  /// Returns true if this context allows the use of unsafe constructs inside
+  /// it.
+  bool allowsUnsafe() const;
+
   /// Constrain with another `AvailabilityContext`.
   void constrainWithContext(const AvailabilityContext &other, ASTContext &ctx);
 
@@ -92,6 +106,9 @@ public:
   void
   constrainWithDeclAndPlatformRange(const Decl *decl,
                                     const AvailabilityRange &platformRange);
+
+  /// Constrain to allow unsafe code.
+  void constrainWithAllowsUnsafe(ASTContext &ctx);
 
   /// Returns true if `other` is as available or is more available.
   bool isContainedIn(const AvailabilityContext other) const;

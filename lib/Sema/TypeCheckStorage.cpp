@@ -16,14 +16,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "CodeSynthesis.h"
-#include "TypeChecker.h"
 #include "TypeCheckAvailability.h"
 #include "TypeCheckConcurrency.h"
 #include "TypeCheckDecl.h"
 #include "TypeCheckMacros.h"
 #include "TypeCheckType.h"
+#include "TypeChecker.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTWalker.h"
+#include "swift/AST/AvailabilityInference.h"
 #include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/DiagnosticsParse.h"
 #include "swift/AST/DiagnosticsSema.h"
@@ -868,6 +869,18 @@ OpaqueReadOwnershipRequest::evaluate(Evaluator &evaluator,
     }
     return OpaqueReadOwnership::Borrowed;
   };
+
+  if (auto *accessorDecl = storage->getAccessor(AccessorKind::Read)) {
+    auto lifetimeDependencies = accessorDecl->getLifetimeDependencies();
+    if (lifetimeDependencies.has_value() && !lifetimeDependencies->empty()) {
+      for (auto &lifetimeDependenceInfo : *lifetimeDependencies) {
+        if (lifetimeDependenceInfo.hasScopeLifetimeParamIndices()) {
+          // A scoped lifetime dependence borrows its source.
+          return OpaqueReadOwnership::Borrowed;
+        }
+      }
+    }
+  }
 
   if (storage->getAccessor(AccessorKind::Read2))
     return OpaqueReadOwnership::Borrowed;
