@@ -389,6 +389,11 @@ namespace {
       
       props = mergeIsTypeExpansionSensitive(isSensitive, props);
       
+      // Fixed array regions are implied to be addressable-for-dependencies,
+      // since the developer probably wants to be able to form Spans etc.
+      // over them.
+      props.setAddressableForDependencies();
+      
       // If the size isn't a known literal, then the layout is also dependent,
       // so make it address-only. If the size is massive, also treat it as
       // address-only since there's little practical benefit to passing around
@@ -2449,13 +2454,8 @@ namespace {
         // The same should happen if the type was resilient and serialized in
         // another module in the same package with package-cmo enabled, which
         // treats those modules to be in the same resilience domain.
-        auto declModule = D->getModuleContext();
-        bool sameModule = (declModule == &TC.M);
-        bool serializedPackage = declModule != &TC.M &&
-                                 declModule->inSamePackage(&TC.M) &&
-                                 declModule->isResilient() &&
-                                 declModule->serializePackageEnabled();
-        auto inSameResilienceDomain = sameModule || serializedPackage;
+        auto inSameResilienceDomain = D->getModuleContext() == &TC.M ||
+                                      D->bypassResilienceInPackage(&TC.M);
         if (inSameResilienceDomain)
           properties.addSubobject(RecursiveProperties::forResilient());
 
@@ -2510,6 +2510,7 @@ namespace {
       }
 
       if (D->isCxxNonTrivial()) {
+        properties.setAddressableForDependencies();
         properties.setAddressOnly();
         properties.setNonTrivial();
         properties.setLexical(IsLexical);
@@ -2539,6 +2540,7 @@ namespace {
       // If the type has raw storage, it is move-only and address-only.
       if (D->getAttrs().hasAttribute<RawLayoutAttr>()) {
         properties.setAddressOnly();
+        properties.setAddressableForDependencies();
         properties.setNonTrivial();
         properties.setLexical(IsLexical);
         return handleMoveOnlyAddressOnly(structType, properties);
@@ -2549,6 +2551,10 @@ namespace {
         properties.setNonTrivial();
         properties.setLexical(IsLexical);
         return handleAddressOnly(structType, properties);
+      }
+      
+      if (D->getAttrs().hasAttribute<AddressableForDependenciesAttr>()) {
+        properties.setAddressableForDependencies();
       }
 
       auto subMap = structType->getContextSubstitutionMap();
@@ -2619,6 +2625,10 @@ namespace {
 
       if (handleResilience(enumType, D, properties))
         return handleAddressOnly(enumType, properties);
+
+      if (D->getAttrs().hasAttribute<AddressableForDependenciesAttr>()) {
+        properties.setAddressableForDependencies();
+      }
 
       // [is_or_contains_pack_unsubstituted] Visit the elements of the
       // unsubstituted type to find pack types which would be substituted away.

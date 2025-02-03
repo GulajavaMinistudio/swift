@@ -210,9 +210,7 @@ public:
       return handleInOut(origType, substType, pd->isAddressable());
     }
     // Addressability also suppresses exploding the parameter.
-    if ((SGF.getASTContext().LangOpts.hasFeature(Feature::AddressableTypes)
-         || SGF.getASTContext().LangOpts.hasFeature(Feature::AddressableParameters))
-        && isAddressable) {
+    if (isAddressable) {
       return handleScalar(claimNextParameter(),
                           AbstractionPattern::getOpaque(), substType,
                           /*emitInto*/ nullptr,
@@ -740,15 +738,12 @@ private:
       // addressability can be implied by a scoped dependency.
       bool isAddressable = false;
       
-      if (SGF.getASTContext().LangOpts.hasFeature(Feature::AddressableTypes)
-          || SGF.getASTContext().LangOpts.hasFeature(Feature::AddressableParameters)) {
-        isAddressable = pd->isAddressable()
-          || (ScopedDependencies.contains(pd)
-              && SGF.getTypeLowering(origType, substType)
-                    .getRecursiveProperties().isAddressableForDependencies());
-        if (isAddressable) {
-          AddressableParams.insert(pd);
-        }
+      isAddressable = pd->isAddressable()
+        || (ScopedDependencies.contains(pd)
+            && SGF.getTypeLowering(origType, substType)
+                  .getRecursiveProperties().isAddressableForDependencies());
+      if (isAddressable) {
+        AddressableParams.insert(pd);
       }
       paramValue = argEmitter.handleParam(origType, substType, pd,
                                           isAddressable);
@@ -1648,9 +1643,12 @@ uint16_t SILGenFunction::emitBasicProlog(
     emitIndirectErrorParameter(*this, *errorType, *origErrorType, DC);
   }
   
-  // Parameters with scoped dependencies may lower differently.
+  // Parameters with scoped dependencies may lower differently. Parameters are
+  // relative to the current SILGenFunction, not the passed in DeclContext. For
+  // example, the an argument initializer's DeclContext is the enclosing
+  // function definition rather that the initializer's generator function.
   llvm::SmallPtrSet<ParamDecl *, 2> scopedDependencyParams;
-  if (auto afd = dyn_cast<AbstractFunctionDecl>(DC)) {
+  if (auto afd = dyn_cast<AbstractFunctionDecl>(FunctionDC)) {
     if (auto deps = afd->getLifetimeDependencies()) {
       for (auto &dep : *deps) {
         auto scoped = dep.getScopeIndices();

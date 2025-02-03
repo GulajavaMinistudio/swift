@@ -1205,7 +1205,7 @@ final public class WitnessMethodInst : SingleValueInstruction {}
 
 final public class IsUniqueInst : SingleValueInstruction, UnaryInstruction {}
 
-final public class IsEscapingClosureInst : SingleValueInstruction, UnaryInstruction {}
+final public class DestroyNotEscapedClosureInst : SingleValueInstruction, UnaryInstruction {}
 
 final public class MarkUnresolvedNonCopyableValueInst: SingleValueInstruction, UnaryInstruction {}
 
@@ -1696,6 +1696,10 @@ final public class CheckedCastBranchInst : TermInst, UnaryInstruction {
   public var source: Value { operand.value }
   public var successBlock: BasicBlock { bridged.CheckedCastBranch_getSuccessBlock().block }
   public var failureBlock: BasicBlock { bridged.CheckedCastBranch_getFailureBlock().block }
+
+  public func updateSourceFormalTypeFromOperandLoweredType() {
+    bridged.CheckedCastBranch_updateSourceFormalTypeFromOperandLoweredType()
+  }
 }
 
 final public class CheckedCastAddrBranchInst : TermInst {
@@ -1735,4 +1739,7 @@ final public class ThunkInst : Instruction {
 }
 
 final public class MergeIsolationRegionInst : Instruction {
+}
+
+final public class IgnoredUseInst : Instruction, UnaryInstruction {
 }

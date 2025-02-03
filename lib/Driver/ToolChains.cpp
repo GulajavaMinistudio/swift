@@ -204,8 +204,7 @@ void ToolChain::addCommonFrontendArgs(const OutputInfo &OI,
     arguments.push_back("-disable-objc-interop");
   }
 
-  if (const Arg *arg = inputArgs.getLastArg(
-        options::OPT_experimental_serialize_debug_info)) {
+  if (inputArgs.getLastArg(options::OPT_experimental_serialize_debug_info)) {
     arguments.push_back(
         inputArgs.MakeArgString(Twine("-experimental-serialize-debug-info")));
   }
@@ -296,6 +295,7 @@ void ToolChain::addCommonFrontendArgs(const OutputInfo &OI,
   inputArgs.AddLastArg(arguments, options::OPT_package_name);
   inputArgs.AddLastArg(arguments, options::OPT_export_as);
   inputArgs.AddLastArg(arguments, options::OPT_nostdimport);
+  inputArgs.AddLastArg(arguments, options::OPT_nostdlibimport);
   inputArgs.AddLastArg(arguments, options::OPT_parse_stdlib);
   inputArgs.AddLastArg(arguments, options::OPT_resource_dir);
   inputArgs.AddLastArg(arguments, options::OPT_solver_memory_threshold);
@@ -350,6 +350,8 @@ void ToolChain::addCommonFrontendArgs(const OutputInfo &OI,
   inputArgs.AddLastArg(arguments, options::OPT_enable_builtin_module);
   inputArgs.AddLastArg(arguments, options::OPT_compiler_assertions);
   inputArgs.AddLastArg(arguments, options::OPT_load_pass_plugin_EQ);
+  inputArgs.AddAllArgs(arguments, options::OPT_module_alias);
+  inputArgs.AddLastArg(arguments, options::OPT_dump_ast_format);
 
   // Pass on any build config options
   inputArgs.AddAllArgs(arguments, options::OPT_D);

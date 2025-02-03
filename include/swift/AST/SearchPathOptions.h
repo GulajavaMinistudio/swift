@@ -504,6 +504,9 @@ public:
   /// Don't look in for compiler-provided modules.
   bool SkipRuntimeLibraryImportPaths = false;
 
+  /// Don't include SDK paths in the RuntimeLibraryImportPaths
+  bool ExcludeSDKPathsFromRuntimeLibraryImportPaths = false;
+
   /// Scanner Prefix Mapper.
   std::vector<std::string> ScannerPrefixMapper;
 
@@ -526,9 +529,6 @@ public:
 
   /// A map of placeholder Swift module dependency information.
   std::string PlaceholderDependencyModuleMap;
-
-  /// A file containing modules we should perform batch scanning.
-  std::string BatchScanInputFilePath;
 
   /// A file containing a list of protocols whose conformances require const value extraction.
   std::string ConstGatherProtocolListFilePath;
