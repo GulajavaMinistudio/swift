@@ -199,6 +199,10 @@ void writeLinkLibraries(llvm::raw_ostream &out,
     writeJSONValue(out, llInfo.name, indentLevel);
     out << ",\n";
     out.indent(entryIndentLevel);
+    out << "\"isStatic\": ";
+    writeJSONValue(out, llInfo.isStatic, entryIndentLevel);
+    out << ",\n";
+    out.indent(entryIndentLevel);
     out << "\"isFramework\": ";
     writeJSONValue(out, llInfo.isFramework, entryIndentLevel);
     out << ",\n";
@@ -413,15 +417,19 @@ void writeJSON(llvm::raw_ostream &out,
       writeJSONSingleField(out, "contextHash", swiftTextualDeps->context_hash,
                            5,
                            /*trailingComma=*/true);
-      bool hasBridgingHeaderPath =
-          swiftTextualDeps->bridging_header_path.data &&
-          get_C_string(swiftTextualDeps->bridging_header_path)[0] != '\0';
+      bool hasBridgingHeader =
+          (swiftTextualDeps->bridging_header_path.data &&
+           get_C_string(swiftTextualDeps->bridging_header_path)[0] != '\0') ||
+          swiftTextualDeps->bridging_pch_command_line->count != 0;
       bool hasOverlayDependencies =
           swiftTextualDeps->swift_overlay_module_dependencies &&
           swiftTextualDeps->swift_overlay_module_dependencies->count > 0;
+      bool hasSourceImportedDependencies =
+          swiftTextualDeps->source_import_module_dependencies &&
+          swiftTextualDeps->source_import_module_dependencies->count > 0;
       bool commaAfterBridgingHeaderPath = hasOverlayDependencies;
       bool commaAfterFramework =
-          hasBridgingHeaderPath || commaAfterBridgingHeaderPath;
+          hasBridgingHeader || commaAfterBridgingHeaderPath;
 
       if (swiftTextualDeps->cas_fs_root_id.length != 0) {
         writeJSONSingleField(out, "casFSRootID",
@@ -433,15 +441,25 @@ void writeJSON(llvm::raw_ostream &out,
                              swiftTextualDeps->module_cache_key, 5,
                              /*trailingComma=*/true);
       }
+      if (swiftTextualDeps->chained_bridging_header_path.length != 0) {
+        writeJSONSingleField(out, "chainedBridgingHeaderPath",
+                             swiftTextualDeps->chained_bridging_header_path, 5,
+                             /*trailingComma=*/true);
+      }
       writeJSONSingleField(out, "userModuleVersion",
                            swiftTextualDeps->user_module_version, 5,
                            /*trailingComma=*/true);
       writeMacroDependencies(out, swiftTextualDeps->macro_dependencies, 5,
                              /*trailingComma=*/true);
+      if (hasSourceImportedDependencies) {
+        writeDependencies(out, swiftTextualDeps->source_import_module_dependencies,
+                          "sourceImportedDependencies", 5,
+                          /*trailingComma=*/true);
+      }
       writeJSONSingleField(out, "isFramework", swiftTextualDeps->is_framework,
                            5, commaAfterFramework);
       /// Bridging header and its source file dependencies, if any.
-      if (hasBridgingHeaderPath) {
+      if (hasBridgingHeader) {
         out.indent(5 * 2);
         out << "\"bridgingHeader\": {\n";
         writeJSONSingleField(out, "path",

@@ -1,19 +1,10 @@
-// RUN: %target-swift-frontend -emit-sil -enable-experimental-feature BuiltinModule -enable-experimental-feature LifetimeDependence -enable-experimental-feature AddressableTypes -enable-experimental-feature ValueGenerics %s | %FileCheck %s
+// RUN: %target-swift-frontend -emit-sil -enable-experimental-feature BuiltinModule -enable-experimental-feature LifetimeDependence -enable-experimental-feature AddressableTypes %s | %FileCheck %s
 
 // REQUIRES: swift_feature_BuiltinModule
 // REQUIRES: swift_feature_AddressableTypes
 // REQUIRES: swift_feature_LifetimeDependence
-// REQUIRES: swift_feature_ValueGenerics
 
 import Builtin
-
-// Copied from the stdlib until we have Builtin.overrideLifetime.
-@_unsafeNonescapableResult
-@lifetime(borrow source)
-internal func _overrideLifetime<T: ~Copyable & ~Escapable, U: ~Copyable & ~Escapable>(
-  _ dependent: consuming T, borrowing source: borrowing U) -> T {
-  dependent
-}
 
 struct NodeRef: ~Escapable {
     private var parent: UnsafePointer<Node>

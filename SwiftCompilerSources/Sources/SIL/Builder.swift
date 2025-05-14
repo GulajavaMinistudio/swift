@@ -130,11 +130,6 @@ public struct Builder {
     return notifyNew(dr.getAs(AllocStackInst.self))
   }
 
-  public func createAllocVector(capacity: Value, elementType: Type) -> AllocVectorInst {
-    let dr = bridged.createAllocVector(capacity.bridged, elementType.bridged)
-    return notifyNew(dr.getAs(AllocVectorInst.self))
-  }
-
   @discardableResult
   public func createDeallocStack(_ operand: Value) -> DeallocStackInst {
     let dr = bridged.createDeallocStack(operand.bridged)
@@ -179,6 +174,52 @@ public struct Builder {
   public func createUpcast(from value: Value, to type: Type) -> UpcastInst {
     let cast = bridged.createUpcast(value.bridged, type.bridged)
     return notifyNew(cast.getAs(UpcastInst.self))
+  }
+  
+  @discardableResult
+  public func createCheckedCastAddrBranch(
+    source: Value, sourceFormalType: CanonicalType,
+    destination: Value, targetFormalType: CanonicalType,
+    isolatedConformances: CastingIsolatedConformances,
+    consumptionKind: CheckedCastAddrBranchInst.CastConsumptionKind,
+    successBlock: BasicBlock,
+    failureBlock: BasicBlock
+  ) -> CheckedCastAddrBranchInst {
+    
+    let bridgedConsumption: BridgedInstruction.CastConsumptionKind
+    switch consumptionKind {
+      case .TakeAlways:    bridgedConsumption = .TakeAlways
+      case .TakeOnSuccess: bridgedConsumption = .TakeOnSuccess
+      case .CopyOnSuccess: bridgedConsumption = .CopyOnSuccess    
+    }
+
+    let cast = bridged.createCheckedCastAddrBranch(source.bridged, sourceFormalType.bridged,
+                                                   destination.bridged, targetFormalType.bridged,
+                                                   isolatedConformances.bridged,
+                                                   bridgedConsumption,
+                                                   successBlock.bridged, failureBlock.bridged)
+    return notifyNew(cast.getAs(CheckedCastAddrBranchInst.self))
+  }
+
+  @discardableResult
+  public func createUnconditionalCheckedCastAddr(
+    isolatedConformances: CastingIsolatedConformances,
+    source: Value, sourceFormalType: CanonicalType,
+    destination: Value, targetFormalType: CanonicalType
+  ) -> UnconditionalCheckedCastAddrInst {
+    let cast = bridged.createUnconditionalCheckedCastAddr(
+        isolatedConformances.bridged, source.bridged,
+        sourceFormalType.bridged,
+        destination.bridged, targetFormalType.bridged
+    )
+    return notifyNew(cast.getAs(UnconditionalCheckedCastAddrInst.self))
+  }
+
+  public func createUncheckedOwnershipConversion(
+    operand: Value, resultOwnership: Ownership
+  ) -> UncheckedOwnershipConversionInst {
+    let uoc = bridged.createUncheckedOwnershipConversion(operand.bridged, resultOwnership._bridged)
+    return notifyNew(uoc.getAs(UncheckedOwnershipConversionInst.self))
   }
 
   public func createLoad(fromAddress: Value, ownership: LoadInst.LoadOwnership) -> LoadInst {
@@ -291,6 +332,11 @@ public struct Builder {
   }
 
   @discardableResult
+  public func createDebugValue(value: Value, debugVariable: DebugVariableInstruction.DebugVariable) -> DebugValueInst {
+    return notifyNew(bridged.createDebugValue(value.bridged, debugVariable).getAs(DebugValueInst.self))
+  }
+
+  @discardableResult
   public func createDebugStep() -> DebugStepInst {
     return notifyNew(bridged.createDebugStep().getAs(DebugStepInst.self))
   }
@@ -329,6 +375,14 @@ public struct Builder {
     return notifyNew(apply.getAs(TryApplyInst.self))
   }
   
+  public func createWitnessMethod(lookupType: CanonicalType,
+                                  conformance: Conformance,
+                                  member: DeclRef,
+                                  methodType: Type) -> WitnessMethodInst {
+    return notifyNew(bridged.createWitnessMethod(lookupType.bridged, conformance.bridged,
+                                                 member.bridged, methodType.bridged).getAs(WitnessMethodInst.self))    
+  }
+  
   @discardableResult
   public func createReturn(of value: Value) -> ReturnInst {
     return notifyNew(bridged.createReturn(value.bridged).getAs(ReturnInst.self))
@@ -350,6 +404,11 @@ public struct Builder {
                                               caseIndex: Int) -> UncheckedTakeEnumDataAddrInst {
     let uteda = bridged.createUncheckedTakeEnumDataAddr(enumAddress.bridged, caseIndex)
     return notifyNew(uteda.getAs(UncheckedTakeEnumDataAddrInst.self))
+  }
+
+  public func createInitEnumDataAddr(enumAddress: Value, caseIndex: Int, type: Type) -> InitEnumDataAddrInst {
+    let uteda = bridged.createInitEnumDataAddr(enumAddress.bridged, caseIndex, type.bridged)
+    return notifyNew(uteda.getAs(InitEnumDataAddrInst.self))
   }
 
   public func createEnum(caseIndex: Int, payload: Value?, enumType: Type) -> EnumInst {
@@ -428,6 +487,10 @@ public struct Builder {
     return notifyNew(vectorInst.getAs(VectorInst.self))
   }
 
+  public func createVectorBaseAddr(vector: Value) -> VectorBaseAddrInst {
+    return notifyNew(bridged.createVectorBaseAddr(vector.bridged).getAs(VectorBaseAddrInst.self))
+  }
+
   public func createGlobalAddr(global: GlobalVariable, dependencyToken: Value?) -> GlobalAddrInst {
     return notifyNew(bridged.createGlobalAddr(global.bridged, dependencyToken.bridged).getAs(GlobalAddrInst.self))
   }
@@ -494,15 +557,27 @@ public struct Builder {
   public func createInitExistentialMetatype(
     metatype: Value,
     existentialType: Type,
-    conformances: ConformanceArray) -> InitExistentialMetatypeInst {
-    let initExistential = bridged.createInitExistentialMetatype(metatype.bridged,
-                                                                existentialType.bridged,
-                                                                conformances.bridged)
+    conformances: [Conformance]
+  ) -> InitExistentialMetatypeInst {
+    let initExistential = conformances.map{ $0.bridged }.withBridgedArrayRef {
+      return bridged.createInitExistentialMetatype(metatype.bridged,
+                                                   existentialType.bridged,
+                                                   BridgedConformanceArray(pcArray: $0))
+    }
     return notifyNew(initExistential.getAs(InitExistentialMetatypeInst.self))
   }
 
-  public func createMetatype(of type: Type, representation: Type.MetatypeRepresentation) -> MetatypeInst {
-    let metatype = bridged.createMetatype(type.bridged, representation)
+  public func createMetatype(
+    ofInstanceType instanceType: CanonicalType,
+    representation: AST.`Type`.MetatypeRepresentation
+  ) -> MetatypeInst {
+    let bridgedRep: BridgedASTType.MetatypeRepresentation
+    switch representation {
+    case .thin:  bridgedRep = .Thin
+    case .thick: bridgedRep = .Thick
+    case .objC:  bridgedRep = .ObjC
+    }
+    let metatype = bridged.createMetatype(instanceType.bridged, bridgedRep)
     return notifyNew(metatype.getAs(MetatypeInst.self))
   }
 
@@ -511,10 +586,22 @@ public struct Builder {
     return notifyNew(endMutation.getAs(EndCOWMutationInst.self))
   }
 
-  public func createMarkDependence(value: Value, base: Value, kind: MarkDependenceInst.DependenceKind) -> MarkDependenceInst {
+  @discardableResult
+  public func createEndCOWMutationAddr(address: Value) -> EndCOWMutationAddrInst {
+    let endMutation = bridged.createEndCOWMutationAddr(address.bridged)
+    return notifyNew(endMutation.getAs(EndCOWMutationAddrInst.self))
+  }
+
+  public func createMarkDependence(value: Value, base: Value, kind: MarkDependenceKind) -> MarkDependenceInst {
     let markDependence = bridged.createMarkDependence(value.bridged, base.bridged,
                                                       BridgedInstruction.MarkDependenceKind(rawValue: kind.rawValue)!)
     return notifyNew(markDependence.getAs(MarkDependenceInst.self))
+  }
+
+  public func createMarkDependenceAddr(value: Value, base: Value, kind: MarkDependenceKind) -> MarkDependenceAddrInst {
+    let markDependence = bridged.createMarkDependenceAddr(
+      value.bridged, base.bridged, BridgedInstruction.MarkDependenceKind(rawValue: kind.rawValue)!)
+    return notifyNew(markDependence.getAs(MarkDependenceAddrInst.self))
   }
     
   @discardableResult

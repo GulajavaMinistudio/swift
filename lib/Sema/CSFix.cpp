@@ -219,7 +219,7 @@ TreatArrayLiteralAsDictionary *
 TreatArrayLiteralAsDictionary::attempt(ConstraintSystem &cs, Type dictionaryTy,
                                        Type arrayTy,
                                        ConstraintLocator *locator) {
-  if (!arrayTy->isArrayType())
+  if (!arrayTy->isArray())
     return nullptr;
 
   // Determine the ArrayExpr from the locator.
@@ -282,9 +282,29 @@ getConcurrencyFixBehavior(ConstraintSystem &cs, ConstraintKind constraintKind,
   // We can only handle the downgrade for conversions.
   switch (constraintKind) {
   case ConstraintKind::Conversion:
-  case ConstraintKind::ArgumentConversion:
   case ConstraintKind::Subtype:
     break;
+
+  case ConstraintKind::ArgumentConversion: {
+    if (!forSendable)
+      break;
+
+    // Passing a static member reference as an argument needs to be downgraded
+    // to a warning until future major mode to maintain source compatibility for
+    // code with non-Sendable metatypes.
+    if (!cs.getASTContext().LangOpts.isSwiftVersionAtLeast(7)) {
+      auto *argLoc = cs.getConstraintLocator(locator);
+      if (auto *argument = getAsExpr(simplifyLocatorToAnchor(argLoc))) {
+        if (auto overload = cs.findSelectedOverloadFor(
+                argument->getSemanticsProvidingExpr())) {
+          auto *decl = overload->choice.getDecl();
+          if (decl && decl->isStatic())
+            return FixBehavior::DowngradeToWarning;
+        }
+      }
+    }
+    break;
+  }
 
   default:
     if (!cs.shouldAttemptFixes())
@@ -592,12 +612,16 @@ getStructuralTypeContext(const Solution &solution, ConstraintLocator *locator) {
     assert(locator->isLastElement<LocatorPathElt::ContextualType>() ||
            locator->isLastElement<LocatorPathElt::FunctionArgument>());
 
-    auto &cs = solution.getConstraintSystem();
     auto anchor = locator->getAnchor();
-    auto contextualType = cs.getContextualType(anchor, /*forConstraint=*/false);
-    auto exprType = cs.getType(anchor);
-    return std::make_tuple(contextualTypeElt->getPurpose(), exprType,
-                           contextualType);
+    auto contextualInfo = solution.getContextualTypeInfo(anchor);
+    // For some patterns the type could be empty and the entry is
+    // there to indicate the purpose only.
+    if (!contextualInfo || !contextualInfo->getType())
+      return std::nullopt;
+
+    auto exprType = solution.getType(anchor);
+    return std::make_tuple(contextualInfo->purpose, exprType,
+                           contextualInfo->getType());
   } else if (auto argApplyInfo = solution.getFunctionArgApplyInfo(locator)) {
     Type fromType = argApplyInfo->getArgType();
     Type toType = argApplyInfo->getParamType();
@@ -607,9 +631,8 @@ getStructuralTypeContext(const Solution &solution, ConstraintLocator *locator) {
       auto fromFnType = fromType->getAs<FunctionType>();
       auto toFnType = toType->getAs<FunctionType>();
       if (fromFnType && toFnType) {
-        auto &cs = solution.getConstraintSystem();
         return std::make_tuple(
-            cs.getContextualTypePurpose(locator->getAnchor()),
+            solution.getContextualTypePurpose(locator->getAnchor()),
             fromFnType->getResult(), toFnType->getResult());
       }
     }
@@ -1248,10 +1271,18 @@ bool AllowInvalidRefInKeyPath::diagnose(const Solution &solution,
                                                      getLocator());
     return failure.diagnose(asNote);
   }
-
   case RefKind::Method:
   case RefKind::Initializer: {
-    InvalidMethodRefInKeyPath failure(solution, Member, getLocator());
+    UnsupportedMethodRefInKeyPath failure(solution, Member, getLocator());
+    return failure.diagnose(asNote);
+  }
+  case RefKind::MutatingMethod: {
+    InvalidMutatingMethodRefInKeyPath failure(solution, Member, getLocator());
+    return failure.diagnose(asNote);
+  }
+  case RefKind::AsyncOrThrowsMethod: {
+    InvalidAsyncOrThrowsMethodRefInKeyPath failure(solution, Member,
+                                                   getLocator());
     return failure.diagnose(asNote);
   }
   }
@@ -1303,22 +1334,11 @@ AllowInvalidRefInKeyPath::forRef(ConstraintSystem &cs, Type baseType,
           cs, baseType, RefKind::StaticMember, member, locator);
   }
 
-  // Referencing (instance or static) methods in key path is
-  // not currently allowed.
-  if (isa<FuncDecl>(member))
-    return AllowInvalidRefInKeyPath::create(cs, baseType, RefKind::Method,
-                                            member, locator);
-
   // Referencing enum cases in key path is not currently allowed.
   if (isa<EnumElementDecl>(member)) {
     return AllowInvalidRefInKeyPath::create(cs, baseType, RefKind::EnumCase,
                                             member, locator);
   }
-
-  // Referencing initializers in key path is not currently allowed.
-  if (isa<ConstructorDecl>(member))
-    return AllowInvalidRefInKeyPath::create(cs, baseType, RefKind::Initializer,
-                                            member, locator);
 
   if (auto *storage = dyn_cast<AbstractStorageDecl>(member)) {
     // Referencing members with mutating getters in key path is not
@@ -1327,6 +1347,41 @@ AllowInvalidRefInKeyPath::forRef(ConstraintSystem &cs, Type baseType,
       return AllowInvalidRefInKeyPath::create(
           cs, baseType, RefKind::MutatingGetter, member, locator);
   }
+
+  if (cs.getASTContext().LangOpts.hasFeature(
+          Feature::KeyPathWithMethodMembers)) {
+    // Referencing mutating, throws or async method members is not currently
+    // allowed.
+    if (auto method = dyn_cast<FuncDecl>(member)) {
+      if (method->isAsyncContext())
+        return AllowInvalidRefInKeyPath::create(
+            cs, baseType, RefKind::AsyncOrThrowsMethod, member, locator);
+      if (auto methodType =
+              method->getInterfaceType()->getAs<AnyFunctionType>()) {
+        if (methodType->getResult()->getAs<AnyFunctionType>()->isThrowing())
+          return AllowInvalidRefInKeyPath::create(
+              cs, baseType, RefKind::AsyncOrThrowsMethod, member, locator);
+      }
+      if (method->isMutating())
+        return AllowInvalidRefInKeyPath::create(
+            cs, baseType, RefKind::MutatingMethod, member, locator);
+      return nullptr;
+    }
+
+    if (isa<ConstructorDecl>(member))
+      return nullptr;
+  }
+
+  // Referencing (instance or static) methods in key path is
+  // not currently allowed.
+  if (isa<FuncDecl>(member))
+    return AllowInvalidRefInKeyPath::create(cs, baseType, RefKind::Method,
+                                            member, locator);
+
+  // Referencing initializers in key path is not currently allowed.
+  if (isa<ConstructorDecl>(member))
+    return AllowInvalidRefInKeyPath::create(cs, baseType, RefKind::Initializer,
+                                            member, locator);
 
   return nullptr;
 }
@@ -1365,19 +1420,19 @@ RemoveReturn *RemoveReturn::create(ConstraintSystem &cs, Type resultTy,
   return new (cs.getAllocator()) RemoveReturn(cs, resultTy, locator);
 }
 
-NotCompileTimeConst::NotCompileTimeConst(ConstraintSystem &cs, Type paramTy,
+NotCompileTimeLiteral::NotCompileTimeLiteral(ConstraintSystem &cs, Type paramTy,
                                          ConstraintLocator *locator):
-  ContextualMismatch(cs, FixKind::NotCompileTimeConst, paramTy,
+  ContextualMismatch(cs, FixKind::NotCompileTimeLiteral, paramTy,
                      cs.getASTContext().TheEmptyTupleType, locator,
                      FixBehavior::AlwaysWarning) {}
 
-NotCompileTimeConst *
-NotCompileTimeConst::create(ConstraintSystem &cs, Type paramTy,
+NotCompileTimeLiteral *
+NotCompileTimeLiteral::create(ConstraintSystem &cs, Type paramTy,
                             ConstraintLocator *locator) {
-  return new (cs.getAllocator()) NotCompileTimeConst(cs, paramTy, locator);
+  return new (cs.getAllocator()) NotCompileTimeLiteral(cs, paramTy, locator);
 }
 
-bool NotCompileTimeConst::diagnose(const Solution &solution, bool asNote) const {
+bool NotCompileTimeLiteral::diagnose(const Solution &solution, bool asNote) const {
   auto *locator = getLocator();
   if (auto *E = getAsExpr(locator->getAnchor())) {
     auto isAccepted = E->isSemanticallyConstExpr([&](Expr *E) {
@@ -1399,7 +1454,7 @@ bool NotCompileTimeConst::diagnose(const Solution &solution, bool asNote) const 
       return true;
   }
 
-  NotCompileTimeConstFailure failure(solution, locator);
+  NotCompileTimeLiteralFailure failure(solution, locator);
   return failure.diagnose(asNote);
 }
 
@@ -1779,7 +1834,7 @@ ExpandArrayIntoVarargs::attempt(ConstraintSystem &cs, Type argType,
   if (!(argLoc && argLoc->getParameterFlags().isVariadic()))
     return nullptr;
 
-  auto elementType = argType->isArrayType();
+  auto elementType = argType->getArrayElementType();
   if (!elementType)
     return nullptr;
 
@@ -2723,16 +2778,31 @@ IgnoreKeyPathSubscriptIndexMismatch::create(ConstraintSystem &cs, Type argType,
       IgnoreKeyPathSubscriptIndexMismatch(cs, argType, locator);
 }
 
-AllowSlabLiteralCountMismatch *
-AllowSlabLiteralCountMismatch::create(ConstraintSystem &cs, Type lhsCount,
-                                      Type rhsCount,
-                                      ConstraintLocator *locator) {
+AllowInlineArrayLiteralCountMismatch *
+AllowInlineArrayLiteralCountMismatch::create(ConstraintSystem &cs, Type lhsCount,
+                                             Type rhsCount,
+                                             ConstraintLocator *locator) {
   return new (cs.getAllocator())
-      AllowSlabLiteralCountMismatch(cs, lhsCount, rhsCount, locator);
+      AllowInlineArrayLiteralCountMismatch(cs, lhsCount, rhsCount, locator);
 }
 
-bool AllowSlabLiteralCountMismatch::diagnose(const Solution &solution,
-                                             bool asNote) const {
-  IncorrectSlabLiteralCount failure(solution, lhsCount, rhsCount, getLocator());
+bool AllowInlineArrayLiteralCountMismatch::diagnose(const Solution &solution,
+                                                    bool asNote) const {
+  IncorrectInlineArrayLiteralCount failure(solution, lhsCount, rhsCount,
+                                           getLocator());
+  return failure.diagnose(asNote);
+}
+
+IgnoreIsolatedConformance *
+IgnoreIsolatedConformance::create(ConstraintSystem &cs,
+                                  ConstraintLocator *locator,
+                                  ProtocolConformance *conformance) {
+  return new (cs.getAllocator())
+      IgnoreIsolatedConformance(cs, locator, conformance);
+}
+
+bool IgnoreIsolatedConformance::diagnose(const Solution &solution,
+                                         bool asNote) const {
+  DisallowedIsolatedConformance failure(solution, conformance, getLocator());
   return failure.diagnose(asNote);
 }

@@ -1154,13 +1154,28 @@ namespace {
         assert(defaultReason == RequiresDefault::No);
         Type subjectType = Switch->getSubjectExpr()->getType();
         bool shouldIncludeFutureVersionComment = false;
-        if (auto *theEnum = subjectType->getEnumOrBoundGenericEnum()) {
+        auto *theEnum = subjectType->getEnumOrBoundGenericEnum();
+
+        if (theEnum) {
+          auto *enumModule = theEnum->getParentModule();
           shouldIncludeFutureVersionComment =
-              theEnum->getParentModule()->isSystemModule();
+              enumModule->isSystemModule() ||
+              theEnum->getAttrs().hasAttribute<ExtensibleAttr>();
         }
-        DE.diagnose(startLoc, diag::non_exhaustive_switch_unknown_only,
-                    subjectType, shouldIncludeFutureVersionComment)
-          .warnUntilSwiftVersion(6);
+
+        auto diag =
+            DE.diagnose(startLoc, diag::non_exhaustive_switch_unknown_only,
+                        subjectType, shouldIncludeFutureVersionComment);
+
+        // Presence of `@preEnumExtensibility` pushed the warning farther
+        // into the future.
+        if (theEnum &&
+            theEnum->getAttrs().hasAttribute<PreEnumExtensibilityAttr>()) {
+          diag.warnUntilFutureSwiftVersion();
+        } else {
+          diag.warnUntilSwiftVersion(6);
+        }
+
         mainDiagType = std::nullopt;
       }
         break;

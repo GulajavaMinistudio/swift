@@ -242,6 +242,9 @@ private:
   /// Protocol conformances referenced by this module.
   ArrayRef<RawBitOffset> Conformances;
 
+  /// Abstract conformances referenced by this module.
+  ArrayRef<RawBitOffset> AbstractConformances;
+
   /// Pack conformances referenced by this module.
   ArrayRef<RawBitOffset> PackConformances;
 
@@ -601,7 +604,7 @@ public:
 
   /// Outputs information useful for diagnostics to \p out
   void outputDiagnosticInfo(llvm::raw_ostream &os) const;
-  
+
   // Out of line to avoid instantiation OnDiskChainedHashTable here.
   ~ModuleFileSharedCore();
 
@@ -651,6 +654,12 @@ public:
   /// Get external macro names.
   ArrayRef<ExternalMacroPlugin> getExternalMacros() const {
     return MacroModuleNames;
+  }
+
+  /// Get embedded bridging header.
+  std::string getEmbeddedHeader() const {
+    // Don't include the '\0' in the end.
+    return importedHeaderInfo.contents.drop_back().str();
   }
 
   /// If the module-defining `.swiftinterface` file is an SDK-relative path,

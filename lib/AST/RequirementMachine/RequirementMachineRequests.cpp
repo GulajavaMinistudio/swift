@@ -825,10 +825,6 @@ InferredGenericSignatureRequest::evaluate(
              "Parsed an empty generic parameter list?");
 
       for (auto *gpDecl : *gpList) {
-        if (gpDecl->isValue() &&
-            !gpDecl->getASTContext().LangOpts.hasFeature(Feature::ValueGenerics))
-          gpDecl->diagnose(diag::value_generics_missing_feature);
-
         auto *gpType = gpDecl->getDeclaredInterfaceType()
                              ->castTo<GenericTypeParamType>();
         genericParams.push_back(gpType);
@@ -874,7 +870,7 @@ InferredGenericSignatureRequest::evaluate(
   // inferred same-type requirements when building the generic signature of
   // an extension whose extended type is a generic typealias.
   for (const auto &req : addedRequirements)
-    requirements.push_back({req, SourceLoc()});
+    requirements.push_back({req, loc});
 
   desugarRequirements(requirements, inverses, errors);
 

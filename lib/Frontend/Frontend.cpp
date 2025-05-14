@@ -196,8 +196,14 @@ SerializationOptions CompilerInvocation::computeSerializationOptions(
   serializationOpts.DocOutputPath = outs.ModuleDocOutputPath;
   serializationOpts.SourceInfoOutputPath = outs.ModuleSourceInfoOutputPath;
   serializationOpts.GroupInfoPath = opts.GroupInfoPath.c_str();
-  if (opts.SerializeBridgingHeader && !outs.ModuleOutputPath.empty())
-    serializationOpts.ImportedHeader = opts.ImplicitObjCHeaderPath;
+  if (opts.ModuleHasBridgingHeader && !outs.ModuleOutputPath.empty())
+    serializationOpts.SerializeBridgingHeader = true;
+  // For batch mode, emit empty header path as placeholder.
+  if (serializationOpts.SerializeBridgingHeader &&
+      opts.InputsAndOutputs.hasPrimaryInputs())
+    serializationOpts.SerializeEmptyBridgingHeader = true;
+  serializationOpts.ImportedHeader = opts.ImplicitObjCHeaderPath;
+  serializationOpts.ImportedPCHPath = opts.ImplicitObjCPCHPath;
   serializationOpts.ModuleLinkName = opts.ModuleLinkName;
   serializationOpts.UserModuleVersion = opts.UserModuleVersion;
   serializationOpts.AllowableClients = opts.AllowableClients;
@@ -239,6 +245,11 @@ SerializationOptions CompilerInvocation::computeSerializationOptions(
       !getClangImporterOptions().DirectClangCC1ModuleBuild) {
     serializationOpts.ExtraClangOptions.push_back("--target=" +
                                                   LangOpts.ClangTarget->str());
+  }
+  if (LangOpts.ClangTargetVariant &&
+      !getClangImporterOptions().DirectClangCC1ModuleBuild) {
+    serializationOpts.ExtraClangOptions.push_back("-darwin-target-variant");
+    serializationOpts.ExtraClangOptions.push_back(LangOpts.ClangTargetVariant->str());
   }
   if (LangOpts.EnableAppExtensionRestrictions) {
     serializationOpts.ExtraClangOptions.push_back("-fapplication-extension");
@@ -317,7 +328,7 @@ bool CompilerInstance::setUpASTContextIfNeeded() {
   registerSILOptimizerRequestFunctions(Context->evaluator);
   registerTBDGenRequestFunctions(Context->evaluator);
   registerIRGenRequestFunctions(Context->evaluator);
-  
+
   // Migrator, indexing and typo correction need some IDE requests.
   // The integrated REPL needs IDE requests for completion.
   if (Invocation.getMigratorOptions().shouldRunMigrator() ||
@@ -402,22 +413,10 @@ bool CompilerInstance::setupDiagnosticVerifierIfNeeded() {
 
   if (diagOpts.VerifyMode != DiagnosticOptions::NoVerify) {
     DiagVerifier = std::make_unique<DiagnosticVerifier>(
-        SourceMgr, InputSourceCodeBufferIDs,
+        SourceMgr, InputSourceCodeBufferIDs, diagOpts.AdditionalVerifierFiles,
         diagOpts.VerifyMode == DiagnosticOptions::VerifyAndApplyFixes,
         diagOpts.VerifyIgnoreUnknown, diagOpts.UseColor,
         diagOpts.AdditionalDiagnosticVerifierPrefixes);
-    for (const auto &filename : diagOpts.AdditionalVerifierFiles) {
-      auto result = getFileSystem().getBufferForFile(filename);
-      if (!result) {
-        Diagnostics.diagnose(SourceLoc(), diag::error_open_input_file,
-                             filename, result.getError().message());
-        hadError |= true;
-        continue;
-      }
-
-      auto bufferID = SourceMgr.addNewSourceBuffer(std::move(result.get()));
-      DiagVerifier->appendAdditionalBufferID(bufferID);
-    }
 
     addDiagnosticConsumer(DiagVerifier.get());
   }
@@ -457,7 +456,7 @@ bool CompilerInstance::setupCASIfNeeded(ArrayRef<const char *> Args) {
   const auto &Opts = getInvocation().getCASOptions();
   auto MaybeDB= Opts.CASOpts.getOrCreateDatabases();
   if (!MaybeDB) {
-    Diagnostics.diagnose(SourceLoc(), diag::error_cas,
+    Diagnostics.diagnose(SourceLoc(), diag::error_cas_initialization,
                          toString(MaybeDB.takeError()));
     return true;
   }
@@ -467,6 +466,7 @@ bool CompilerInstance::setupCASIfNeeded(ArrayRef<const char *> Args) {
   auto BaseKey = createCompileJobBaseCacheKey(*CAS, Args);
   if (!BaseKey) {
     Diagnostics.diagnose(SourceLoc(), diag::error_cas,
+                         "creating base cache key",
                          toString(BaseKey.takeError()));
     return true;
   }
@@ -630,14 +630,14 @@ bool CompilerInstance::setUpVirtualFileSystemOverlays() {
   }
 
   if (Invocation.getCASOptions().requireCASFS()) {
-    if (!CASOpts.CASFSRootIDs.empty() || !CASOpts.ClangIncludeTrees.empty() ||
+    if (!CASOpts.CASFSRootIDs.empty() || !CASOpts.ClangIncludeTree.empty() ||
         !CASOpts.ClangIncludeTreeFileList.empty()) {
       // Set up CASFS as BaseFS.
       auto FS = createCASFileSystem(*CAS, CASOpts.CASFSRootIDs,
-                                    CASOpts.ClangIncludeTrees,
+                                    CASOpts.ClangIncludeTree,
                                     CASOpts.ClangIncludeTreeFileList);
       if (!FS) {
-        Diagnostics.diagnose(SourceLoc(), diag::error_cas,
+        Diagnostics.diagnose(SourceLoc(), diag::error_cas_fs_creation,
                              toString(FS.takeError()));
         return true;
       }
@@ -653,13 +653,13 @@ bool CompilerInstance::setUpVirtualFileSystemOverlays() {
       if (auto loadedBuffer = loadCachedCompileResultFromCacheKey(
               getObjectStore(), getActionCache(), Diagnostics,
               CASOpts.BridgingHeaderPCHCacheKey, file_types::ID::TY_PCH,
-              ClangOpts.BridgingHeader))
-        MemFS->addFile(Invocation.getClangImporterOptions().BridgingHeader, 0,
-                       std::move(loadedBuffer));
+              ClangOpts.getPCHInputPath()))
+        MemFS->addFile(Invocation.getClangImporterOptions().getPCHInputPath(),
+                       0, std::move(loadedBuffer));
       else
         Diagnostics.diagnose(
             SourceLoc(), diag::error_load_input_from_cas,
-            Invocation.getClangImporterOptions().BridgingHeader);
+            Invocation.getClangImporterOptions().getPCHInputPath());
     }
     if (!CASOpts.InputFileKey.empty()) {
       if (Invocation.getFrontendOptions()
@@ -756,6 +756,47 @@ void CompilerInstance::setUpDiagnosticOptions() {
 //    in the presence of overlays and mixed-source frameworks, we want to prefer
 //    the overlay or framework module over the underlying Clang module.
 bool CompilerInstance::setUpModuleLoaders() {
+  auto ModuleCachePathFromInvocation = getInvocation().getClangModuleCachePath();
+  auto &FEOpts = Invocation.getFrontendOptions();
+  auto MLM = Invocation.getSearchPathOptions().ModuleLoadMode;
+  auto IgnoreSourceInfoFile = Invocation.getFrontendOptions().IgnoreSwiftSourceInfo;
+  ModuleInterfaceLoaderOptions LoaderOpts(FEOpts);
+
+  // Dependency scanning sub-invocations only require the loaders necessary
+  // for locating textual and binary Swift modules.
+  if (Invocation.getFrontendOptions().DependencyScanningSubInvocation) {
+    Context->addModuleInterfaceChecker(
+        std::make_unique<ModuleInterfaceCheckerImpl>(
+            *Context, ModuleCachePathFromInvocation, FEOpts.PrebuiltModuleCachePath,
+            FEOpts.BackupModuleInterfaceDir, LoaderOpts,
+            RequireOSSAModules_t(Invocation.getSILOptions())));
+
+    if (MLM != ModuleLoadingMode::OnlySerialized) {
+      // We only need ModuleInterfaceLoader for implicit modules.
+      auto PIML = ModuleInterfaceLoader::create(
+          *Context, *static_cast<ModuleInterfaceCheckerImpl*>(Context
+            ->getModuleInterfaceChecker()), getDependencyTracker(), MLM,
+          FEOpts.PreferInterfaceForModules, IgnoreSourceInfoFile);
+      Context->addModuleLoader(std::move(PIML), false, false, true);
+    }
+    std::unique_ptr<ImplicitSerializedModuleLoader> ISML =
+    ImplicitSerializedModuleLoader::create(*Context, getDependencyTracker(), MLM,
+                                   IgnoreSourceInfoFile);
+    this->DefaultSerializedLoader = ISML.get();
+    Context->addModuleLoader(std::move(ISML));
+
+    // When caching is enabled, we rely on ClangImporter for
+    // 'addClangInvovcationDependencies'
+    if (Invocation.getCASOptions().EnableCaching) {
+      std::unique_ptr<ClangImporter> clangImporter =
+        ClangImporter::create(*Context, Invocation.getPCHHash(),
+                              getDependencyTracker());
+      Context->addModuleLoader(std::move(clangImporter), /*isClang*/ true);
+    }
+
+    return false;
+  }
+
   if (hasSourceImport()) {
     bool enableLibraryEvolution =
       Invocation.getFrontendOptions().EnableLibraryEvolution;
@@ -763,9 +804,7 @@ bool CompilerInstance::setUpModuleLoaders() {
                                                   enableLibraryEvolution,
                                                   getDependencyTracker()));
   }
-  auto MLM = Invocation.getSearchPathOptions().ModuleLoadMode;
-  auto IgnoreSourceInfoFile =
-    Invocation.getFrontendOptions().IgnoreSwiftSourceInfo;
+
   if (Invocation.getLangOptions().EnableMemoryBufferImporter) {
     auto MemoryBufferLoader = MemoryBufferSerializedModuleLoader::create(
         *Context, getDependencyTracker(), MLM, IgnoreSourceInfoFile);
@@ -808,13 +847,10 @@ bool CompilerInstance::setUpModuleLoaders() {
   }
 
   // Configure ModuleInterfaceChecker for the ASTContext.
-  auto CacheFromInvocation = getInvocation().getClangModuleCachePath();
   auto const &Clang = clangImporter->getClangInstance();
-  std::string ModuleCachePath = CacheFromInvocation.empty()
+  std::string ModuleCachePath = ModuleCachePathFromInvocation.empty()
                                     ? getModuleCachePathFromClang(Clang)
-                                    : CacheFromInvocation.str();
-  auto &FEOpts = Invocation.getFrontendOptions();
-  ModuleInterfaceLoaderOptions LoaderOpts(FEOpts);
+                                    : ModuleCachePathFromInvocation.str();
   Context->addModuleInterfaceChecker(
       std::make_unique<ModuleInterfaceCheckerImpl>(
           *Context, ModuleCachePath, FEOpts.PrebuiltModuleCachePath,
@@ -867,7 +903,8 @@ bool CompilerInstance::setUpModuleLoaders() {
         std::make_unique<PlaceholderSwiftModuleScanner>(
             *Context, MLM, mainModuleName,
             Context->SearchPathOpts.PlaceholderDependencyModuleMap, ASTDelegate,
-            getInvocation().getFrontendOptions().ExplicitModulesOutputPath);
+            getInvocation().getFrontendOptions().ExplicitModulesOutputPath,
+            getInvocation().getFrontendOptions().ExplicitSDKModulesOutputPath);
     Context->addModuleLoader(std::move(PSMS));
   }
 
@@ -878,6 +915,7 @@ bool CompilerInstance::setUpPluginLoader() {
   /// FIXME: If Invocation has 'PluginRegistry', we can set it. But should we?
   auto loader = std::make_unique<PluginLoader>(
       *Context, getDependencyTracker(),
+      Invocation.getFrontendOptions().CacheReplayPrefixMap,
       Invocation.getFrontendOptions().DisableSandbox);
   Context->setPluginLoader(std::move(loader));
   return false;
@@ -898,29 +936,34 @@ std::optional<unsigned> CompilerInstance::setUpIDEInspectionTargetBuffer() {
 }
 
 SourceFile *CompilerInstance::getIDEInspectionFile() const {
-  auto *mod = getMainModule();
-  auto &eval = mod->getASTContext().evaluator;
-  return evaluateOrDefault(eval, IDEInspectionFileRequest{mod}, nullptr);
-}
+  ASSERT(SourceMgr.hasIDEInspectionTargetBuffer() &&
+         "Not in IDE inspection mode?");
 
-static inline bool isPCHFilenameExtension(StringRef path) {
-  return llvm::sys::path::extension(path)
-    .ends_with(file_types::getExtension(file_types::TY_PCH));
+  auto *mod = getMainModule();
+  auto bufferID = SourceMgr.getIDEInspectionTargetBufferID();
+  for (auto *SF : SourceMgr.getSourceFilesForBufferID(bufferID)) {
+    if (SF->getParentModule() == mod)
+      return SF;
+  }
+  llvm_unreachable("Couldn't find IDE inspection file?");
 }
 
 std::string CompilerInstance::getBridgingHeaderPath() const {
   const FrontendOptions &opts = Invocation.getFrontendOptions();
-  if (!isPCHFilenameExtension(opts.ImplicitObjCHeaderPath))
+  if (!opts.ModuleHasBridgingHeader)
+    return std::string();
+
+  if (!opts.ImplicitObjCHeaderPath.empty())
     return opts.ImplicitObjCHeaderPath;
 
   auto clangImporter =
       static_cast<ClangImporter *>(getASTContext().getClangModuleLoader());
 
   // No clang importer created. Report error?
-  if (!clangImporter)
+  if (!clangImporter || opts.ImplicitObjCPCHPath.empty())
     return std::string();
 
-  return clangImporter->getOriginalSourceFile(opts.ImplicitObjCHeaderPath);
+  return clangImporter->getOriginalSourceFile(opts.ImplicitObjCPCHPath);
 }
 
 bool CompilerInstance::setUpInputs() {
@@ -1301,7 +1344,12 @@ ImplicitImportInfo CompilerInstance::getImplicitImportInfo() const {
   }
 
   imports.ShouldImportUnderlyingModule = frontendOpts.ImportUnderlyingModule;
-  imports.BridgingHeaderPath = frontendOpts.ImplicitObjCHeaderPath;
+  if (frontendOpts.ModuleHasBridgingHeader) {
+    if (frontendOpts.ImplicitObjCPCHPath.empty())
+      imports.BridgingHeaderPath = frontendOpts.ImplicitObjCHeaderPath;
+    else
+      imports.BridgingHeaderPath = frontendOpts.ImplicitObjCPCHPath;
+  }
   return imports;
 }
 
@@ -1396,11 +1444,11 @@ bool CompilerInstance::createFilesForMainModule(
 static void configureAvailabilityDomains(const ASTContext &ctx,
                                          const FrontendOptions &opts,
                                          ModuleDecl *mainModule) {
-  llvm::SmallDenseMap<Identifier, CustomAvailabilityDomain *> domainMap;
+  llvm::SmallDenseMap<Identifier, const CustomAvailabilityDomain *> domainMap;
   auto createAndInsertDomain = [&](const std::string &name,
                                    CustomAvailabilityDomain::Kind kind) {
-    auto *domain = CustomAvailabilityDomain::create(
-        ctx, name, mainModule, CustomAvailabilityDomain::Kind::Enabled);
+    auto *domain =
+        CustomAvailabilityDomain::get(name, kind, mainModule, nullptr, ctx);
     bool inserted = domainMap.insert({domain->getName(), domain}).second;
     ASSERT(inserted); // Domains must be unique.
   };
@@ -1461,7 +1509,7 @@ ModuleDecl *CompilerInstance::getMainModule() const {
       MainModule->setAllowNonResilientAccess();
     if (Invocation.getSILOptions().EnableSerializePackage)
       MainModule->setSerializePackageEnabled();
-    if (Invocation.getLangOptions().hasFeature(Feature::WarnUnsafe))
+    if (Invocation.getLangOptions().hasFeature(Feature::StrictMemorySafety))
       MainModule->setStrictMemorySafety(true);
 
     configureAvailabilityDomains(getASTContext(),

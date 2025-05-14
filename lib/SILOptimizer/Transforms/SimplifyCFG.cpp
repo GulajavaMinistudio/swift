@@ -1293,9 +1293,9 @@ bool SimplifyCFG::simplifyBranchBlock(BranchInst *BI) {
       if (auto *bfi = getBorrowedFromUser(arg)) {
         bfi->replaceAllUsesWith(Val);
         bfi->eraseFromParent();
-      } else {
-        arg->replaceAllUsesWith(Val);
       }
+      arg->replaceAllUsesWith(Val);
+
       if (!isVeryLargeFunction) {
         if (auto *I = dyn_cast<SingleValueInstruction>(Val)) {
           // Replacing operands may trigger constant folding which then could
@@ -3317,6 +3317,12 @@ static bool splitBBArguments(SILFunction &Fn) {
 }
 
 bool SimplifyCFG::run() {
+#ifndef SWIFT_ENABLE_SWIFT_IN_SWIFT
+  // This pass results in verification failures when Swift sources are not
+  // enabled.
+  LLVM_DEBUG(llvm::dbgs() << "SimplifyCFG disabled in C++-only Swift compiler\n");
+  return false;
+#endif //!SWIFT_ENABLE_SWIFT_IN_SWIFT
   LLVM_DEBUG(llvm::dbgs() << "### Run SimplifyCFG on " << Fn.getName() << '\n');
 
   // Disable some expensive optimizations if the function is huge.

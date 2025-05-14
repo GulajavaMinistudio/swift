@@ -764,7 +764,8 @@ static StringRef getModuleName(const ValueDecl *VD,
   // overlay's declaring module as the owning module.
   if (ModuleDecl *Declaring = MD->getDeclaringModuleIfCrossImportOverlay())
     MD = Declaring;
-  return MD->getNameStr();
+
+  return MD->getPublicModuleName(/*onlyIfImported=*/false).str();
 }
 
 struct DeclInfo {
@@ -890,17 +891,17 @@ static void setLocationInfo(const ValueDecl *VD,
 
   auto Loc = VD->getLoc(/*SerializedOK=*/true);
   if (Loc.isValid()) {
-    auto getSignatureRange =
+    auto getParameterListRange =
         [&](const ValueDecl *VD) -> std::optional<unsigned> {
       if (auto FD = dyn_cast<AbstractFunctionDecl>(VD)) {
-        SourceRange R = FD->getSignatureSourceRange();
+        SourceRange R = FD->getParameterListSourceRange();
         if (R.isValid())
           return getCharLength(SM, R);
       }
       return std::nullopt;
     };
     unsigned NameLen;
-    if (auto SigLen = getSignatureRange(VD)) {
+    if (auto SigLen = getParameterListRange(VD)) {
       NameLen = SigLen.value();
     } else if (VD->hasName()) {
       NameLen = VD->getBaseName().userFacingName().size();

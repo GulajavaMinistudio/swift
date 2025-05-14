@@ -16,6 +16,7 @@
 
 #include "TypeCheckAvailability.h"
 #include "TypeCheckConcurrency.h"
+#include "TypeCheckInvertible.h"
 #include "TypeCheckType.h"
 #include "TypeCheckUnsafe.h"
 
@@ -32,8 +33,7 @@ void swift::diagnoseUnsafeUse(const UnsafeUse &use) {
   switch (use.getKind()) {
   case UnsafeUse::Override: {
     auto override = use.getDecl();
-    override->diagnose(
-        diag::override_safe_with_unsafe, override->getDescriptiveKind());
+    override->diagnose(diag::override_safe_with_unsafe, override);
     if (auto overridingClass = override->getDeclContext()->getSelfClassDecl()) {
       overridingClass->diagnose(
           diag::make_subclass_unsafe, overridingClass->getName()
@@ -46,9 +46,7 @@ void swift::diagnoseUnsafeUse(const UnsafeUse &use) {
 
   case UnsafeUse::Witness: {
     auto witness = cast<ValueDecl>(use.getDecl());
-    witness->diagnose(diag::note_witness_unsafe,
-                      witness->getDescriptiveKind(),
-                      witness->getName());
+    witness->diagnose(diag::note_witness_unsafe, witness);
     return;
   }
 
@@ -68,12 +66,12 @@ void swift::diagnoseUnsafeUse(const UnsafeUse &use) {
 
   case UnsafeUse::UnsafeConformance: {
     auto conformance = use.getConformance();
-    ASTContext &ctx = conformance.getRequirement()->getASTContext();
+    ASTContext &ctx = conformance.getProtocol()->getASTContext();
     ctx.Diags.diagnose(
         use.getLocation(),
         diag::note_use_of_unsafe_conformance_is_unsafe,
         use.getType(),
-        conformance.getRequirement());
+        conformance.getProtocol());
     return;
   }
 
@@ -121,6 +119,7 @@ void swift::diagnoseUnsafeUse(const UnsafeUse &use) {
   }
 
   case UnsafeUse::ReferenceToUnsafe:
+  case UnsafeUse::ReferenceToUnsafeStorage:
   case UnsafeUse::CallToUnsafe: {
     bool isCall = use.getKind() == UnsafeUse::CallToUnsafe;
     auto decl = cast_or_null<ValueDecl>(use.getDecl());
@@ -133,7 +132,8 @@ void swift::diagnoseUnsafeUse(const UnsafeUse &use) {
           [&](Type specificType) {
             ctx.Diags.diagnose(
                 loc,
-                diag::note_reference_to_unsafe_typed_decl,
+                use.getKind() == UnsafeUse::ReferenceToUnsafeStorage                       ? diag::note_unsafe_storage
+                    : diag::note_reference_to_unsafe_typed_decl,
                 isCall, decl, specificType);
           });
     } else if (type) {
@@ -151,6 +151,48 @@ void swift::diagnoseUnsafeUse(const UnsafeUse &use) {
     return;
   }
 
+  case UnsafeUse::CallArgument: {
+    auto [argumentName, argumentIndex, argument] = use.getCallArgument();
+    Type paramType = use.getType();
+    ASTContext &ctx = paramType->getASTContext();
+
+    SourceLoc loc = argument->getLoc();
+    if (loc.isInvalid())
+      loc = use.getLocation();
+
+    if (auto calleeDecl = dyn_cast_or_null<ValueDecl>(use.getDecl())) {
+      if (argumentName.empty()) {
+        ctx.Diags.diagnose(
+            loc,
+            diag::note_unsafe_call_decl_argument_indexed,
+            calleeDecl, argumentIndex, paramType)
+          .highlight(argument->getSourceRange());
+      } else {
+        ctx.Diags.diagnose(
+            loc,
+            diag::note_unsafe_call_decl_argument_named,
+            calleeDecl, argumentName, paramType)
+          .highlight(argument->getSourceRange());
+      }
+    } else {
+      ctx.Diags.diagnose(
+          loc,
+          diag::note_unsafe_call_argument_indexed,
+          argumentIndex, paramType)
+        .highlight(argument->getSourceRange());
+    }
+
+    return;
+  }
+
+  case UnsafeUse::TemporarilyEscaping: {
+    Type type = use.getType();
+    ASTContext &ctx = type->getASTContext();
+    ctx.Diags.diagnose(
+        use.getLocation(), diag::note_unsafe_temporarily_escaping, type);
+    return;
+  }
+
   case UnsafeUse::PreconcurrencyImport: {
     auto importDecl = cast<ImportDecl>(use.getDecl());
     importDecl->diagnose(diag::preconcurrency_import_unsafe);
@@ -162,11 +204,6 @@ void swift::diagnoseUnsafeUse(const UnsafeUse &use) {
 /// Determine whether a reference to the given variable is treated as
 /// nonisolated(unsafe).
 static bool isReferenceToNonisolatedUnsafe(ValueDecl *decl) {
-  auto isolation = getActorIsolationForReference(
-      decl, decl->getDeclContext());
-  if (!isolation.isNonisolated())
-    return false;
-
   auto attr = decl->getAttrs().getAttribute<NonisolatedAttr>();
   return attr && attr->isUnsafe();
 }
@@ -174,6 +211,7 @@ static bool isReferenceToNonisolatedUnsafe(ValueDecl *decl) {
 bool swift::enumerateUnsafeUses(ConcreteDeclRef declRef,
                                 SourceLoc loc,
                                 bool isCall,
+                                bool skipTypeCheck,
                                 llvm::function_ref<bool(UnsafeUse)> fn) {
   // If the declaration is explicitly unsafe, note that.
   auto decl = declRef.getDecl();
@@ -200,10 +238,14 @@ bool swift::enumerateUnsafeUses(ConcreteDeclRef declRef,
   // If the type of this declaration involves unsafe types, diagnose that.
   ASTContext &ctx = decl->getASTContext();
   auto subs = declRef.getSubstitutions();
-  {
+  if (!skipTypeCheck) {
     auto type = decl->getInterfaceType();
-    if (subs)
-      type = type.subst(subs);
+    if (subs) {
+      if (auto *genericFnType = type->getAs<GenericFunctionType>())
+        type = genericFnType->substGenericArgs(subs);
+      else
+        type = type.subst(subs);
+    }
 
     bool shouldReturnTrue = false;
     diagnoseUnsafeType(ctx, loc, type, [&](Type unsafeType) {
@@ -293,6 +335,9 @@ bool swift::enumerateUnsafeUses(ArrayRef<ProtocolConformanceRef> conformances,
                                 SourceLoc loc,
                                 llvm::function_ref<bool(UnsafeUse)> fn) {
   for (auto conformance : conformances) {
+    if (conformance.isInvalid())
+      continue;
+
     if (!conformance.hasEffect(EffectKind::Unsafe))
       continue;
 
@@ -313,7 +358,12 @@ bool swift::enumerateUnsafeUses(ArrayRef<ProtocolConformanceRef> conformances,
 bool swift::enumerateUnsafeUses(SubstitutionMap subs,
                                 SourceLoc loc,
                                 llvm::function_ref<bool(UnsafeUse)> fn) {
-  // FIXME: Check replacement types?
+  // Replacement types.
+  for (auto replacementType : subs.getReplacementTypes()) {
+    if (replacementType->isUnsafe() &&
+        fn(UnsafeUse::forReferenceToUnsafe(nullptr, false, replacementType, loc)))
+      return true;
+  }
 
   // Check conformances.
   if (enumerateUnsafeUses(subs.getConformances(), loc, fn))
@@ -324,7 +374,8 @@ bool swift::enumerateUnsafeUses(SubstitutionMap subs,
 
 bool swift::isUnsafe(ConcreteDeclRef declRef) {
   return enumerateUnsafeUses(
-      declRef, SourceLoc(), /*isCall=*/false, [&](UnsafeUse) {
+      declRef, SourceLoc(), /*isCall=*/false, /*skipTypeCheck=*/false,
+      [&](UnsafeUse) {
     return true;
   });
 }
@@ -355,24 +406,151 @@ bool swift::isUnsafeInConformance(const ValueDecl *requirement,
 
 void swift::diagnoseUnsafeType(ASTContext &ctx, SourceLoc loc, Type type,
                                llvm::function_ref<void(Type)> diagnose) {
-  if (!ctx.LangOpts.hasFeature(Feature::WarnUnsafe))
+  if (!type->isUnsafe())
     return;
 
-  if (!type->isUnsafe() && !type->getCanonicalType()->isUnsafe())
-    return;
+  // Look for a specific @unsafe nominal type along the way.
+  class Walker : public TypeWalker {
+  public:
+    Type specificType;
 
-  // Look for a specific @unsafe nominal type.
-  Type specificType;
-  type.findIf([&specificType](Type type) {
-    if (auto typeDecl = type->getAnyNominal()) {
-      if (typeDecl->getExplicitSafety() == ExplicitSafety::Unsafe) {
-        specificType = type;
-        return false;
+    Action walkToTypePre(Type type) override {
+      if (specificType)
+        return Action::Stop;
+
+      // If this refers to a nominal type that is @unsafe, store that.
+      if (auto typeDecl = type->getAnyNominal()) {
+        if (typeDecl->getExplicitSafety() == ExplicitSafety::Unsafe) {
+          specificType = type;
+          return Action::Stop;
+        }
       }
+
+      // Do not recurse into nominal types, because we do not want to visit
+      // their "parent" types.
+      if (isa<NominalOrBoundGenericNominalType>(type.getPointer()) ||
+          isa<UnboundGenericType>(type.getPointer())) {
+        // Recurse into the generic arguments. This operation is recursive,
+        // because we also need to see the generic arguments of parent types.
+        walkGenericArguments(type);
+
+        return Action::SkipNode;
+      }
+
+      return Action::Continue;
     }
 
-    return false;
-  });
+  private:
+    /// Recursively walk the generic arguments of this type and its parent
+    /// types.
+    void walkGenericArguments(Type type) {
+      if (!type)
+        return;
+
+      // Walk the generic arguments.
+      if (auto boundGeneric = type->getAs<BoundGenericType>()) {
+        for (auto genericArg : boundGeneric->getGenericArgs())
+          genericArg.walk(*this);
+      }
+
+      if (auto nominalOrBound = type->getAs<NominalOrBoundGenericNominalType>())
+        return walkGenericArguments(nominalOrBound->getParent());
+
+      if (auto unbound = type->getAs<UnboundGenericType>())
+        return walkGenericArguments(unbound->getParent());
+    }
+  };
+
+  // Look for a canonical unsafe type.
+  Walker walker;
+  type->getCanonicalType().walk(walker);
+  Type specificType = walker.specificType;
+
+  // Look for an unsafe type in the non-canonical type, which is a better answer
+  // if we can find it.
+  walker.specificType = Type();
+  type.walk(walker);
+  if (specificType && walker.specificType &&
+      specificType->isEqual(walker.specificType))
+    specificType = walker.specificType;
 
   diagnose(specificType ? specificType : type);
+}
+
+void swift::checkUnsafeStorage(NominalTypeDecl *nominal) {
+  // If the type is marked explicitly with @safe or @unsafe, there's nothing
+  // to check.
+  switch (nominal->getExplicitSafety()) {
+  case ExplicitSafety::Safe:
+  case ExplicitSafety::Unsafe:
+    return;
+
+  case ExplicitSafety::Unspecified:
+    break;
+  }
+
+  // Check whether the superclass is unsafe. If so, the only thing one can
+  // do is mark the class unsafe.
+  ASTContext &ctx = nominal->getASTContext();
+  if (auto classDecl = dyn_cast<ClassDecl>(nominal)) {
+    if (Type superclassType = classDecl->getSuperclass()) {
+      superclassType = classDecl->mapTypeIntoContext(superclassType);
+      bool diagnosed = false;
+      diagnoseUnsafeType(ctx, classDecl->getLoc(), superclassType, [&](Type type) {
+        if (diagnosed)
+          return;
+
+        classDecl->diagnose(diag::unsafe_superclass, classDecl, type)
+          .fixItInsert(classDecl->getAttributeInsertionLoc(false), "@unsafe ");
+        diagnosed = true;
+      });
+
+      if (diagnosed)
+        return;
+    }
+  }
+
+  // Visitor that finds unsafe storage.
+  class UnsafeStorageVisitor: public StorageVisitor {
+    ASTContext &ctx;
+    SmallVectorImpl<UnsafeUse> &unsafeUses;
+
+  public:
+    UnsafeStorageVisitor(ASTContext &ctx, SmallVectorImpl<UnsafeUse> &unsafeUses)
+      : ctx(ctx), unsafeUses(unsafeUses) { }
+
+    bool operator()(VarDecl *property, Type propertyType) override {
+      diagnoseUnsafeType(ctx, property->getLoc(), propertyType, [&](Type type) {
+        unsafeUses.push_back(
+            UnsafeUse::forReferenceToUnsafeStorage(
+              property, propertyType, property->getLoc()));
+      });
+      return false;
+    }
+
+    bool operator()(EnumElementDecl *element, Type elementType) override {
+      diagnoseUnsafeType(ctx, element->getLoc(), elementType, [&](Type type) {
+        unsafeUses.push_back(
+            UnsafeUse::forReferenceToUnsafeStorage(
+            element, elementType, element->getLoc()));
+      });
+      return false;
+    }
+  };
+
+  // Look for any unsafe storage in this nominal type.
+  SmallVector<UnsafeUse, 4> unsafeUses;
+  UnsafeStorageVisitor(ctx, unsafeUses).visit(nominal, nominal);
+
+  // If we didn't find any unsafe storage, there's nothing to do.
+  if (unsafeUses.empty())
+    return;
+
+  // Complain about this type needing @safe or @unsafe.
+  nominal->diagnose(diag::decl_unsafe_storage, nominal);
+  nominal->diagnose(diag::decl_storage_mark_unsafe)
+    .fixItInsert(nominal->getAttributeInsertionLoc(false), "@unsafe ");
+  nominal->diagnose(diag::decl_storage_mark_safe)
+    .fixItInsert(nominal->getAttributeInsertionLoc(false), "@safe ");
+  std::for_each(unsafeUses.begin(), unsafeUses.end(), diagnoseUnsafeUse);
 }

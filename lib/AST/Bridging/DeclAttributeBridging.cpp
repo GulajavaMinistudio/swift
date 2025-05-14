@@ -14,11 +14,46 @@
 
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Attr.h"
+#include "swift/AST/AutoDiff.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/Identifier.h"
 #include "swift/Basic/Assertions.h"
 
 using namespace swift;
+
+//===----------------------------------------------------------------------===//
+// MARK: AutoDiff
+//===----------------------------------------------------------------------===//
+
+DifferentiabilityKind unbridged(BridgedDifferentiabilityKind cKind) {
+  switch (cKind) {
+  case BridgedDifferentiabilityKindNonDifferentiable:
+    return DifferentiabilityKind::NonDifferentiable;
+  case BridgedDifferentiabilityKindForward:
+    return DifferentiabilityKind::Forward;
+  case BridgedDifferentiabilityKindReverse:
+    return DifferentiabilityKind::Reverse;
+  case BridgedDifferentiabilityKindNormal:
+    return DifferentiabilityKind::Normal;
+  case BridgedDifferentiabilityKindLinear:
+    return DifferentiabilityKind::Linear;
+  }
+  llvm_unreachable("unhandled enum value");
+}
+
+ParsedAutoDiffParameter BridgedParsedAutoDiffParameter::unbridged() const {
+  switch (kind) {
+  case Kind::Named:
+    return ParsedAutoDiffParameter::getNamedParameter(loc.unbridged(),
+                                                      value.name.unbridged());
+  case Kind::Ordered:
+    return ParsedAutoDiffParameter::getOrderedParameter(loc.unbridged(),
+                                                        value.index);
+  case Kind::Self:
+    return ParsedAutoDiffParameter::getSelfParameter(loc.unbridged());
+  }
+  llvm_unreachable("unhandled enum value");
+}
 
 //===----------------------------------------------------------------------===//
 // MARK: DeclAttributes
@@ -66,11 +101,78 @@ BridgedDeclAttribute BridgedDeclAttribute_createSimple(
                                      cAtLoc.unbridged(), cAttrLoc.unbridged());
 }
 
+bool BridgedDeclAttribute_shouldBeRejectedByParser(BridgedDeclAttrKind cKind) {
+  auto optKind = unbridged(cKind);
+  if (!optKind)
+    return false;
+  return DeclAttribute::shouldBeRejectedByParser(*optKind);
+}
+
+bool BridgedDeclAttribute_isDeclModifier(BridgedDeclAttrKind cKind) {
+  auto optKind = unbridged(cKind);
+  if (!optKind)
+    return false;
+  return DeclAttribute::isDeclModifier(*optKind);
+}
+
 void BridgedDeclAttributes_add(BridgedDeclAttributes *cAttrs,
                                BridgedDeclAttribute cAdd) {
   auto attrs = cAttrs->unbridged();
   attrs.add(cAdd.unbridged());
   *cAttrs = attrs;
+}
+
+static AvailableAttr::Kind unbridge(BridgedAvailableAttrKind value) {
+  switch (value) {
+  case BridgedAvailableAttrKindDefault:
+    return AvailableAttr::Kind::Default;
+  case BridgedAvailableAttrKindDeprecated:
+    return AvailableAttr::Kind::Deprecated;
+  case BridgedAvailableAttrKindUnavailable:
+    return AvailableAttr::Kind::Unavailable;
+  case BridgedAvailableAttrKindNoAsync:
+    return AvailableAttr::Kind::NoAsync;
+  }
+  llvm_unreachable("unhandled enum value");
+}
+
+BridgedAvailableAttr BridgedAvailableAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedIdentifier cDomainIdentifier,
+    BridgedSourceLoc cDomainLoc, BridgedAvailableAttrKind cKind,
+    BridgedStringRef cMessage, BridgedStringRef cRenamed,
+    BridgedVersionTuple cIntroduced, BridgedSourceRange cIntroducedRange,
+    BridgedVersionTuple cDeprecated, BridgedSourceRange cDeprecatedRange,
+    BridgedVersionTuple cObsoleted, BridgedSourceRange cObsoletedRange,
+    bool isSPI) {
+
+  return new (cContext.unbridged())
+      AvailableAttr(cAtLoc.unbridged(), cRange.unbridged(),
+                    cDomainIdentifier.unbridged(), cDomainLoc.unbridged(),
+                    unbridge(cKind), cMessage.unbridged(), cRenamed.unbridged(),
+                    cIntroduced.unbridged(), cIntroducedRange.unbridged(),
+                    cDeprecated.unbridged(), cDeprecatedRange.unbridged(),
+                    cObsoleted.unbridged(), cObsoletedRange.unbridged(),
+                    /*Implicit=*/false,
+                    /*IsSPI=*/isSPI);
+}
+
+BridgedAvailableAttr
+BridgedAvailableAttr_createUnavailableInEmbedded(BridgedASTContext cContext,
+                                                 BridgedSourceLoc cAtLoc,
+                                                 BridgedSourceRange cRange) {
+  return AvailableAttr::createUnavailableInEmbedded(
+      cContext.unbridged(), cAtLoc.unbridged(), cRange.unbridged());
+}
+
+void BridgedAvailableAttr_setIsGroupMember(BridgedAvailableAttr cAttr) {
+  cAttr.unbridged()->setIsGroupMember();
+}
+void BridgedAvailableAttr_setIsGroupedWithWildcard(BridgedAvailableAttr cAttr) {
+  cAttr.unbridged()->setIsGroupedWithWildcard();
+}
+void BridgedAvailableAttr_setIsGroupTerminator(BridgedAvailableAttr cAttr) {
+  cAttr.unbridged()->setIsGroupTerminator();
 }
 
 static std::optional<AccessLevel> unbridge(BridgedAccessLevel level) {
@@ -133,13 +235,22 @@ BridgedAllowFeatureSuppressionAttr_createParsed(BridgedASTContext cContext,
       /*implicit*/ false, inverted, features);
 }
 
+BridgedBackDeployedAttr BridgedBackDeployedAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedPlatformKind cPlatform,
+    BridgedVersionTuple cVersion) {
+  return new (cContext.unbridged()) BackDeployedAttr(
+      cAtLoc.unbridged(), cRange.unbridged(), unbridge(cPlatform),
+      cVersion.unbridged(), /*Implicit=*/false);
+}
+
 BridgedCDeclAttr BridgedCDeclAttr_createParsed(BridgedASTContext cContext,
                                                BridgedSourceLoc cAtLoc,
                                                BridgedSourceRange cRange,
                                                BridgedStringRef cName) {
   return new (cContext.unbridged())
       CDeclAttr(cName.unbridged(), cAtLoc.unbridged(), cRange.unbridged(),
-                /*Implicit=*/false);
+                /*Implicit=*/false, /*Underscored*/true);
 }
 
 BridgedCustomAttr BridgedCustomAttr_createParsed(
@@ -150,6 +261,62 @@ BridgedCustomAttr BridgedCustomAttr_createParsed(
   return CustomAttr::create(
       context, cAtLoc.unbridged(), new (context) TypeExpr(cType.unbridged()),
       cInitContext.unbridged(), cArgumentList.unbridged());
+}
+
+BridgedDerivativeAttr BridgedDerivativeAttr_createParsedImpl(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedNullableTypeRepr cBaseType,
+    BridgedDeclNameRef cOriginalName, BridgedDeclNameLoc cOriginalNameLoc,
+    std::optional<BridgedAccessorKind> cAccessorKind, BridgedArrayRef cParams) {
+  std::optional<AccessorKind> accessorKind;
+  if (cAccessorKind)
+    accessorKind = unbridged(*cAccessorKind);
+  SmallVector<ParsedAutoDiffParameter, 2> params;
+  for (auto &elem : cParams.unbridged<BridgedParsedAutoDiffParameter>())
+    params.push_back(elem.unbridged());
+
+  return DerivativeAttr::create(cContext.unbridged(),
+                                /*implicit=*/false, cAtLoc.unbridged(),
+                                cRange.unbridged(), cBaseType.unbridged(),
+                                DeclNameRefWithLoc{cOriginalName.unbridged(),
+                                                   cOriginalNameLoc.unbridged(),
+                                                   accessorKind},
+                                params);
+}
+
+BridgedDerivativeAttr BridgedDerivativeAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedNullableTypeRepr cBaseType,
+    BridgedDeclNameRef cOriginalName, BridgedDeclNameLoc cOriginalNameLoc,
+    BridgedAccessorKind cAccessorKind, BridgedArrayRef cParams) {
+  return BridgedDerivativeAttr_createParsedImpl(
+      cContext, cAtLoc, cRange, cBaseType, cOriginalName, cOriginalNameLoc,
+      cAccessorKind, cParams);
+}
+
+BridgedDerivativeAttr BridgedDerivativeAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedNullableTypeRepr cBaseType,
+    BridgedDeclNameRef cOriginalName, BridgedDeclNameLoc cOriginalNameLoc,
+    BridgedArrayRef cParams) {
+  return BridgedDerivativeAttr_createParsedImpl(
+      cContext, cAtLoc, cRange, cBaseType, cOriginalName, cOriginalNameLoc,
+      /*cAccessorKind=*/std::nullopt, cParams);
+}
+
+BridgedDifferentiableAttr BridgedDifferentiableAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedDifferentiabilityKind cKind,
+    BridgedArrayRef cParams,
+    BridgedNullableTrailingWhereClause cGenericWhereClause) {
+  SmallVector<ParsedAutoDiffParameter, 2> params;
+  for (auto &elem : cParams.unbridged<BridgedParsedAutoDiffParameter>())
+    params.push_back(elem.unbridged());
+
+  return DifferentiableAttr::create(cContext.unbridged(), /*implicit=*/false,
+                                    cAtLoc.unbridged(), cRange.unbridged(),
+                                    unbridged(cKind), params,
+                                    cGenericWhereClause.unbridged());
 }
 
 BridgedDynamicReplacementAttr BridgedDynamicReplacementAttr_createParsed(
@@ -298,6 +465,74 @@ BridgedInlineAttr BridgedInlineAttr_createParsed(BridgedASTContext cContext,
       InlineAttr(cAtLoc.unbridged(), cRange.unbridged(), unbridged(cKind));
 }
 
+static swift::ParsedLifetimeDependenceKind
+unbridged(BridgedParsedLifetimeDependenceKind kind) {
+  switch (kind) {
+  case BridgedParsedLifetimeDependenceKindDefault:
+    return swift::ParsedLifetimeDependenceKind::Default;
+  case BridgedParsedLifetimeDependenceKindBorrow:
+    return swift::ParsedLifetimeDependenceKind::Borrow;
+  case BridgedParsedLifetimeDependenceKindInherit:
+    return swift::ParsedLifetimeDependenceKind::Inherit;
+  case BridgedParsedLifetimeDependenceKindInout:
+    return swift::ParsedLifetimeDependenceKind::Inout;
+  }
+  llvm_unreachable("unhandled enum value");
+}
+
+swift::LifetimeDescriptor BridgedLifetimeDescriptor::unbridged() {
+  switch (kind) {
+  case DescriptorKind::Named:
+    return LifetimeDescriptor::forNamed(
+        value.name.unbridged(), ::unbridged(dependenceKind), loc.unbridged());
+  case DescriptorKind::Ordered:
+    return LifetimeDescriptor::forOrdered(
+        value.index, ::unbridged(dependenceKind), loc.unbridged());
+  case DescriptorKind::Self:
+    return LifetimeDescriptor::forSelf(::unbridged(dependenceKind),
+                                       loc.unbridged());
+  }
+  llvm_unreachable("unhandled enum value");
+}
+
+static BridgedLifetimeEntry BridgedLifetimeEntry_createParsedImpl(
+    BridgedASTContext cContext, BridgedSourceRange cRange,
+    BridgedArrayRef cSources,
+    std::optional<BridgedLifetimeDescriptor> cTarget) {
+  SmallVector<LifetimeDescriptor> sources;
+  for (auto cSource : cSources.unbridged<BridgedLifetimeDescriptor>())
+    sources.push_back(cSource.unbridged());
+  std::optional<LifetimeDescriptor> target;
+  if (cTarget)
+    target = cTarget->unbridged();
+
+  return LifetimeEntry::create(cContext.unbridged(), cRange.Start.unbridged(),
+                               cRange.End.unbridged(), sources, target);
+}
+
+BridgedLifetimeEntry
+BridgedLifetimeEntry_createParsed(BridgedASTContext cContext,
+                                  BridgedSourceRange cRange,
+                                  BridgedArrayRef cSources) {
+  return BridgedLifetimeEntry_createParsedImpl(cContext, cRange, cSources,
+                                               std::nullopt);
+}
+
+BridgedLifetimeEntry BridgedLifetimeEntry_createParsed(
+    BridgedASTContext cContext, BridgedSourceRange cRange,
+    BridgedArrayRef cSources, BridgedLifetimeDescriptor cTarget) {
+  return BridgedLifetimeEntry_createParsedImpl(cContext, cRange, cSources,
+                                               cTarget);
+}
+
+BridgedLifetimeAttr BridgedLifetimeAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedLifetimeEntry cEntry) {
+  return LifetimeAttr::create(cContext.unbridged(), cAtLoc.unbridged(),
+                              cRange.unbridged(), /*implicit=*/false,
+                              cEntry.unbridged());
+}
+
 BridgedMacroRole BridgedMacroRole_fromString(BridgedStringRef str) {
   // Match the role string to the known set of roles.
   auto role =
@@ -334,6 +569,16 @@ BridgedMacroRoleAttr BridgedMacroRoleAttr_createParsed(
       cContext.unbridged(), cAtLoc.unbridged(), cRange.unbridged(),
       unbridge(cSyntax), cLParenLoc.unbridged(), unbridge(cRole), names,
       conformances, cRParenLoc.unbridged(), /*implicit=*/false);
+}
+
+BridgedOriginallyDefinedInAttr BridgedOriginallyDefinedInAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedStringRef cModuleName,
+    BridgedPlatformKind cPlatform, BridgedVersionTuple cVersion) {
+  return new (cContext.unbridged()) OriginallyDefinedInAttr(
+      cAtLoc.unbridged(), cRange.unbridged(), cModuleName.unbridged(),
+      unbridge(cPlatform), cVersion.unbridged(),
+      /*Implicit=*/false);
 }
 
 BridgedStorageRestrictionsAttr BridgedStorageRestrictionsAttr_createParsed(
@@ -382,12 +627,26 @@ BridgedNonSendableAttr BridgedNonSendableAttr_createParsed(
       NonSendableAttr(cAtLoc.unbridged(), cRange.unbridged(), unbridged(cKind));
 }
 
+static NonIsolatedModifier unbridged(BridgedNonIsolatedModifier modifier) {
+  switch (modifier) {
+  case BridgedNonIsolatedModifierNone:
+    return NonIsolatedModifier::None;
+  case BridgedNonIsolatedModifierUnsafe:
+    return NonIsolatedModifier::Unsafe;
+  case BridgedNonIsolatedModifierNonSending:
+    return NonIsolatedModifier::NonSending;
+  }
+  llvm_unreachable("unhandled enum value");
+}
+
 BridgedNonisolatedAttr
 BridgedNonisolatedAttr_createParsed(BridgedASTContext cContext,
                                     BridgedSourceLoc cAtLoc,
-                                    BridgedSourceRange cRange, bool isUnsafe) {
+                                    BridgedSourceRange cRange,
+                                    BridgedNonIsolatedModifier modifier) {
   return new (cContext.unbridged()) NonisolatedAttr(
-      cAtLoc.unbridged(), cRange.unbridged(), isUnsafe, /*implicit=*/false);
+      cAtLoc.unbridged(), cRange.unbridged(), unbridged(modifier),
+      /*implicit=*/false);
 }
 
 BridgedObjCAttr
@@ -487,8 +746,37 @@ BridgedRawDocCommentAttr_createParsed(BridgedASTContext cContext,
   return new (cContext.unbridged()) RawDocCommentAttr(cRange.unbridged());
 }
 
-static ReferenceOwnership unbridged(BridgedReferenceOwnership kind) {
+BridgedRawLayoutAttr BridgedStorageRestrictionsAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, size_t size, size_t alignment) {
+  return new (cContext.unbridged())
+      RawLayoutAttr(size, alignment, cAtLoc.unbridged(), cRange.unbridged());
+}
+
+SWIFT_NAME("BridgedRawLayoutAttr.createParsed(_:atLoc:range:like:moveAsLike:)")
+BridgedRawLayoutAttr BridgedStorageRestrictionsAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedTypeRepr cLikeType, bool moveAsLike) {
+  return new (cContext.unbridged())
+      RawLayoutAttr(cLikeType.unbridged(), moveAsLike, cAtLoc.unbridged(),
+                    cRange.unbridged());
+}
+
+SWIFT_NAME("BridgedRawLayoutAttr.createParsed(_:atLoc:range:likeArrayOf:count:"
+           "moveAsLike:)")
+BridgedRawLayoutAttr BridgedStorageRestrictionsAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedTypeRepr cLikeType,
+    BridgedTypeRepr cCountType, bool moveAsLike) {
+  return new (cContext.unbridged())
+      RawLayoutAttr(cLikeType.unbridged(), cCountType.unbridged(), moveAsLike,
+                    cAtLoc.unbridged(), cRange.unbridged());
+}
+
+ReferenceOwnership unbridged(BridgedReferenceOwnership kind) {
   switch (kind) {
+  case BridgedReferenceOwnershipStrong:
+    return ReferenceOwnership::Strong;
   case BridgedReferenceOwnershipWeak:
     return ReferenceOwnership::Weak;
   case BridgedReferenceOwnershipUnowned:
@@ -578,28 +866,37 @@ BridgedSILGenNameAttr BridgedSILGenNameAttr_createParsed(
                      cRange.unbridged(), /*Implicit=*/false);
 }
 
+BridgedTransposeAttr BridgedTransposeAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedNullableTypeRepr cBaseType,
+    BridgedDeclNameRef cOriginalName, BridgedDeclNameLoc cOriginalNameLoc,
+    BridgedArrayRef cParams) {
+  SmallVector<ParsedAutoDiffParameter, 2> params;
+  for (auto &elem : cParams.unbridged<BridgedParsedAutoDiffParameter>())
+    params.push_back(elem.unbridged());
+
+  return TransposeAttr::create(
+      cContext.unbridged(),
+      /*implicit=*/false, cAtLoc.unbridged(), cRange.unbridged(),
+      cBaseType.unbridged(),
+      DeclNameRefWithLoc{cOriginalName.unbridged(), cOriginalNameLoc.unbridged(),
+                         /*AccessorKind=*/std::nullopt},
+      params);
+}
+
+BridgedTypeEraserAttr BridgedTypeEraserAttr_createParsed(
+    BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
+    BridgedSourceRange cRange, BridgedTypeExpr cTypeExpr
+
+) {
+  return TypeEraserAttr::create(cContext.unbridged(), cAtLoc.unbridged(),
+                                cRange.unbridged(), cTypeExpr.unbridged());
+}
+
 BridgedUnavailableFromAsyncAttr BridgedUnavailableFromAsyncAttr_createParsed(
     BridgedASTContext cContext, BridgedSourceLoc cAtLoc,
     BridgedSourceRange cRange, BridgedStringRef cMessage) {
   return new (cContext.unbridged())
       UnavailableFromAsyncAttr(cMessage.unbridged(), cAtLoc.unbridged(),
                                cRange.unbridged(), /*implicit=*/false);
-}
-
-static ExecutionKind unbridged(BridgedExecutionKind kind) {
-  switch (kind) {
-  case BridgedExecutionKindConcurrent:
-    return ExecutionKind::Concurrent;
-  case BridgedExecutionKindCaller:
-    return ExecutionKind::Caller;
-  }
-  llvm_unreachable("unhandled enum value");
-}
-
-BridgedExecutionAttr BridgedExecutionAttr_createParsed(
-    BridgedASTContext cContext, BridgedSourceLoc atLoc,
-    BridgedSourceRange range, BridgedExecutionKind behavior) {
-  return new (cContext.unbridged())
-      ExecutionAttr(atLoc.unbridged(), range.unbridged(),
-                    unbridged(behavior), /*implicit=*/false);
 }

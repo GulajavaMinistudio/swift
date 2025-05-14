@@ -168,7 +168,7 @@ struct ProjectOptions: ParsableArguments {
       disabled by default. 
       
       A development snapshot is necessary to avoid spurious build/live issues
-      due to the fact that the the stdlib is built using the just-built Swift
+      due to the fact that the stdlib is built using the just-built Swift
       compiler, which may support features not yet supported by the Swift
       compiler in Xcode's toolchain.
       """
@@ -214,10 +214,6 @@ struct ProjectOptions: ParsableArguments {
       folder references to be used for compatible targets. This allows new
       source files to be added to a target without needing to regenerate the
       project.
-      
-      Only supported for targets that have no per-file build settings. This
-      unfortunately means some Clang targes such as 'lib/Basic' and 'stdlib' 
-      cannot currently use buildable folders.
       """
   )
   var useBuildableFolders: Bool = true

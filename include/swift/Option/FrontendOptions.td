@@ -171,12 +171,12 @@ def verify_generic_signatures : Separate<["-"], "verify-generic-signatures">,
 
 def show_diagnostics_after_fatal : Flag<["-"], "show-diagnostics-after-fatal">,
   HelpText<"Keep emitting subsequent diagnostics after a fatal error">;
-  
+
 def enable_cross_import_overlays : Flag<["-"], "enable-cross-import-overlays">,
   HelpText<"Automatically import declared cross-import overlays.">;
 def disable_cross_import_overlays : Flag<["-"], "disable-cross-import-overlays">,
   HelpText<"Do not automatically import declared cross-import overlays.">;
-  
+
 def enable_testable_attr_requires_testable_module :
   Flag<["-"], "enable-testable-attr-requires-testable-module">,
   HelpText<"Enable checking of @testable">;
@@ -196,7 +196,7 @@ def enable_target_os_checking :
 def disable_target_os_checking :
   Flag<["-"], "disable-target-os-checking">,
   HelpText<"Disable checking the target OS of serialized modules">;
-  
+
 def crosscheck_unqualified_lookup : Flag<["-"], "crosscheck-unqualified-lookup">,
   HelpText<"Compare legacy DeclContext- to ASTScope-based unqualified name lookup (for debugging)">;
 
@@ -266,7 +266,10 @@ def serialize_dependency_scan_cache : Flag<["-"], "serialize-dependency-scan-cac
    HelpText<"After performing a dependency scan, serialize the scanner's internal state.">;
 
 def reuse_dependency_scan_cache : Flag<["-"], "load-dependency-scan-cache">,
-   HelpText<"After performing a dependency scan, serialize the scanner's internal state.">;
+   HelpText<"For performing a dependency scan, deserialize the scanner's internal state from a prior scan.">;
+   
+def validate_prior_dependency_scan_cache : Flag<["-"], "validate-prior-dependency-scan-cache">,
+   HelpText<"For performing a dependency scan with a prior scanner state, validate module dependencies.">;
 
 def dependency_scan_cache_path : Separate<["-"], "dependency-scan-cache-path">,
   HelpText<"The path to output the dependency scanner's internal state.">;
@@ -312,6 +315,10 @@ let Flags = [FrontendOption, NoDriverOption, HelpHidden, ModuleInterfaceOptionIg
     Joined<["-"], "enable-destroy-hoisting=">,
     HelpText<"Whether to enable destroy hoisting">,
     MetaVarName<"true|false">;
+  def formal_cxx_interoperability_mode :
+    Joined<["-"], "formal-cxx-interoperability-mode=">,
+    HelpText<"What version of C++ interoperability a textual interface was originally generated with">,
+    MetaVarName<"<cxx-interop-version>|off">;
 }
 
 // Flags that are saved into module interfaces
@@ -381,9 +388,9 @@ def public_autolink_library :
 // HIDDEN FLAGS
 let Flags = [FrontendOption, NoDriverOption, HelpHidden] in {
 
-def enable_experimental_swift_based_closure_specialization : 
+def enable_experimental_swift_based_closure_specialization :
   Flag<["-"], "experimental-swift-based-closure-specialization">,
-  HelpText<"Use the experimental Swift based closure-specialization optimization pass instead of the existing C++ one">; 
+  HelpText<"Use the experimental Swift based closure-specialization optimization pass instead of the existing C++ one">;
 
 def checked_async_objc_bridging : Joined<["-"], "checked-async-objc-bridging=">,
   HelpText<"Control whether checked continuations are used when bridging "
@@ -589,6 +596,12 @@ def disable_swift_specific_llvm_optzns : Flag<["-"], "disable-swift-specific-llv
 def disable_llvm_verify : Flag<["-"], "disable-llvm-verify">,
   HelpText<"Don't run the LLVM IR verifier.">;
 
+def enable_llvm_verify_each : Flag<["-"], "enable-llvm-verify-each">,
+  HelpText<"Run the LLVM IR verifier after every pass.">;
+
+def disable_llvm_verify_each : Flag<["-"], "disable-llvm-verify-each">,
+  HelpText<"Don't run the LLVM IR verifier after every pass.">;
+
 def disable_llvm_value_names : Flag<["-"], "disable-llvm-value-names">,
   HelpText<"Don't add names to local values in LLVM IR">;
 
@@ -611,6 +624,9 @@ def reflection_metadata_for_debugger_only : Flag<["-"], "reflection-metadata-for
 def disable_reflection_names : Flag<["-"], "disable-reflection-names">,
   HelpText<"Disable emission of names of stored properties and enum cases in"
            "reflection metadata">;
+
+def disable_llvm_merge_functions_pass : Flag<["-"], "disable-llvm-merge-functions-pass">,
+  HelpText<"Disable the MergeFunctionPass LLVM IR pass">;
 
 def function_sections: Flag<["-"], "function-sections">,
   Flags<[FrontendOption, NoInteractiveOption]>,
@@ -763,6 +779,10 @@ def conditional_runtime_records : Flag<["-"], "conditional-runtime-records">,
   Flags<[FrontendOption, NoInteractiveOption, HelpHidden]>,
   HelpText<"Allow removal of runtime metadata records (public types, protocol conformances) based on whether they're used or unused">;
 
+def mergeable_symbols : Flag<["-"], "mergeable-symbols">,
+  Flags<[FrontendOption, NoInteractiveOption, HelpHidden]>,
+  HelpText<"Emit symbol definitions as mergeable (linkonce_odr)">;
+
 def disable_preallocated_instantiation_caches : Flag<["-"], "disable-preallocated-instantiation-caches">,
   Flags<[FrontendOption, NoInteractiveOption, HelpHidden]>,
   HelpText<"Avoid preallocating metadata instantiation caches in globals">;
@@ -828,6 +848,10 @@ def solver_scope_threshold_EQ : Joined<["-"], "solver-scope-threshold=">,
 
 def solver_trail_threshold_EQ : Joined<["-"], "solver-trail-threshold=">,
   HelpText<"Expression type checking trail change limit">;
+
+def solver_disable_shrink :
+  Flag<["-"], "solver-disable-shrink">,
+  HelpText<"Disable the shrink phase of expression type checking">;
 
 def solver_disable_splitter : Flag<["-"], "solver-disable-splitter">,
   HelpText<"Disable the component splitter phase of expression type checking">;
@@ -895,7 +919,7 @@ def disable_concrete_type_metadata_mangled_name_accessors : Flag<["-"], "disable
 def disable_standard_substitutions_in_reflection_mangling : Flag<["-"], "disable-standard-substitutions-in-reflection-mangling">,
   HelpText<"Disable referencing stdlib symbols via mangled names in reflection mangling">,
   Flags<[FrontendOption, HelpHidden]>;
-  
+
 def playground : Flag<["-"], "playground">,
   HelpText<"Apply the playground semantics and transformation">;
 
@@ -935,13 +959,13 @@ def sil_unroll_threshold : Separate<["-"], "sil-unroll-threshold">,
 
 def sil_verify_all : Flag<["-"], "sil-verify-all">,
   HelpText<"Verify SIL after each transform">;
-  
+
 def sil_verify_none : Flag<["-"], "sil-verify-none">,
   HelpText<"Completely disable SIL verification">;
 
 def sil_ownership_verify_all : Flag<["-"], "sil-ownership-verify-all">,
   HelpText<"Verify ownership after each transform">;
-  
+
 def verify_all_substitution_maps : Flag<["-"], "verify-all-substitution-maps">,
   HelpText<"Verify all SubstitutionMaps on construction">;
 
@@ -1102,6 +1126,10 @@ def prespecialize_generic_metadata : Flag<["-"], "prespecialize-generic-metadata
    HelpText<"Statically specialize metadata for generic types at types that "
             "are known to be used in source.">;
 
+def emit_singleton_metadata_pointer : Flag<["-"], "emit-singleton-metadata-pointer">,
+   HelpText<"Emit a pointer to the corresponding type metadata into non-public "
+            "non-generic type descriptors.">;
+
 def read_legacy_type_info_path_EQ : Joined<["-"], "read-legacy-type-info-path=">,
   HelpText<"Read legacy type layout from the given path instead of default path">;
 
@@ -1135,6 +1163,30 @@ def enable_large_loadable_types_reg2mem : Flag<["-"], "enable-large-loadable-typ
 def disable_large_loadable_types_reg2mem : Flag<["-"], "disable-large-loadable-types-reg2mem">,
   HelpText<"Disable large loadable types register to memory pass">;
 
+def enable_x86_64_corocc : Flag<["-"], "enable-x86_64-corocc">,
+  HelpText<"Use swiftcorocc for yield_once_2 routines on x86_64.">;
+
+def disable_x86_64_corocc : Flag<["-"], "disable-x86_64-corocc">,
+  HelpText<"Don't use swiftcorocc for yield_once_2 routines on x86_64.">;
+
+def enable_arm64_corocc : Flag<["-"], "enable-arm64-corocc">,
+  HelpText<"Use swiftcorocc for yield_once_2 routines on arm64 variants.">;
+
+def disable_arm64_corocc : Flag<["-"], "disable-arm64-corocc">,
+  HelpText<"Don't use swiftcorocc for yield_once_2 routines on arm64 variants.">;
+
+def enable_callee_allocated_coro_abi : Flag<["-"], "enable-callee-allocated-coro-abi">,
+  HelpText<"Override per-platform settings and use yield_once_2.">;
+
+def disable_callee_allocated_coro_abi : Flag<["-"], "disable-callee-allocated-coro-abi">,
+  HelpText<"Override per-platform settings and don't use yield_once_2.">;
+
+def enable_cond_fail_message_annotation : Flag<["-"], "enable-cond-fail-message-annotation">,
+  HelpText<"Enable cond_fail message annotation. Will serialize a .o.yaml file per .o file.">;
+
+def disable_cond_fail_message_annotation : Flag<["-"], "dissable-cond-fail-message-annotation">,
+  HelpText<"Disable cond_fail message annotation.">;
+
 let Flags = [FrontendOption, NoDriverOption, HelpHidden, ModuleInterfaceOptionIgnorable] in {
   def enable_pack_metadata_stack_promotion :
     Joined<["-"], "enable-pack-metadata-stack-promotion=">,
@@ -1160,7 +1212,7 @@ def disable_interface_lockfile : Flag<["-"], "disable-interface-lock">,
 def bridging_header_directory_for_print: Separate<["-"], "bridging-header-directory-for-print">, MetaVarName<"<path>">,
     HelpText<"Directory for bridging header to be printed in compatibility header">;
 
-def entry_point_function_name: Separate<["-"], "entry-point-function-name">, MetaVarName<"<string>">, 
+def entry_point_function_name: Separate<["-"], "entry-point-function-name">, MetaVarName<"<string>">,
     HelpText<"Name of the entry point function">;
 
 def target_sdk_version : Separate<["-"], "target-sdk-version">,
@@ -1235,11 +1287,6 @@ def disable_sil_opaque_values : Flag<["-"], "disable-sil-opaque-values">,
 def new_driver_path
   : Separate<["-"], "new-driver-path">, MetaVarName<"<path>">,
   HelpText<"Path of the new driver to be used">;
-
-def skip_import_in_public_interface:
-  Separate<["-"], "skip-import-in-public-interface">,
-  HelpText<"Skip the import statement corresponding to a module name "
-           "when printing the public interface.">;
 
 def disable_fine_module_tracing:
   Flag<["-"], "disable-fine-module-tracing">,
@@ -1339,6 +1386,13 @@ def disable_async_frame_push_pop_metadata :
   Flag<["-"], "disable-async-frame-push-pop-metadata">,
   HelpText<"Disable async frame push pop metadata">;
 
+def enable_emit_type_malloc_for_coro_frame :
+  Flag<["-"], "enable-emit-type-malloc-for-coro-frame">,
+  HelpText<"Enable emitting typed malloc for coroutine frame allocation">;
+def disable_emit_type_malloc_for_coro_frame :
+  Flag<["-"], "disable-emit-type-malloc-for-coro-frame">,
+  HelpText<"Disable emitting typed malloc for coroutine frame allocation">;
+
 def enable_async_frame_pointer_all :
   Flag<["-"], "enable-async-frame-pointer-all">,
   HelpText<"Always emit async frame stack frames (frame-pointer=all)">;
@@ -1352,6 +1406,10 @@ def enable_split_cold_code :
 def disable_split_cold_code :
   Flag<["-"], "disable-split-cold-code">,
   HelpText<"Disable splitting of cold code when optimizing">;
+
+def mergeable_traps :
+  Flag<["-"], "mergeable-traps">,
+  HelpText<"Emit mergeable traps even in optimized builds">;
 
 def enable_new_llvm_pass_manager :
   Flag<["-"], "enable-new-llvm-pass-manager">,
@@ -1383,9 +1441,6 @@ def enable_emit_generic_class_ro_t_list :
   HelpText<"Enable emission of a section with references to class_ro_t of "
            "generic class patterns">;
 
-def enable_deterministic_check :
-  Flag<["-"], "enable-deterministic-check">,
-  HelpText<"Check compiler output determinism by running it twice">;
 def always_compile_output_files :
   Flag<["-"], "always-compile-output-files">,
   HelpText<"Always compile output files even it might not change the results">;
@@ -1436,7 +1491,7 @@ def platform_c_calling_convention_EQ :
 
 def disable_sending_args_and_results_with_region_isolation : Flag<["-"],
   "disable-sending-args-and-results-with-region-based-isolation">,
-  HelpText<"Disable sending args and results when region based isolation is enabled. Only enabled with asserts">,
+  HelpText<"Disable sending args and results when region-based isolation is enabled. Only enabled with asserts">,
   Flags<[HelpHidden]>;
 
 def scanner_module_validation: Flag<["-"], "scanner-module-validation">,
@@ -1447,9 +1502,21 @@ def module_load_mode: Separate<["-"], "module-load-mode">,
     MetaVarName<"only-interface|prefer-interface|prefer-serialized|only-serialized">,
     HelpText<"Module loading mode">;
 
+def scanner_output_dir: Separate<["-"], "scanner-output-dir">,
+  HelpText<"Directory for generated files from swift dependency scanner">;
+def scanner_debug_write_output: Flag<["-"], "scanner-debug-write-output">,
+  HelpText<"Write generated output from scanner for debugging purpose">,
+  Flags<[HelpHidden]>;
+
 def platform_availability_inheritance_map_path
   : Separate<["-"], "platform-availability-inheritance-map-path">, MetaVarName<"<path>">,
     HelpText<"Path of the platform inheritance platform map">;
+
+def enable_address_dependencies : Flag<["-"], "enable-address-dependencies">,
+  HelpText<"Enable enforcement of lifetime dependencies on addressable values.">;
+
+def disable_address_dependencies : Flag<["-"], "disable-address-dependencies">,
+  HelpText<"Disable enforcement of lifetime dependencies on addressable values.">;
 
 } // end let Flags = [FrontendOption, NoDriverOption, HelpHidden]
 

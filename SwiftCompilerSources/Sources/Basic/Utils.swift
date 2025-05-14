@@ -96,6 +96,16 @@ public struct StringRef : CustomStringConvertible, NoReflectionChildren {
     return buffer[index]
   }
 
+  public func startsWith(_ prefix: StaticString) -> Bool {
+    return prefix.withUTF8Buffer { (prefixBuffer: UnsafeBufferPointer<UInt8>) in
+      if count < prefixBuffer.count {
+        return false
+      }
+      let buffer = UnsafeBufferPointer<UInt8>(start: _bridged.data, count: prefixBuffer.count)
+      return buffer.elementsEqual(prefixBuffer, by: ==)
+    }
+  }
+
   public static func ==(lhs: StringRef, rhs: StringRef) -> Bool {
     let lhsBuffer = UnsafeBufferPointer<UInt8>(start: lhs._bridged.data, count: lhs.count)
     let rhsBuffer = UnsafeBufferPointer<UInt8>(start: rhs._bridged.data, count: rhs.count)
@@ -173,7 +183,7 @@ extension Optional where Wrapped == UnsafeMutablePointer<BridgedSwiftObject> {
 
 extension BridgedArrayRef {
   public func withElements<T, R>(ofType ty: T.Type, _ c: (UnsafeBufferPointer<T>) -> R) -> R {
-    let start = data?.bindMemory(to: ty, capacity: count)
+    let start = data?.assumingMemoryBound(to: ty)
     let buffer = UnsafeBufferPointer(start: start, count: count)
     return c(buffer)
   }

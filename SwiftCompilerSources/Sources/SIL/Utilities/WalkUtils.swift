@@ -39,10 +39,11 @@ public enum WalkResult {
 }
 
 extension Sequence {
+  // Walk each element until the walk aborts.
   public func walk(
-    _ predicate: (Element) throws -> WalkResult
+    _ walker: (Element) throws -> WalkResult
   ) rethrows -> WalkResult {
-    return try contains { try predicate($0) == .abortWalk } ? .abortWalk : .continueWalk
+    return try contains { try walker($0) == .abortWalk } ? .abortWalk : .continueWalk
   }
 }
 
@@ -370,7 +371,21 @@ extension ValueDefUseWalker {
         // We need to ignore this because otherwise the path wouldn't contain the right `existential` field kind.
         return leafUse(value: operand, path: path)
       }
-      return walkDownUses(ofValue: urc, path: path)
+      // The `unchecked_ref_cast` is designed to be able to cast between
+      // `Optional<ClassType>` and `ClassType`. We need to handle these
+      // cases by checking if the type is optional and adjust the path
+      // accordingly.
+      switch (urc.type.isOptional, urc.fromInstance.type.isOptional) {
+        case (true, false):
+          return walkDownUses(ofValue: urc, path: path.push(.enumCase, index: 1))
+        case (false, true):
+          if let path = path.popIfMatches(.enumCase, index: 1) {
+            return walkDownUses(ofValue: urc, path: path)
+          }
+          return unmatchedPath(value: operand, path: path)
+        default:
+          return walkDownUses(ofValue: urc, path: path)
+      }
     case let beginDealloc as BeginDeallocRefInst:
       if operand.index == 0 {
         return walkDownUses(ofValue: beginDealloc, path: path)
@@ -494,6 +509,12 @@ extension AddressDefUseWalker {
       } else {
         return unmatchedPath(address: operand, path: path)
       }
+    case let vba as VectorBaseAddrInst:
+      if let path = path.popIfMatches(.vectorBase, index: 0) {
+        return walkDownUses(ofAddress: vba, path: path)
+      } else {
+        return unmatchedPath(address: operand, path: path)
+      }
     case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
       let ei = instruction as! SingleValueInstruction
       if let path = path.popIfMatches(.enumCase, index: (instruction as! EnumInstruction).caseIndex) {
@@ -524,6 +545,12 @@ extension AddressDefUseWalker {
     case let mdi as MarkDependenceInst:
       if operand.index == 0 {
         return walkDownUses(ofAddress: mdi, path: path)
+      } else {
+        return unmatchedPath(address: operand, path: path)
+      }
+    case is MarkDependenceAddrInst:
+      if operand.index == 0 {
+        return leafUse(address: operand, path: path)
       } else {
         return unmatchedPath(address: operand, path: path)
       }
@@ -699,7 +726,21 @@ extension ValueUseDefWalker {
         // We need to ignore this because otherwise the path wouldn't contain the right `existential` field kind.
         return rootDef(value: urc, path: path)
       }
-      return walkUp(value: urc.fromInstance, path: path)
+      // The `unchecked_ref_cast` is designed to be able to cast between
+      // `Optional<ClassType>` and `ClassType`. We need to handle these
+      // cases by checking if the type is optional and adjust the path
+      // accordingly.
+      switch (urc.type.isOptional, urc.fromInstance.type.isOptional) {
+        case (true, false):
+          if let path = path.popIfMatches(.enumCase, index: 1) {
+            return walkUp(value: urc.fromInstance, path: path)
+          }
+          return unmatchedPath(value: urc.fromInstance, path: path)
+        case (false, true):
+          return walkUp(value: urc.fromInstance, path: path.push(.enumCase, index: 1))
+        default:
+          return walkUp(value: urc.fromInstance, path: path)
+      }
     case let arg as Argument:
       if let phi = Phi(arg) {
         for incoming in phi.incomingValues {
@@ -779,6 +820,8 @@ extension AddressUseDefWalker {
       return walkUp(address: sea.struct, path: path.push(.structField, index: sea.fieldIndex))
     case let tea as TupleElementAddrInst:
       return walkUp(address: tea.tuple, path: path.push(.tupleField, index: tea.fieldIndex))
+    case let vba as VectorBaseAddrInst:
+      return walkUp(address: vba.vector, path: path.push(.vectorBase, index: 0))
     case let ida as InitEnumDataAddrInst:
       return walkUp(address: ida.operand.value, path: path.push(.enumCase, index: ida.caseIndex))
     case let uteda as UncheckedTakeEnumDataAddrInst:

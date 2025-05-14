@@ -23,8 +23,10 @@
 #include "swift/FrontendTool/FrontendTool.h"
 #include "Dependencies.h"
 #include "TBD.h"
+#include "swift/AST/ASTDumper.h"
 #include "swift/AST/ASTMangler.h"
 #include "swift/AST/AvailabilityScope.h"
+#include "swift/AST/DiagnosticConsumer.h"
 #include "swift/AST/DiagnosticsFrontend.h"
 #include "swift/AST/DiagnosticsSema.h"
 #include "swift/AST/FileSystem.h"
@@ -44,6 +46,7 @@
 #include "swift/Basic/PrettyStackTrace.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/Statistic.h"
+#include "swift/Basic/SupportedFeatures.h"
 #include "swift/Basic/TargetInfo.h"
 #include "swift/Basic/UUID.h"
 #include "swift/Basic/Version.h"
@@ -463,20 +466,25 @@ getPrimaryOrMainSourceFile(const CompilerInstance &Instance) {
 
 /// Dumps the AST of all available primary source files. If corresponding output
 /// files were specified, use them; otherwise, dump the AST to stdout.
-static bool dumpAST(CompilerInstance &Instance) {
+static bool dumpAST(CompilerInstance &Instance,
+                    ASTDumpMemberLoading memberLoading) {
   const FrontendOptions &opts = Instance.getInvocation().getFrontendOptions();
-  auto dumpAST = [&](SourceFile *SF, raw_ostream &out) {
+  auto dumpAST = [&](SourceFile *SF, llvm::raw_ostream &out) {
     switch (opts.DumpASTFormat) {
     case FrontendOptions::ASTFormat::Default:
-      SF->dump(out, /*parseIfNeeded*/ true);
+      SF->dump(out, memberLoading);
+      break;
+    case FrontendOptions::ASTFormat::DefaultWithDeclContext:
+      swift::dumpDeclContextHierarchy(out, *SF);
+      SF->dump(out, memberLoading);
       break;
     case FrontendOptions::ASTFormat::JSON:
-      SF->dumpJSON(out);
+      SF->dumpJSON(out, memberLoading);
       break;
     case FrontendOptions::ASTFormat::JSONZlib:
       std::string jsonText;
       llvm::raw_string_ostream jsonTextStream(jsonText);
-      SF->dumpJSON(jsonTextStream);
+      SF->dumpJSON(jsonTextStream, memberLoading);
 
       SmallVector<uint8_t, 0> compressed;
       llvm::compression::zlib::compress(llvm::arrayRefFromStringRef(jsonText),
@@ -493,7 +501,7 @@ static bool dumpAST(CompilerInstance &Instance) {
       auto OutputFilename = PSPs.OutputFilename;
       if (withOutputPath(Instance.getASTContext().Diags,
                          Instance.getOutputBackend(), OutputFilename,
-                         [&](raw_ostream &out) -> bool {
+                         [&](llvm::raw_ostream &out) -> bool {
                            dumpAST(sourceFile, out);
                            return false;
                          }))
@@ -515,10 +523,12 @@ static bool emitReferenceDependencies(CompilerInstance &Instance,
                                    .getLangOptions()
                                    .EmitFineGrainedDependencySourcefileDotFiles;
 
+#ifndef NDEBUG
   // Before writing to the dependencies file path, preserve any previous file
   // that may have been there. No error handling -- this is just a nicety, it
   // doesn't matter if it fails.
   llvm::sys::fs::rename(outputPath, outputPath + "~");
+#endif
 
   using SourceFileDepGraph = fine_grained_dependencies::SourceFileDepGraph;
   return fine_grained_dependencies::withReferenceDependencies(
@@ -530,7 +540,7 @@ static bool emitReferenceDependencies(CompilerInstance &Instance,
                 g);
 
         // If path is stdout, cannot read it back, so check for "-"
-        assert(outputPath == "-" || g.verifyReadsWhatIsWritten(outputPath));
+        DEBUG_ASSERT(outputPath == "-" || g.verifyReadsWhatIsWritten(outputPath));
 
         if (alsoEmitDotFile)
           g.emitDotFile(Instance.getOutputBackend(), outputPath,
@@ -869,7 +879,6 @@ static bool emitAnyWholeModulePostTypeCheckSupplementaryOutputs(
     // Copy the settings from the module interface to add SPI printing.
     ModuleInterfaceOptions privOpts = Invocation.getModuleInterfaceOptions();
     privOpts.setInterfaceMode(PrintOptions::InterfaceMode::Private);
-    privOpts.ModulesToSkipInPublicInterface.clear();
 
     hadAnyError |= printModuleInterfaceIfNeeded(
         Instance.getOutputBackend(),
@@ -882,7 +891,6 @@ static bool emitAnyWholeModulePostTypeCheckSupplementaryOutputs(
     // Copy the settings from the module interface to add package decl printing.
     ModuleInterfaceOptions pkgOpts = Invocation.getModuleInterfaceOptions();
     pkgOpts.setInterfaceMode(PrintOptions::InterfaceMode::Package);
-    pkgOpts.ModulesToSkipInPublicInterface.clear();
 
     hadAnyError |= printModuleInterfaceIfNeeded(
         Instance.getOutputBackend(),
@@ -972,6 +980,21 @@ static void dumpAPIIfNeeded(const CompilerInstance &Instance) {
       if (dumpFile(SF))
         return;
   }
+}
+
+static bool shouldEmitIndexData(const CompilerInvocation &Invocation) {
+  const auto &opts = Invocation.getFrontendOptions();
+  auto action = opts.RequestedAction;
+
+  if (action == FrontendOptions::ActionType::CompileModuleFromInterface &&
+      opts.ExplicitInterfaceBuild) {
+    return true;
+  }
+
+  // FIXME: This predicate matches the status quo, but there's no reason
+  // indexing cannot run for actions that do not require stdlib e.g. to better
+  // facilitate tests.
+  return FrontendOptions::doesActionRequireSwiftStandardLibrary(action);
 }
 
 /// Perform any actions that must have access to the ASTContext, and need to be
@@ -1068,10 +1091,7 @@ static void performEndOfPipelineActions(CompilerInstance &Instance) {
     }
   }
 
-  // FIXME: This predicate matches the status quo, but there's no reason
-  // indexing cannot run for actions that do not require stdlib e.g. to better
-  // facilitate tests.
-  if (FrontendOptions::doesActionRequireSwiftStandardLibrary(action)) {
+  if (shouldEmitIndexData(Invocation)) {
     emitIndexData(Instance);
   }
 
@@ -1091,6 +1111,8 @@ static bool printSwiftVersion(const CompilerInvocation &Invocation) {
                << '\n';
   llvm::outs() << "Target: " << Invocation.getLangOptions().Target.str()
                << '\n';
+  if (!llvm::cl::getCompilerBuildConfig().empty())
+    llvm::cl::printBuildConfig(llvm::outs());
   return false;
 }
 
@@ -1109,7 +1131,7 @@ static void printSingleFrontendOpt(llvm::opt::OptTable &table, options::ID id,
   }
 }
 
-static bool printSwiftFeature(CompilerInstance &instance) {
+static bool printSwiftArguments(CompilerInstance &instance) {
   ASTContext &context = instance.getASTContext();
   const CompilerInvocation &invocation = instance.getInvocation();
   const FrontendOptions &opts = invocation.getFrontendOptions();
@@ -1205,8 +1227,8 @@ static bool performAction(CompilerInstance &Instance,
     return Instance.getASTContext().hadError();
   case FrontendOptions::ActionType::PrintVersion:
     return printSwiftVersion(Instance.getInvocation());
-  case FrontendOptions::ActionType::PrintFeature:
-    return printSwiftFeature(Instance);
+  case FrontendOptions::ActionType::PrintArguments:
+    return printSwiftArguments(Instance);
   case FrontendOptions::ActionType::REPL:
     llvm::report_fatal_error("Compiler-internal integrated REPL has been "
                              "removed; use the LLDB-enhanced REPL instead.");
@@ -1226,12 +1248,14 @@ static bool performAction(CompilerInstance &Instance,
 
   // MARK: Actions that Dump
   case FrontendOptions::ActionType::DumpParse:
-    return dumpAST(Instance);
+    return dumpAST(Instance, ASTDumpMemberLoading::Parsed);
   case FrontendOptions::ActionType::DumpAST:
     return withSemanticAnalysis(
-        Instance, observer, [](CompilerInstance &Instance) {
-          return dumpAST(Instance);
-        }, /*runDespiteErrors=*/true);
+        Instance, observer,
+        [](CompilerInstance &Instance) {
+          return dumpAST(Instance, ASTDumpMemberLoading::TypeChecked);
+        },
+        /*runDespiteErrors=*/true);
   case FrontendOptions::ActionType::PrintAST:
     return withSemanticAnalysis(
         Instance, observer, [](CompilerInstance &Instance) {
@@ -2040,6 +2064,11 @@ int swift::performFrontend(ArrayRef<const char *> Args,
     return finishDiagProcessing(0, /*verifierEnabled*/ false);
   }
 
+  if (Invocation.getFrontendOptions().PrintSupportedFeatures) {
+    swift::features::printSupportedFeatures(llvm::outs());
+    return finishDiagProcessing(0, /*verifierEnabled*/ false);
+  }
+
   if (Invocation.getFrontendOptions().RequestedAction ==
       FrontendOptions::ActionType::NoneAction) {
     Instance->getDiags().diagnose(SourceLoc(),
@@ -2080,6 +2109,11 @@ int swift::performFrontend(ArrayRef<const char *> Args,
     // Setup a verfication instance to run.
     std::unique_ptr<CompilerInstance> VerifyInstance =
         std::make_unique<CompilerInstance>();
+    // Add a null diagnostic consumer to the diagnostic engine so the
+    // compilation will exercise all the diagnose code path but not emitting
+    // anything.
+    NullDiagnosticConsumer DC;
+    VerifyInstance->getDiags().addConsumer(DC);
     std::string InstanceSetupError;
     // This should not fail because it passed already.
     (void)VerifyInstance->setup(Invocation, InstanceSetupError, Args);

@@ -264,41 +264,6 @@ MetadataDependency MetadataDependencyCollector::finish(IRGenFunction &IGF) {
   return result;
 }
 
-static bool usesExtendedExistentialMetadata(CanType type) {
-  auto layout = type.getExistentialLayout();
-  // If there are parameterized protocol types that we want to
-  // treat as equal to unparameterized protocol types (maybe
-  // something like `P<some Any>`?), then AST type canonicalization
-  // should turn them into unparameterized protocol types.  If the
-  // structure makes it to IRGen, we have to honor that decision that
-  // they represent different types.
-  return !layout.getParameterizedProtocols().empty();
-}
-
-static std::optional<std::pair<CanExistentialType, /*depth*/ unsigned>>
-usesExtendedExistentialMetadata(CanExistentialMetatypeType type) {
-  unsigned depth = 1;
-  auto cur = type.getInstanceType();
-  while (auto metatype = dyn_cast<ExistentialMetatypeType>(cur)) {
-    cur = metatype.getInstanceType();
-    depth++;
-  }
-
-  // The only existential types that don't currently use ExistentialType
-  // are Any and AnyObject, which don't use extended metadata.
-  if (usesExtendedExistentialMetadata(cur)) {
-    // HACK: The AST for an existential metatype of a (parameterized) protocol
-    // still directly wraps the existential type as its instance, which means
-    // we need to reconstitute the enclosing ExistentialType.
-    assert(cur->isExistentialType());
-    if (!cur->is<ExistentialType>()) {
-      cur = ExistentialType::get(cur)->getCanonicalType();
-    }
-    return std::make_pair(cast<ExistentialType>(cur), depth);
-  }
-  return std::nullopt;
-}
-
 llvm::Constant *IRGenModule::getAddrOfStringForMetadataRef(
     StringRef symbolName,
     unsigned alignment,
@@ -526,7 +491,7 @@ CanType IRGenModule::getRuntimeReifiedType(CanType type) {
   }));
 }
 
-CanType IRGenModule::substOpaqueTypesWithUnderlyingTypes(CanType type) {
+Type IRGenModule::substOpaqueTypesWithUnderlyingTypes(Type type) {
   // Substitute away opaque types whose underlying types we're allowed to
   // assume are constant.
   if (type->hasOpaqueArchetype()) {
@@ -535,6 +500,11 @@ CanType IRGenModule::substOpaqueTypesWithUnderlyingTypes(CanType type) {
   }
 
   return type;
+}
+
+CanType IRGenModule::substOpaqueTypesWithUnderlyingTypes(CanType type) {
+  return substOpaqueTypesWithUnderlyingTypes(static_cast<Type>(type))
+      ->getCanonicalType();
 }
 
 SILType IRGenModule::substOpaqueTypesWithUnderlyingTypes(
@@ -560,7 +530,7 @@ IRGenModule::substOpaqueTypesWithUnderlyingTypes(CanType type,
     auto context = getMaximalTypeExpansionContext();
     return std::make_pair(
        swift::substOpaqueTypesWithUnderlyingTypes(type, context),
-       swift::substOpaqueTypesWithUnderlyingTypes(conformance, type, context));
+       swift::substOpaqueTypesWithUnderlyingTypes(conformance, context));
   }
 
   return std::make_pair(type, conformance);
@@ -836,6 +806,12 @@ bool irgen::isSpecializedNominalTypeMetadataStaticallyAddressable(
     if (IGM.getSwiftModule() == nominal->getModuleContext()) {
       return false;
     }
+    // We cannot reference the type context across the module boundary on
+    // PE/COFF without a load. This prevents us from statically initializing the
+    // pattern.
+    if (IGM.Triple.isOSWindows() &&
+        !nominal->getModuleContext()->isStaticLibrary())
+      return false;
     if (nominal->isResilient(IGM.getSwiftModule(),
                              ResilienceExpansion::Maximal)) {
       return false;
@@ -893,7 +869,7 @@ bool irgen::isSpecializedNominalTypeMetadataStaticallyAddressable(
   // If we have to instantiate resilient or dependent witness tables, we
   // cannot prespecialize.
   for (auto conformance : substitutions.getConformances()) {
-    auto protocol = conformance.getRequirement();
+    auto protocol = conformance.getProtocol();
     if (!Lowering::TypeConverter::protocolRequiresWitnessTable(protocol))
       continue;
 
@@ -1463,6 +1439,9 @@ getFunctionTypeFlags(CanFunctionType type) {
   if (isolation.isErased())
     extFlags = extFlags.withIsolatedAny();
 
+  if (isolation.isNonIsolatedCaller())
+    extFlags = extFlags.withNonIsolatedCaller();
+
   auto flags = FunctionTypeFlags()
       .withConvention(metadataConvention)
       .withAsync(type->isAsync())
@@ -1984,7 +1963,7 @@ namespace {
 
       // Existential metatypes for extended existentials don't use
       // ExistentialMetatypeMetadata.
-      if (usesExtendedExistentialMetadata(type)) {
+      if (type->getExistentialLayout().needsExtendedShape()) {
         auto metadata = emitExtendedExistentialTypeMetadata(type);
         return setLocal(type, MetadataResponse::forComplete(metadata));
       }
@@ -3096,8 +3075,8 @@ static bool shouldAccessByMangledName(IRGenModule &IGM, CanType type) {
     void visitExistentialMetatypeType(CanExistentialMetatypeType meta) {
       // Extended existential metatypes just emit a different shape
       // and don't do any wrapping.
-      if (auto typeAndDepth = usesExtendedExistentialMetadata(meta)) {
-        return visit(typeAndDepth.first);
+      if (meta->getExistentialLayout().needsExtendedShape()) {
+        // return visit(unwrapExistentialMetatype(meta));
       }
 
       // The number of accesses turns out the same as the instance type,

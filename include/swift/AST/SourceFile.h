@@ -13,6 +13,7 @@
 #ifndef SWIFT_AST_SOURCEFILE_H
 #define SWIFT_AST_SOURCEFILE_H
 
+#include "swift/AST/ASTDumper.h"
 #include "swift/AST/ASTNode.h"
 #include "swift/AST/FileUnit.h"
 #include "swift/AST/IfConfigClauseRangeInfo.h"
@@ -20,13 +21,14 @@
 #include "swift/AST/SynthesizedFileUnit.h"
 #include "swift/Basic/Debug.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/ADT/STLExtras.h"
 
 namespace swift {
 class ASTScope;
 class AvailabilityScope;
+class GeneratedSourceInfo;
 class PersistentParserState;
 struct SourceFileExtras;
 class Token;
@@ -100,6 +102,9 @@ public:
 
     /// Validate the new SwiftSyntax parser diagnostics.
     ValidateNewParserDiagnostics = 1 << 6,
+
+    /// Consider every #if ... #endif region active.
+    PoundIfAllActive = 1 << 7,
   };
   using ParsingOptions = OptionSet<ParsingFlags>;
 
@@ -686,10 +691,12 @@ public:
   }
 
   SWIFT_DEBUG_DUMP;
-  void dump(raw_ostream &os, bool parseIfNeeded = false) const;
+  void
+  dump(raw_ostream &os,
+       ASTDumpMemberLoading memberLoading = ASTDumpMemberLoading::None) const;
 
   /// Dumps this source file's AST in JSON format to the given output stream.
-  void dumpJSON(raw_ostream &os) const;
+  void dumpJSON(raw_ostream &os, ASTDumpMemberLoading memberLoading) const;
 
   /// Pretty-print the contents of this source file.
   ///
@@ -758,7 +765,7 @@ public:
 
   /// Get the root availability scope for the file. The root scope may be
   /// null if the scope tree has not been built yet. Use
-  /// TypeChecker::getOrBuildAvailabilityScope() to get a built
+  /// `AvailabilityScope::getOrBuildForSourceFile()` to get a built
   /// root of the tree.
   AvailabilityScope *getAvailabilityScope() const;
 
@@ -818,6 +825,22 @@ public:
   bool isAsyncTopLevelSourceFile() const;
 
   ArrayRef<TypeDecl *> getLocalTypeDecls() const;
+
+  /// Uniquely identifies a source file without exposing its full file path.
+  ///
+  /// A valid file ID should always be of the format "modulename/filename.swift"
+  struct FileIDStr {
+    StringRef moduleName;
+    StringRef fileName;
+
+    /// Parse a string as a SourceFile::FileIDStr.
+    ///
+    /// Returns \c nullopt if \param fileID could not be parsed.
+    static std::optional<FileIDStr> parse(StringRef fileID);
+
+    /// Whether this SourceFile::FileID matches that of the given \param file.
+    bool matches(const SourceFile *file) const;
+  };
 
 private:
 

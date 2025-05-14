@@ -29,6 +29,8 @@ from swift_build_support.swift_build_support.host_specific_configuration \
     import HostSpecificConfiguration
 from swift_build_support.swift_build_support.productpipeline_list_builder \
     import ProductPipelineListBuilder
+from swift_build_support.swift_build_support.products.ninja \
+    import get_ninja_path
 from swift_build_support.swift_build_support.targets \
     import StdlibDeploymentTarget
 from swift_build_support.swift_build_support.utils import clear_log_time
@@ -52,24 +54,13 @@ class BuildScriptInvocation(object):
 
         clear_log_time()
 
+        self.toolchain.ninja = get_ninja_path(self.toolchain,
+                                              self.args,
+                                              self.workspace)
+
     @property
     def install_all(self):
         return self.args.install_all or self.args.infer_dependencies
-
-    def build_ninja(self):
-        if not os.path.exists(self.workspace.source_dir("ninja")):
-            fatal_error(
-                "can't find source directory for ninja "
-                "(tried %s)" % (self.workspace.source_dir("ninja")))
-
-        ninja_build = products.Ninja.new_builder(
-            args=self.args,
-            toolchain=self.toolchain,
-            workspace=self.workspace,
-            host=StdlibDeploymentTarget.get_target_for_name(
-                self.args.host_target))
-        ninja_build.build()
-        self.toolchain.ninja = ninja_build.ninja_bin_path
 
     def convert_to_impl_arguments(self):
         """convert_to_impl_arguments() -> (env, args)
@@ -552,6 +543,11 @@ class BuildScriptInvocation(object):
                 impl_env["HOST_VARIABLE_{}__{}".format(
                     host_target.replace("-", "_"), name)] = value
 
+        if args.verbose_build:
+            # This ensures all CMake builds (including the ones
+            # called with `ExternalProject`) have verbose output
+            impl_env["VERBOSE"] = "1"
+
         return (impl_env, impl_args)
 
     def compute_host_specific_variables(self):
@@ -676,6 +672,14 @@ class BuildScriptInvocation(object):
                             is_enabled=self.args.build_wasmstdlib)
         builder.add_product(products.WasmThreadsLLVMRuntimeLibs,
                             is_enabled=self.args.build_wasmstdlib)
+
+        builder.add_product(products.SwiftTestingMacros,
+                            is_enabled=self.args.build_swift_testing_macros)
+        builder.add_product(products.SwiftTesting,
+                            is_enabled=self.args.build_swift_testing)
+        builder.add_product(products.SwiftPM,
+                            is_enabled=self.args.build_swiftpm)
+
         builder.add_product(products.WasmKit,
                             is_enabled=self.args.build_wasmkit)
         builder.add_product(products.WasmStdlib,
@@ -685,12 +689,6 @@ class BuildScriptInvocation(object):
         builder.add_product(products.WasmSwiftSDK,
                             is_enabled=self.args.build_wasmstdlib)
 
-        builder.add_product(products.SwiftTestingMacros,
-                            is_enabled=self.args.build_swift_testing_macros)
-        builder.add_product(products.SwiftTesting,
-                            is_enabled=self.args.build_swift_testing)
-        builder.add_product(products.SwiftPM,
-                            is_enabled=self.args.build_swiftpm)
         builder.add_product(products.SwiftFoundationTests,
                             is_enabled=self.args.build_foundation)
         builder.add_product(products.FoundationTests,

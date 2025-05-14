@@ -2809,6 +2809,7 @@ void swift::visitAccessedAddress(SILInstruction *I,
   case SILInstructionKind::BeginBorrowInst:
   case SILInstructionKind::BeginCOWMutationInst:
   case SILInstructionKind::EndCOWMutationInst:
+  case SILInstructionKind::EndCOWMutationAddrInst:
   case SILInstructionKind::BeginUnpairedAccessInst:
   case SILInstructionKind::BindMemoryInst:
   case SILInstructionKind::RebindMemoryInst:
@@ -2829,6 +2830,8 @@ void swift::visitAccessedAddress(SILInstruction *I,
   case SILInstructionKind::EndLifetimeInst:
   case SILInstructionKind::ExistentialMetatypeInst:
   case SILInstructionKind::FixLifetimeInst:
+  case SILInstructionKind::MarkDependenceInst:
+  case SILInstructionKind::MarkDependenceAddrInst:
   case SILInstructionKind::GlobalAddrInst:
   case SILInstructionKind::HasSymbolInst:
   case SILInstructionKind::HopToExecutorInst:

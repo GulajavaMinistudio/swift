@@ -317,7 +317,7 @@ static ManagedValue emitCastToReferenceType(SILGenFunction &SGF,
   // If the argument is existential, open it.
   if (argTy->isClassExistentialType()) {
     auto openedTy =
-        OpenedArchetypeType::get(argTy->getCanonicalType());
+        ExistentialArchetypeType::get(argTy->getCanonicalType());
     SILType loweredOpenedTy = SGF.getLoweredLoadableType(openedTy);
     arg = SGF.B.createOpenExistentialRef(loc, arg, loweredOpenedTy);
   }
@@ -477,6 +477,29 @@ static ManagedValue emitBuiltinUnprotectedAddressOf(SILGenFunction &SGF,
                                       /*stackProtected=*/ false);
 }
 
+// Like `tryEmitAddressableParameterAsAddress`, but also handles struct element projections.
+static SILValue emitAddressOf(Expr *e, SILGenFunction &SGF, SILLocation loc) {
+
+  if (auto *memberRef = dyn_cast<MemberRefExpr>(e)) {
+    VarDecl *fieldDecl = dyn_cast<VarDecl>(memberRef->getDecl().getDecl());
+    if (!fieldDecl)
+      return SILValue();
+    SILValue addr = emitAddressOf(memberRef->getBase(), SGF, loc);
+    if (!addr)
+      return SILValue();
+    if (addr->getType().getStructOrBoundGenericStruct() != fieldDecl->getDeclContext())
+      return SILValue();
+    return SGF.B.createStructElementAddr(loc, addr, fieldDecl);
+  }
+
+  if (auto addressableAddr = SGF.tryEmitAddressableParameterAsAddress(
+                                                      ArgumentSource(e),
+                                                      ValueOwnership::Shared)) {
+    return addressableAddr.getValue();
+  }
+  return SILValue();
+}
+
 /// Specialized emitter for Builtin.addressOfBorrow.
 static ManagedValue emitBuiltinAddressOfBorrowBuiltins(SILGenFunction &SGF,
                                                SILLocation loc,
@@ -491,15 +514,11 @@ static ManagedValue emitBuiltinAddressOfBorrowBuiltins(SILGenFunction &SGF,
 
   auto argument = (*argsOrError)[0];
 
-  SILValue addr;
   // Try to borrow the argument at +0 indirect.
   // If the argument is a reference to a borrowed addressable parameter, then
   // use that parameter's stable address.
-  if (auto addressableAddr = SGF.tryEmitAddressableParameterAsAddress(
-                                                      ArgumentSource(argument),
-                                                      ValueOwnership::Shared)) {
-    addr = addressableAddr.getValue();
-  } else {
+  SILValue addr = emitAddressOf(argument, SGF, loc);
+  if (!addr) {
     // We otherwise only support the builtin applied to values that
     // are naturally emitted borrowed in memory. (But it would probably be good
     // to phase this out since it's not really well-defined how long
@@ -873,7 +892,7 @@ static ManagedValue emitBuiltinCastToBridgeObject(SILGenFunction &SGF,
   
   // If the argument is existential, open it.
   if (sourceType->isClassExistentialType()) {
-    auto openedTy = OpenedArchetypeType::get(sourceType->getCanonicalType());
+    auto openedTy = ExistentialArchetypeType::get(sourceType->getCanonicalType());
     SILType loweredOpenedTy = SGF.getLoweredLoadableType(openedTy);
     ref = SGF.B.createOpenExistentialRef(loc, ref, loweredOpenedTy);
   }
@@ -1636,6 +1655,14 @@ static ManagedValue emitCreateAsyncTask(SILGenFunction &SGF, SILLocation loc,
     }
   }();
 
+  ManagedValue taskName = [&] {
+    if (options & CreateTaskOptions::OptionalEverything) {
+      return nextArg().getAsSingleValue(SGF);
+    } else {
+     return emitOptionalNone(ctx.TheRawPointerType);
+    }
+  }();
+
   auto functionValue = [&] {
     // No reabstraction required.
     if (options & CreateTaskOptions::Discarding) {
@@ -1659,8 +1686,7 @@ static ManagedValue emitCreateAsyncTask(SILGenFunction &SGF, SILLocation loc,
             .build();
 
     auto genericSig = subs.getGenericSignature().getCanonicalSignature();
-    auto genericResult = GenericTypeParamType::getType(/*depth*/ 0, /*index*/ 0,
-                                                       SGF.getASTContext());
+    auto genericResult = SGF.getASTContext().TheSelfType;
 
     // <T> () async throws -> T
     CanType functionTy =
@@ -1693,6 +1719,7 @@ static ManagedValue emitCreateAsyncTask(SILGenFunction &SGF, SILLocation loc,
     taskGroup.getUnmanagedValue(),
     taskExecutorDeprecated.getUnmanagedValue(),
     taskExecutorConsuming.forward(SGF),
+    taskName.forward(SGF),
     functionValue.forward(SGF)
   };
 
@@ -2088,6 +2115,26 @@ static ManagedValue emitBuiltinAddressOfRawLayout(SILGenFunction &SGF,
   return ManagedValue::forObjectRValueWithoutOwnership(bi);
 }
 
+static ManagedValue emitBuiltinZeroInitializer(SILGenFunction &SGF,
+                                               SILLocation loc,
+                                               SubstitutionMap subs,
+                                               ArrayRef<ManagedValue> args,
+                                               SGFContext C) {
+  auto valueType = subs.getReplacementTypes()[0]->getCanonicalType();
+  auto &valueTL = SGF.getTypeLowering(valueType);
+  auto loweredValueTy = valueTL.getLoweredType().getObjectType();
+
+  if (valueTL.isLoadable() ||
+      !SGF.F.getConventions().useLoweredAddresses()) {
+    auto value = SGF.B.createZeroInitValue(loc, loweredValueTy);
+    return SGF.emitManagedRValueWithCleanup(value, valueTL);
+  }
+
+  SILValue valueAddr = SGF.getBufferForExprResult(loc, loweredValueTy, C);
+  SGF.B.createZeroInitAddr(loc, valueAddr);
+  return SGF.manageBufferForExprResult(valueAddr, valueTL, C);
+}
+
 static ManagedValue emitBuiltinEmplace(SILGenFunction &SGF,
                                        SILLocation loc,
                                        SubstitutionMap subs,
@@ -2101,6 +2148,7 @@ static ManagedValue emitBuiltinEmplace(SILGenFunction &SGF,
                                              resultASTTy);
   bool didEmitInto;
   Initialization *dest;
+  TemporaryInitialization *destTemporary = nullptr;
   std::unique_ptr<Initialization> destOwner;
   
   // Use the context destination if available.
@@ -2110,8 +2158,9 @@ static ManagedValue emitBuiltinEmplace(SILGenFunction &SGF,
     dest = C.getEmitInto();
   } else {
     didEmitInto = false;
-    destOwner = SGF.emitTemporary(loc, loweredBufferTy);
-    dest = destOwner.get();
+    auto destTempOwner = SGF.emitTemporary(loc, loweredBufferTy);
+    dest = destTemporary = destTempOwner.get();
+    destOwner = std::move(destTempOwner);
   }
   
   auto buffer = dest->getAddressForInPlaceInitialization(SGF, loc);
@@ -2120,15 +2169,7 @@ static ManagedValue emitBuiltinEmplace(SILGenFunction &SGF,
   // Aside from providing a modicum of predictability if the memory isn't
   // actually initialized, this also serves to communicate to DI that the memory
   // is considered initialized from this point.
-  auto zeroInit = getBuiltinValueDecl(Ctx,
-                                      Ctx.getIdentifier("zeroInitializer"));
-  SGF.B.createBuiltin(loc, zeroInit->getBaseIdentifier(),
-                      SILType::getEmptyTupleType(Ctx),
-                      SubstitutionMap::get(zeroInit->getInnermostDeclContext()
-                                               ->getGenericSignatureOfContext(),
-                                           {resultASTTy},
-                                           LookUpConformanceInModule()),
-                      buffer);
+  SGF.B.createZeroInitAddr(loc, buffer);
 
   SILValue bufferPtr = SGF.B.createAddressToPointer(loc, buffer,
         SILType::getPrimitiveObjectType(SGF.getASTContext().TheRawPointerType),
@@ -2166,16 +2207,19 @@ static ManagedValue emitBuiltinEmplace(SILGenFunction &SGF,
     return ManagedValue::forInContext();
   }
   
+  assert(destTemporary
+         && "didn't emit into context but also didn't emit into temporary?");
+  auto result = destTemporary->getManagedAddress();
   auto resultTy = SGF.getLoweredType(subs.getReplacementTypes()[0]);
   
   // If the result is naturally address-only, then we can adopt the stack slot
   // as the value directly.
   if (resultTy == loweredBufferTy.getLoweredType().getAddressType()) {
-    return SGF.emitManagedRValueWithCleanup(buffer);
+    return result;
   }
   
   // If the result is loadable, load it.
-  return SGF.B.createLoadTake(loc, ManagedValue::forLValue(buffer));
+  return SGF.B.createLoadTake(loc, result);
 }
 
 std::optional<SpecializedEmitter>

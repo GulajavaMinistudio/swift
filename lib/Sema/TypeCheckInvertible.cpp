@@ -17,11 +17,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "TypeCheckInvertible.h"
+#include "TypeChecker.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/Basic/Assertions.h"
-#include "TypeChecker.h"
+#include "swift/ClangImporter/ClangImporter.h"
 
 using namespace swift;
 
@@ -38,6 +39,7 @@ static void addConformanceFixIt(const NominalTypeDecl *nominal,
     text.append(": ");
     if (inverse) text.append("~");
     text.append(getProtocolName(proto));
+    text.append(" ");
     diag.fixItInsert(fixItLoc, text);
   } else {
     auto fixItLoc = nominal->getInherited().getEndLoc();
@@ -115,7 +117,7 @@ static void checkInvertibleConformanceCommon(DeclContext *dc,
   assert(!conformance.isInvalid());
 
   const auto kp = getKnownProtocolKind(ip);
-  assert(conformance.getRequirement()->isSpecificProtocol(kp));
+  assert(conformance.getProtocol()->isSpecificProtocol(kp));
 
   auto *nominalDecl = dc->getSelfNominalTypeDecl();
   assert(isa<StructDecl>(nominalDecl) ||
@@ -315,6 +317,9 @@ bool StorageVisitor::visit(NominalTypeDecl *nominal, DeclContext *dc) {
             dyn_cast_or_null<clang::CXXRecordDecl>(nominal->getClangDecl())) {
       for (auto cxxBase : cxxRecordDecl->bases()) {
         if (auto cxxBaseDecl = cxxBase.getType()->getAsCXXRecordDecl()) {
+          if (importer::isSymbolicCircularBase(cxxRecordDecl, cxxBaseDecl))
+            // Skip circular bases to avoid unbounded recursion
+            continue;
           auto clangModuleLoader = dc->getASTContext().getClangModuleLoader();
           auto importedDecl =
               clangModuleLoader->importDeclDirectly(cxxBaseDecl);
