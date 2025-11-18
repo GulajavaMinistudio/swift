@@ -1,4 +1,6 @@
-# Captures in a `@Sendable` closure
+# Captures in a `@Sendable` closure (SendableClosureCaptures)
+
+## Overview
 
 `@Sendable` closures can be called multiple times concurrently, so any captured values must also be safe to access concurrently. To prevent data races, the compiler prevents capturing mutable values in a `@Sendable` closure.
 
@@ -12,7 +14,7 @@ func callConcurrently(
 func capture() {
   var result = 0
   result += 1
-  
+
   callConcurrently {
     print(result)
   }
@@ -53,7 +55,7 @@ If the type of the capture is `Sendable` and the closure only needs the value of
 func capture() {
   var result = 0
   result += 1
-  
+
   callConcurrently { [result] in
     print(result)
   }
@@ -80,7 +82,7 @@ The compiler diagnoses the capture of `model` in a `@Sendable` closure:
 | func capture(model: MyModel) async {
 |   callConcurrently {
 |     model.log()
-|     `- error: capture of 'model' with non-sendable type 'MyModel' in a '@Sendable' closure
+|     `- error: capture of 'model' with non-Sendable type 'MyModel' in a '@Sendable' closure
 |   }
 | }
 ```

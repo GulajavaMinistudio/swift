@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift.org open source project
 //
-// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Copyright (c) 2014 - 2025 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See https://swift.org/LICENSE.txt for license information
@@ -348,7 +348,7 @@ Lexer::State Lexer::getStateForBeginningOfTokenLoc(SourceLoc Loc) const {
     }
     break;
   }
-  return State(SourceLoc(llvm::SMLoc::getFromPointer(Ptr)));
+  return State(SourceLoc::getFromPointer(Ptr));
 }
 
 //===----------------------------------------------------------------------===//
@@ -660,8 +660,8 @@ static bool advanceIfValidContinuationOfOperator(char const *&ptr,
 
 /// Returns true if the given string is entirely whitespace (considering only
 /// those whitespace code points permitted in raw identifiers).
-static bool isEntirelyWhitespace(StringRef string) {
-  if (string.empty()) return false;
+static bool isEscapedIdentifierEntirelyWhitespace(StringRef string) {
+  if (string.empty()) return true;
   char const *p = string.data(), *end = string.end();
   if (!advanceIf(p, end, isPermittedRawIdentifierWhitespace))
     return false;
@@ -703,7 +703,7 @@ bool Lexer::isValidAsEscapedIdentifier(StringRef string) {
     ;
   if (p != end)
     return false;
-  return !isEntirelyWhitespace(string);
+  return !isEscapedIdentifierEntirelyWhitespace(string);
 }
 
 /// Determines if the given string is a valid operator identifier,
@@ -819,9 +819,12 @@ static bool isLeftBound(const char *tokBegin, const char *bufferBegin) {
 static bool isRightBound(const char *tokEnd, bool isLeftBound,
                          const char *codeCompletionPtr) {
   switch (*tokEnd) {
+  case ':':     // ':' is an expression separator; '::' is not
+    return tokEnd[1] == ':';
+
   case ' ': case '\r': case '\n': case '\t': // whitespace
   case ')': case ']': case '}':              // closing delimiters
-  case ',': case ';': case ':':              // expression separators
+  case ',': case ';':                        // expression separators
     return false;
 
   case '\0':
@@ -2315,7 +2318,8 @@ void Lexer::lexEscapedIdentifier() {
   // If we have the terminating "`", it's an escaped/raw identifier, unless it
   // contained only operator characters or was entirely whitespace.
   StringRef IdStr(IdentifierStart, CurPtr - IdentifierStart);
-  if (*CurPtr == '`' && !isOperator(IdStr) && !isEntirelyWhitespace(IdStr)) {
+  if (*CurPtr == '`' && !isOperator(IdStr) &&
+      !isEscapedIdentifierEntirelyWhitespace(IdStr)) {
     ++CurPtr;
     formEscapedIdentifierToken(Quote);
     return;
@@ -2761,8 +2765,14 @@ void Lexer::lexImpl() {
 
   case ',': return formToken(tok::comma, TokStart);
   case ';': return formToken(tok::semi, TokStart);
-  case ':': return formToken(tok::colon, TokStart);
   case '\\': return formToken(tok::backslash, TokStart);
+
+  case ':':
+    if (CurPtr[0] == ':') {
+      CurPtr++;
+      return formToken(tok::colon_colon, TokStart);
+    }
+    return formToken(tok::colon, TokStart);
 
   case '#': {
     // Try lex a raw string literal.

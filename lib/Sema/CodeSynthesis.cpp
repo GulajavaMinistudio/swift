@@ -230,10 +230,12 @@ static ParamDecl *createMemberwiseInitParameter(DeclContext *DC,
     // memberwise initializer will be in terms of the backing storage
     // type.
     if (var->isPropertyMemberwiseInitializedWithWrappedType()) {
-      varInterfaceType = var->getPropertyWrapperInitValueInterfaceType();
+      if (auto initTy = var->getPropertyWrapperInitValueInterfaceType()) {
+        varInterfaceType = initTy;
 
-      auto initInfo = var->getPropertyWrapperInitializerInfo();
-      isAutoClosure = initInfo.getWrappedValuePlaceholder()->isAutoClosure();
+        auto initInfo = var->getPropertyWrapperInitializerInfo();
+        isAutoClosure = initInfo.getWrappedValuePlaceholder()->isAutoClosure();
+      }
     } else {
       varInterfaceType = backingPropertyType;
     }
@@ -266,9 +268,9 @@ static ParamDecl *createMemberwiseInitParameter(DeclContext *DC,
   // Attach a result builder attribute if needed.
   if (resultBuilderType) {
     auto typeExpr = TypeExpr::createImplicit(resultBuilderType, ctx);
-    auto attr =
-        CustomAttr::create(ctx, SourceLoc(), typeExpr, /*implicit=*/true);
-    arg->getAttrs().add(attr);
+    auto attr = CustomAttr::create(ctx, SourceLoc(), typeExpr, /*owner*/ arg,
+                                   /*implicit=*/true);
+    arg->addAttribute(attr);
   }
 
   maybeAddMemberwiseDefaultArg(arg, var, ctx);
@@ -440,7 +442,7 @@ static ConstructorDecl *createImplicitConstructor(NominalTypeDecl *decl,
   // 'override' attribute.
   if (auto classDecl = dyn_cast<ClassDecl>(decl)) {
     if (classDecl->getSuperclass())
-      ctor->getAttrs().add(new (ctx) OverrideAttr(/*IsImplicit=*/true));
+      ctor->addAttribute(new (ctx) OverrideAttr(/*IsImplicit=*/true));
   }
 
   return ctor;
@@ -587,25 +589,32 @@ configureInheritedDesignatedInitAttributes(ClassDecl *classDecl,
     if (superclassCtor->getAttrs().hasAttribute<InlinableAttr>()) {
       // Inherit the @inlinable attribute.
       auto *clonedAttr = new (ctx) InlinableAttr(/*implicit=*/true);
-      ctor->getAttrs().add(clonedAttr);
-
+      ctor->addAttribute(clonedAttr);
+    } else if (superclassCtor->getAttrs().hasAttribute<InlineAttr>() &&
+               superclassCtor->getAttrs().getAttribute<InlineAttr>()->getKind()
+               == InlineKind::Always) {
+      // Inherit the @inline(always) attribute.
+      auto *clonedAttr = new (ctx) InlineAttr(SourceLoc(), SourceRange(),
+                                              InlineKind::Always,
+                                              /*implicit=*/true);
+      ctor->addAttribute(clonedAttr);
     } else if (access == AccessLevel::Internal && !superclassCtor->isDynamic()){
       // Inherit the @usableFromInline attribute.
       auto *clonedAttr = new (ctx) UsableFromInlineAttr(/*implicit=*/true);
-      ctor->getAttrs().add(clonedAttr);
+      ctor->addAttribute(clonedAttr);
     }
   }
 
   // Inherit the @discardableResult attribute.
   if (superclassCtor->getAttrs().hasAttribute<DiscardableResultAttr>()) {
     auto *clonedAttr = new (ctx) DiscardableResultAttr(/*implicit=*/true);
-    ctor->getAttrs().add(clonedAttr);
+    ctor->addAttribute(clonedAttr);
   }
 
   // Inherit the rethrows attribute.
   if (superclassCtor->getAttrs().hasAttribute<RethrowsAttr>()) {
     auto *clonedAttr = new (ctx) RethrowsAttr(/*implicit=*/true);
-    ctor->getAttrs().add(clonedAttr);
+    ctor->addAttribute(clonedAttr);
   }
 
   // If the superclass has its own availability, make sure the synthesized
@@ -628,9 +637,9 @@ configureInheritedDesignatedInitAttributes(ClassDecl *classDecl,
   ctor->setOverriddenDecl(superclassCtor);
 
   if (superclassCtor->isRequired())
-    ctor->getAttrs().add(new (ctx) RequiredAttr(/*IsImplicit=*/false));
+    ctor->addAttribute(new (ctx) RequiredAttr(/*IsImplicit=*/false));
   else
-    ctor->getAttrs().add(new (ctx) OverrideAttr(/*IsImplicit=*/false));
+    ctor->addAttribute(new (ctx) OverrideAttr(/*IsImplicit=*/false));
 
   // If the superclass constructor is @objc but the subclass constructor is
   // not representable in Objective-C, add @nonobjc implicitly.
@@ -639,7 +648,7 @@ configureInheritedDesignatedInitAttributes(ClassDecl *classDecl,
   if (superclassCtor->isObjC() &&
       !isRepresentableInLanguage(ctor, ObjCReason::MemberOfObjCSubclass,
                                  asyncConvention, errorConvention))
-    ctor->getAttrs().add(new (ctx) NonObjCAttr(/*isImplicit=*/true));
+    ctor->addAttribute(new (ctx) NonObjCAttr(/*isImplicit=*/true));
 }
 
 static std::pair<BraceStmt *, bool>
@@ -683,7 +692,7 @@ synthesizeDesignatedInitOverride(AbstractFunctionDecl *fn, void *context) {
     type = funcTy->getResult();
   superclassCallExpr->setType(type);
   if (auto thrownInterfaceType = ctor->getEffectiveThrownErrorType()) {
-    Type superThrownType = ctor->mapTypeIntoContext(*thrownInterfaceType);
+    Type superThrownType = ctor->mapTypeIntoEnvironment(*thrownInterfaceType);
     superclassCallExpr->setThrows(
         ThrownErrorDestination::forMatchingContextType(superThrownType));
   } else {
@@ -777,7 +786,7 @@ createDesignatedInitOverride(ClassDecl *classDecl,
         superclassCtorSig.getRequirements(),
         [&](Type type) -> Type {
           auto substType = type.subst(subMap);
-          return GenericEnvironment::mapTypeIntoContext(genericEnv, substType);
+          return GenericEnvironment::mapTypeIntoEnvironment(genericEnv, substType);
         });
     if (checkResult != CheckRequirementsResult::Success)
       return nullptr;
@@ -1364,6 +1373,8 @@ evaluator::SideEffect
 ResolveImplicitMemberRequest::evaluate(Evaluator &evaluator,
                                        NominalTypeDecl *target,
                                        ImplicitMemberAction action) const {
+  ASSERT(!isa<ProtocolDecl>(target));
+
   // FIXME: This entire request is a layering violation made of smaller,
   // finickier layering violations. See rdar://56844567
 
@@ -1438,20 +1449,6 @@ ResolveImplicitMemberRequest::evaluate(Evaluator &evaluator,
     TypeChecker::addImplicitConstructors(target);
     auto *decodableProto = Context.getProtocol(KnownProtocolKind::Decodable);
     (void)evaluateTargetConformanceTo(decodableProto);
-  }
-    break;
-  case ImplicitMemberAction::ResolveDistributedActor:
-  case ImplicitMemberAction::ResolveDistributedActorSystem:
-  case ImplicitMemberAction::ResolveDistributedActorID: {
-    // init(transport:) and init(resolve:using:) may be synthesized as part of
-    // derived conformance to the DistributedActor protocol.
-    // If the target should conform to the DistributedActor protocol, check the
-    // conformance here to attempt synthesis.
-    // FIXME(distributed): invoke the requirement adding explicitly here
-     TypeChecker::addImplicitConstructors(target);
-    auto *distributedActorProto =
-        Context.getProtocol(KnownProtocolKind::DistributedActor);
-    (void)evaluateTargetConformanceTo(distributedActorProto);
     break;
   }
   }
@@ -1779,7 +1776,7 @@ bool swift::addNonIsolatedToSynthesized(NominalTypeDecl *nominal,
     return false;
 
   ASTContext &ctx = nominal->getASTContext();
-  value->getAttrs().add(NonisolatedAttr::createImplicit(ctx));
+  value->addAttribute(NonisolatedAttr::createImplicit(ctx));
   return true;
 }
 
@@ -1792,5 +1789,5 @@ void swift::applyInferredSPIAccessControlAttr(Decl *decl,
 
   auto spiAttr =
       SPIAccessControlAttr::create(ctx, SourceLoc(), SourceRange(), spiGroups);
-  decl->getAttrs().add(spiAttr);
+  decl->addAttribute(spiAttr);
 }

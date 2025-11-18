@@ -17,7 +17,7 @@
 #include "swift/SIL/DebugUtils.h"
 #include "swift/SIL/MemAccessUtils.h"
 #include "swift/SIL/NodeBits.h"
-#include "swift/SIL/OSSALifetimeCompletion.h"
+#include "swift/SIL/OSSACompleteLifetime.h"
 #include "swift/SIL/OwnershipUtils.h"
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/SILBasicBlock.h"
@@ -465,6 +465,7 @@ void DCE::markTerminatorArgsLive(SILBasicBlock *Pred,
 
   switch (Term->getTermKind()) {
   case TermKind::ReturnInst:
+  case TermKind::ReturnBorrowInst:
   case TermKind::ThrowInst:
   case TermKind::ThrowAddrInst:
   case TermKind::UnwindInst:
@@ -576,6 +577,7 @@ void DCE::propagateLiveness(SILInstruction *I) {
     return;
 
   case TermKind::ReturnInst:
+  case TermKind::ReturnBorrowInst:
   case TermKind::ThrowInst:
   case TermKind::CondBranchInst:
   case TermKind::SwitchEnumInst:
@@ -835,12 +837,12 @@ bool DCE::removeDead() {
     }
   }
 
-  OSSALifetimeCompletion completion(F, DT, *deadEndBlocks);
+  OSSACompleteLifetime completion(F, DT, *deadEndBlocks);
   for (auto value : valuesToComplete) {
     if (!value.has_value())
       continue;
     completion.completeOSSALifetime(*value,
-                                    OSSALifetimeCompletion::Boundary::Liveness);
+                                    OSSACompleteLifetime::Boundary::Liveness);
   }
 
   return Changed;

@@ -1,10 +1,14 @@
 // RUN: %target-swift-frontend -print-supported-features | %FileCheck %s
 
 // CHECK: "features": {
+// CHECK-NEXT:   "optional": [
+// CHECK: { "name": "StrictMemorySafety", "migratable": true, "categories": ["StrictMemorySafety"], "flag_name": "-strict-memory-safety" },
+// CHECK: { "name": "LibraryEvolution", "flag_name": "-enable-library-evolution" }
+// CHECK-NEXT: ],
 // CHECK-NEXT:   "upcoming": [
-// CHECK:     { "name": "{{.*}}"{{, "migratable": true}}, "enabled_in": "{{.*}}" }
+// CHECK:     { "name": "InferIsolatedConformances", "migratable": true, "categories": ["IsolatedConformances"], "enabled_in": "7" },
 // CHECK:   ],
-// CHECK-NEXT:   "experimental": [
-// CHECK:     { "name": "{{.*}}" }
+// CHECK:   "experimental": [
+// CHECK:     { "name": "BuiltinModule" }
 // CHECK:   ]
 // CHECK: }

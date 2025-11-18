@@ -180,9 +180,28 @@ ParserResult<TypeRepr> Parser::parseTypeSimple(
     tildeLoc = consumeToken();
   }
 
+  auto diagnoseAndRecover = [&]() -> ParserResult<TypeRepr> {
+    {
+      auto diag = diagnose(Tok, MessageID);
+      // If the next token is closing or separating, the type was likely
+      // forgotten
+      if (Tok.isAny(tok::r_paren, tok::r_brace, tok::r_square, tok::arrow,
+                    tok::equal, tok::comma, tok::semi))
+        diag.fixItInsert(getEndOfPreviousLoc(), " <#type#>");
+    }
+    if (Tok.isKeyword() && !Tok.isAtStartOfLine()) {
+      ty = makeParserErrorResult(ErrorTypeRepr::create(Context, Tok.getLoc()));
+      consumeToken();
+      return ty;
+    }
+    checkForInputIncomplete();
+    return nullptr;
+  };
+
   switch (Tok.getKind()) {
   case tok::kw_Self:
   case tok::identifier:
+  case tok::colon_colon:
     // In SIL files (not just when parsing SIL types), accept the
     // Pack{} syntax for spelling variadic type packs.
     if (isInSILMode() && Tok.isContextualKeyword("Pack") &&
@@ -225,7 +244,10 @@ ParserResult<TypeRepr> Parser::parseTypeSimple(
     }
     break;
   case tok::kw_Any:
-    ty = parseAnyType();
+    if (peekToken().is(tok::colon_colon))
+      ty = parseTypeIdentifier(/*base=*/nullptr);
+    else
+      ty = parseAnyType();
     break;
   case tok::l_paren:
     ty = parseTypeTupleBody();
@@ -245,29 +267,26 @@ ParserResult<TypeRepr> Parser::parseTypeSimple(
     break;
   }
   case tok::kw__:
-    ty = makeParserResult(new (Context) PlaceholderTypeRepr(consumeToken()));
+    if (peekToken().is(tok::colon_colon))
+      ty = parseTypeIdentifier(/*base=*/nullptr);
+    else
+      ty = makeParserResult(new (Context) PlaceholderTypeRepr(consumeToken()));
     break;
   case tok::kw_protocol:
     if (startsWithLess(peekToken())) {
       ty = parseOldStyleProtocolComposition();
       break;
     }
-    LLVM_FALLTHROUGH;
+    return diagnoseAndRecover();
+  case tok::kw_self:
+  case tok::kw_super:
+    if (peekToken().is(tok::colon_colon)) {
+      ty = parseTypeIdentifier(/*base=*/nullptr);
+      break;
+    }
+    return diagnoseAndRecover();
   default:
-    {
-      auto diag = diagnose(Tok, MessageID);
-      // If the next token is closing or separating, the type was likely forgotten
-      if (Tok.isAny(tok::r_paren, tok::r_brace, tok::r_square, tok::arrow,
-                    tok::equal, tok::comma, tok::semi))
-        diag.fixItInsert(getEndOfPreviousLoc(), " <#type#>");
-    }
-    if (Tok.isKeyword() && !Tok.isAtStartOfLine()) {
-      ty = makeParserErrorResult(ErrorTypeRepr::create(Context, Tok.getLoc()));
-      consumeToken();
-      return ty;
-    }
-    checkForInputIncomplete();
-    return nullptr;
+    return diagnoseAndRecover();
   }
 
   // '.X', '.Type', '.Protocol', '?', '!', '[]'.
@@ -742,6 +761,10 @@ ParserStatus Parser::parseGenericArguments(SmallVectorImpl<TypeRepr *> &Args,
       // Parse the comma, if the list continues.
       if (!consumeIf(tok::comma))
         break;
+      
+      // If the comma was a trailing comma, finish parsing the list of types
+      if (startsWithGreater(Tok))
+        break;
     }
   }
 
@@ -1161,7 +1184,7 @@ ParserResult<TypeRepr> Parser::parseTypeTupleBody() {
   SmallVector<TupleTypeReprElement, 8> ElementsR;
 
   ParserStatus Status = parseList(tok::r_paren, LPLoc, RPLoc,
-                                  /*AllowSepAfterLast=*/false,
+                                  /*AllowSepAfterLast=*/true,
                                   diag::expected_rparen_tuple_type_list,
                                   [&] () -> ParserStatus {
     TupleTypeReprElement element;
@@ -1314,17 +1337,15 @@ ParserResult<TypeRepr> Parser::parseTypeTupleBody() {
 }
 
 ParserResult<TypeRepr> Parser::parseTypeInlineArray(SourceLoc lSquare) {
-  ASSERT(Context.LangOpts.hasFeature(Feature::InlineArrayTypeSugar));
-
   ParserStatus status;
 
-  // 'isStartOfInlineArrayTypeBody' means we should at least have a type and 'x'
-  // to start with.
+  // 'isStartOfInlineArrayTypeBody' means we should at least have a type and
+  // 'of' to start with.
   auto count = parseTypeOrValue();
   auto *countTy = count.get();
   status |= count;
 
-  // 'x'
+  // 'of'
   consumeToken(tok::identifier);
 
   // Allow parsing a value for better recovery, Sema will diagnose any
@@ -1605,7 +1626,8 @@ bool Parser::canParseGenericArguments() {
     if (!canParseType())
       return false;
     // Parse the comma, if the list continues.
-  } while (consumeIf(tok::comma));
+    // This could be the trailing comma.
+  } while (consumeIf(tok::comma) && !startsWithGreater(Tok));
 
   if (!startsWithGreater(Tok)) {
     return false;
@@ -1819,19 +1841,16 @@ bool Parser::canParseType() {
 }
 
 bool Parser::canParseStartOfInlineArrayType() {
-  if (!Context.LangOpts.hasFeature(Feature::InlineArrayTypeSugar))
-    return false;
-
-  // We must have at least '[<type> x', which cannot be any other kind of
+  // We must have at least '[<type> of', which cannot be any other kind of
   // expression or type. We specifically look for any type, not just integers
-  // for better recovery in e.g cases where the user writes '[Int x 2]'. We
-  // only do type-scalar since variadics would be ambiguous e.g 'Int...x'.
+  // for better recovery in e.g cases where the user writes '[Int of 2]'. We
+  // only do type-scalar since variadics would be ambiguous e.g 'Int...of'.
   if (!canParseTypeScalar())
     return false;
 
   // For now we don't allow multi-line since that would require
   // disambiguation.
-  if (Tok.isAtStartOfLine() || !Tok.isContextualKeyword("x"))
+  if (Tok.isAtStartOfLine() || !Tok.isContextualKeyword("of"))
     return false;
 
   consumeToken();
@@ -1839,9 +1858,6 @@ bool Parser::canParseStartOfInlineArrayType() {
 }
 
 bool Parser::isStartOfInlineArrayTypeBody() {
-  if (!Context.LangOpts.hasFeature(Feature::InlineArrayTypeSugar))
-    return false;
-
   BacktrackingScope backtrack(*this);
   return canParseStartOfInlineArrayType();
 }
@@ -1851,7 +1867,7 @@ bool Parser::canParseCollectionType() {
     return false;
 
   // Check to see if we have an InlineArray sugar type.
-  if (Context.LangOpts.hasFeature(Feature::InlineArrayTypeSugar)) {
+  {
     CancellableBacktrackingScope backtrack(*this);
     if (canParseStartOfInlineArrayType()) {
       backtrack.cancelBacktrack();
@@ -1875,6 +1891,9 @@ bool Parser::canParseCollectionType() {
 }
 
 bool Parser::canParseTypeIdentifier() {
+  // Parse a module selector, if present.
+  parseModuleSelector();
+  
   // Parse an identifier.
   //
   // FIXME: We should expect e.g. 'X.var'. Almost any keyword is a valid member component.
@@ -1970,7 +1989,7 @@ bool Parser::canParseTypeTupleBody() {
           skipSingle();
         }
       }
-    } while (consumeIf(tok::comma));
+    } while (consumeIf(tok::comma) && Tok.isNot(tok::r_paren));
   }
   
   return consumeIf(tok::r_paren);

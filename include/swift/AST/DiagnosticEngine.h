@@ -48,6 +48,8 @@ namespace swift {
   class FuncDecl;
   class SourceManager;
   class SourceFile;
+  class ParamDecl;
+  class AnyPattern;
 
   /// Enumeration describing all of possible diagnostics.
   ///
@@ -55,7 +57,7 @@ namespace swift {
   /// this enumeration type that uniquely identifies it.
   enum class DiagID : uint32_t;
 
-  enum class DiagGroupID : uint16_t;
+  enum class DiagGroupID : uint32_t;
 
   /// Describes a diagnostic along with its argument types.
   ///
@@ -217,6 +219,9 @@ namespace swift {
     const class Decl *getDecl() const { return Decl; }
     DiagnosticBehavior getBehaviorLimit() const { return BehaviorLimit; }
 
+    /// Retrieve the stored SourceLoc, or the location of the stored Decl.
+    SourceLoc getLocOrDeclLoc() const;
+
     void setLoc(SourceLoc loc) { Loc = loc; }
     void setIsChildNote(bool isChildNote) { IsChildNote = isChildNote; }
     void setDecl(const class Decl *decl) { Decl = decl; }
@@ -279,6 +284,19 @@ namespace swift {
     }
   };
 
+  namespace detail {
+  /// Stores information for an active diagnostic that hasn't been emitted yet.
+  /// This includes both "in-flight" diagnostics as well as diagnostics queued
+  /// for a transaction.
+  struct ActiveDiagnostic {
+    Diagnostic Diag;
+    SmallVector<DiagnosticInfo, 2> WrappedDiagnostics;
+    SmallVector<std::vector<DiagnosticArgument>, 4> WrappedDiagnosticArgs;
+
+    ActiveDiagnostic(Diagnostic diag) : Diag(std::move(diag)) {}
+  };
+  } // namespace detail
+
   /// A diagnostic that has no input arguments, so it is trivially-destructable.
   using ZeroArgDiagnostic = Diag<>;
   
@@ -293,17 +311,24 @@ namespace swift {
     friend class DiagnosticEngine;
     
     DiagnosticEngine *Engine;
+    unsigned Idx;
     bool IsActive;
     
     /// Create a new in-flight diagnostic. 
     ///
     /// This constructor is only available to the DiagnosticEngine.
-    InFlightDiagnostic(DiagnosticEngine &Engine)
-      : Engine(&Engine), IsActive(true) { }
-    
+    InFlightDiagnostic(DiagnosticEngine &Engine, unsigned idx)
+        : Engine(&Engine), Idx(idx), IsActive(true) {}
+
     InFlightDiagnostic(const InFlightDiagnostic &) = delete;
     InFlightDiagnostic &operator=(const InFlightDiagnostic &) = delete;
     InFlightDiagnostic &operator=(InFlightDiagnostic &&) = delete;
+
+    /// Retrieve the underlying active diagnostic information.
+    detail::ActiveDiagnostic &getActiveDiag() const;
+
+    /// Retrieve the underlying diagnostic.
+    Diagnostic &getDiag() const { return getActiveDiag().Diag; }
 
   public:
     /// Create an active but unattached in-flight diagnostic.
@@ -311,15 +336,15 @@ namespace swift {
     /// The resulting diagnostic can be used as a dummy, accepting the
     /// syntax to add additional information to a diagnostic without
     /// actually emitting a diagnostic.
-    InFlightDiagnostic() : Engine(0), IsActive(true) { }
-    
+    InFlightDiagnostic() : Engine(0), Idx(0), IsActive(true) {}
+
     /// Transfer an in-flight diagnostic to a new object, which is
     /// typically used when returning in-flight diagnostics.
     InFlightDiagnostic(InFlightDiagnostic &&Other)
-      : Engine(Other.Engine), IsActive(Other.IsActive) {
+        : Engine(Other.Engine), Idx(Other.Idx), IsActive(Other.IsActive) {
       Other.IsActive = false;
     }
-    
+
     ~InFlightDiagnostic() {
       if (IsActive)
         flush();
@@ -401,6 +426,12 @@ namespace swift {
     /// until the next major language version.
     InFlightDiagnostic &warnUntilFutureSwiftVersion();
 
+    InFlightDiagnostic &warnUntilFutureSwiftVersionIf(bool shouldLimit) {
+      if (!shouldLimit)
+        return *this;
+      return warnUntilFutureSwiftVersion();
+    }
+
     /// Limit the diagnostic behavior to warning until the specified version.
     ///
     /// This helps stage in fixes for stricter diagnostics as warnings
@@ -474,9 +505,6 @@ namespace swift {
     InFlightDiagnostic &highlightChars(CharSourceRange Range);
 
     static const char *fixItStringFor(const FixItID id);
-
-    /// Get the best location where an 'import' fixit might be offered.
-    SourceLoc getBestAddImportFixItLoc(const Decl *Member) const;
 
     /// Add a token-based replacement fix-it to the currently-active
     /// diagnostic.
@@ -593,6 +621,9 @@ namespace swift {
 
     /// Don't emit any warnings
     bool suppressWarnings = false;
+
+    /// Don't emit any notes
+    bool suppressNotes = false;
     
     /// Don't emit any remarks
     bool suppressRemarks = false;
@@ -601,6 +632,14 @@ namespace swift {
     /// whether warnings belonging to the respective diagnostic groups should be
     /// escalated to errors.
     llvm::BitVector warningsAsErrors;
+
+    /// Track which diagnostic group (`DiagGroupID`) warnings should be ignored.
+    llvm::BitVector ignoredDiagnosticGroups;
+
+    /// For compiler-internal purposes only, track which diagnostics should
+    /// be ignored completely. For example, this is used by LLDB to
+    /// suppress certain errors in expression evaluation.
+    llvm::BitVector compilerIgnoredDiagnostics;
 
     /// Whether a fatal error has occurred
     bool fatalErrorOccurred = false;
@@ -611,9 +650,6 @@ namespace swift {
     /// Track the previous emitted Behavior, useful for notes
     DiagnosticBehavior previousBehavior = DiagnosticBehavior::Unspecified;
 
-    /// Track which diagnostics should be ignored.
-    llvm::BitVector ignoredDiagnostics;
-
     friend class DiagnosticStateRAII;
 
   public:
@@ -621,7 +657,10 @@ namespace swift {
 
     /// Figure out the Behavior for the given diagnostic, taking current
     /// state such as fatality into account.
-    DiagnosticBehavior determineBehavior(const Diagnostic &diag);
+    DiagnosticBehavior determineBehavior(const Diagnostic &diag) const;
+
+    /// Updates the diagnostic state for a diagnostic to emit.
+    void updateFor(DiagnosticBehavior behavior);
 
     bool hadAnyError() const { return anyErrorOccurred; }
     bool hasFatalErrorOccurred() const { return fatalErrorOccurred; }
@@ -637,6 +676,10 @@ namespace swift {
     void setSuppressWarnings(bool val) { suppressWarnings = val; }
     bool getSuppressWarnings() const { return suppressWarnings; }
     
+    /// Whether to skip emitting notes
+    void setSuppressNotes(bool val) { suppressNotes = val; }
+    bool getSuppressNotes() const { return suppressNotes; }
+
     /// Whether to skip emitting remarks
     void setSuppressRemarks(bool val) { suppressRemarks = val; }
     bool getSuppressRemarks() const { return suppressRemarks; }
@@ -649,7 +692,7 @@ namespace swift {
 
     /// Returns a Boolean value indicating whether warnings belonging to the
     /// diagnostic group identified by `id` should be escalated to errors.
-    bool getWarningsAsErrorsForDiagGroupID(DiagGroupID id) {
+    bool getWarningsAsErrorsForDiagGroupID(DiagGroupID id) const {
       return warningsAsErrors[(unsigned)id];
     }
 
@@ -670,20 +713,36 @@ namespace swift {
       fatalErrorOccurred = false;
     }
 
-    /// Set whether a diagnostic should be ignored.
-    void setIgnoredDiagnostic(DiagID id, bool ignored) {
-      ignoredDiagnostics[(unsigned)id] = ignored;
+    /// Set whether a diagnostic group should be ignored.
+    void setIgnoredDiagnosticGroup(DiagGroupID id, bool ignored) {
+      ignoredDiagnosticGroups[(unsigned)id] = ignored;
     }
 
+    /// Query whether a specific diagnostic group is ignored.
+    bool isIgnoredDiagnosticGroup(DiagGroupID id) const {
+      return ignoredDiagnosticGroups[(unsigned)id];
+    }
+
+    /// Set a specific diagnostic to be ignored by the compiler.
+    void compilerInternalIgnoreDiagnostic(DiagID id) {
+      compilerIgnoredDiagnostics[(unsigned)id] = true;
+    }
+
+    /// Query whether a specific diagnostic group and *all*
+    /// of its subgroups are ignored.
+    bool isIgnoredDiagnosticGroupTree(DiagGroupID id) const;
+
     void swap(DiagnosticState &other) {
-      std::swap(showDiagnosticsAfterFatalError, other.showDiagnosticsAfterFatalError);
+      std::swap(showDiagnosticsAfterFatalError,
+                other.showDiagnosticsAfterFatalError);
       std::swap(suppressWarnings, other.suppressWarnings);
+      std::swap(suppressNotes, other.suppressNotes);
       std::swap(suppressRemarks, other.suppressRemarks);
       std::swap(warningsAsErrors, other.warningsAsErrors);
       std::swap(fatalErrorOccurred, other.fatalErrorOccurred);
       std::swap(anyErrorOccurred, other.anyErrorOccurred);
       std::swap(previousBehavior, other.previousBehavior);
-      std::swap(ignoredDiagnostics, other.ignoredDiagnostics);
+      std::swap(ignoredDiagnosticGroups, other.ignoredDiagnosticGroups);
     }
 
   private:
@@ -778,16 +837,12 @@ namespace swift {
     /// Tracks diagnostic behaviors and state
     DiagnosticState state;
 
-    /// The currently active diagnostic, if there is one.
-    std::optional<Diagnostic> ActiveDiagnostic;
-
-    /// Diagnostics wrapped by ActiveDiagnostic, if any.
-    SmallVector<DiagnosticInfo, 2> WrappedDiagnostics;
-    SmallVector<std::vector<DiagnosticArgument>, 4> WrappedDiagnosticArgs;
+    /// The currently active diagnostics.
+    SmallVector<detail::ActiveDiagnostic, 4> ActiveDiagnostics;
 
     /// All diagnostics that have are no longer active but have not yet
     /// been emitted due to an open transaction.
-    SmallVector<Diagnostic, 4> TentativeDiagnostics;
+    SmallVector<detail::ActiveDiagnostic, 4> TentativeDiagnostics;
 
     llvm::BumpPtrAllocator TransactionAllocator;
     /// A set of all strings involved in current transactional chain.
@@ -809,6 +864,9 @@ namespace swift {
     /// The number of open diagnostic transactions. Diagnostics are only
     /// emitted once all transactions have closed.
     unsigned TransactionCount = 0;
+
+    /// The number of currently in-flight diagnostics.
+    unsigned NumActiveDiags = 0;
 
     /// For batch mode, use this to know where to output a diagnostic from a
     /// non-primary file. It's any location in the buffer of the current primary
@@ -845,7 +903,7 @@ namespace swift {
 
   public:
     explicit DiagnosticEngine(SourceManager &SourceMgr)
-        : SourceMgr(SourceMgr), ActiveDiagnostic(),
+        : SourceMgr(SourceMgr), ActiveDiagnostics(),
           TransactionStrings(TransactionAllocator),
           DiagnosticStringsSaver(DiagnosticStringsAllocator) {}
 
@@ -864,6 +922,7 @@ namespace swift {
     }
 
     void flushConsumers() {
+      ASSERT(NumActiveDiags == 0 && "Expected in-flight diags to be flushed");
       for (auto consumer : Consumers)
         consumer->flush();
     }
@@ -872,6 +931,12 @@ namespace swift {
     void setSuppressWarnings(bool val) { state.setSuppressWarnings(val); }
     bool getSuppressWarnings() const {
       return state.getSuppressWarnings();
+    }
+
+    /// Whether to skip emitting notes
+    void setSuppressNotes(bool val) { state.setSuppressNotes(val); }
+    bool getSuppressNotes() const {
+      return state.getSuppressNotes();
     }
 
     /// Whether to skip emitting remarks
@@ -917,8 +982,16 @@ namespace swift {
       localization = diag::LocalizationProducer::producerFor(locale, path);
     }
 
+    bool isIgnoredDiagnosticGroup(DiagGroupID id) const {
+      return state.isIgnoredDiagnosticGroup(id);
+    }
+    
+    bool isIgnoredDiagnosticGroupTree(DiagGroupID id) const {
+      return state.isIgnoredDiagnosticGroupTree(id);
+    }
+
     void ignoreDiagnostic(DiagID id) {
-      state.setIgnoredDiagnostic(id, true);
+      state.compilerInternalIgnoreDiagnostic(id);
     }
 
     void resetHadAnyError() {
@@ -995,10 +1068,9 @@ namespace swift {
     /// \returns An in-flight diagnostic, to which additional information can
     /// be attached.
     InFlightDiagnostic diagnose(SourceLoc Loc, const Diagnostic &D) {
-      assert(!ActiveDiagnostic && "Already have an active diagnostic");
-      ActiveDiagnostic = D;
-      ActiveDiagnostic->setLoc(Loc);
-      return InFlightDiagnostic(*this);
+      auto IFD = beginDiagnostic(D);
+      getActiveDiagnostic(IFD).Diag.setLoc(Loc);
+      return IFD;
     }
     
     /// Emit a diagnostic with the given set of diagnostic arguments.
@@ -1074,10 +1146,9 @@ namespace swift {
     /// \returns An in-flight diagnostic, to which additional information can
     /// be attached.
     InFlightDiagnostic diagnose(const Decl *decl, const Diagnostic &diag) {
-      assert(!ActiveDiagnostic && "Already have an active diagnostic");
-      ActiveDiagnostic = diag;
-      ActiveDiagnostic->setDecl(decl);
-      return InFlightDiagnostic(*this);
+      auto IFD = beginDiagnostic(diag);
+      getActiveDiagnostic(IFD).Diag.setDecl(decl);
+      return IFD;
     }
 
     /// Emit a diagnostic with the given set of diagnostic arguments.
@@ -1131,16 +1202,21 @@ namespace swift {
         DiagnosticFormatOptions FormatOpts = DiagnosticFormatOptions());
 
   private:
+    /// Begins a new in-flight diagnostic.
+    InFlightDiagnostic beginDiagnostic(const Diagnostic &D);
+
+    /// Ends an in-flight diagnostic. Once all in-flight diagnostics have ended,
+    /// they will either be emitted, or captured by an open transaction.
+    void endDiagnostic(const InFlightDiagnostic &D);
+
     /// Called when tentative diagnostic is about to be flushed,
     /// to apply any required transformations e.g. copy string arguments
     /// to extend their lifetime.
     void onTentativeDiagnosticFlush(Diagnostic &diagnostic);
 
-    /// Flush the active diagnostic.
-    void flushActiveDiagnostic();
-    
-    /// Retrieve the active diagnostic.
-    Diagnostic &getActiveDiagnostic() { return *ActiveDiagnostic; }
+    /// Retrieve the stored active diagnostic for a given InFlightDiagnostic.
+    detail::ActiveDiagnostic &
+    getActiveDiagnostic(const InFlightDiagnostic &diag);
 
     /// Generate DiagnosticInfo for a Diagnostic to be passed to consumers.
     std::optional<DiagnosticInfo>
@@ -1156,7 +1232,7 @@ namespace swift {
 
     /// Handle a new diagnostic, which will either be emitted, or added to an
     /// active transaction.
-    void handleDiagnostic(Diagnostic &&diag);
+    void handleDiagnostic(detail::ActiveDiagnostic &&diag);
 
     /// Clear any tentative diagnostics.
     void clearTentativeDiagnostics();
@@ -1195,11 +1271,7 @@ namespace swift {
     SourceLoc getDefaultDiagnosticLoc() const {
       return bufferIndirectlyCausingDiagnostic;
     }
-    SourceLoc getBestAddImportFixItLoc(const Decl *Member,
-                                       SourceFile *sourceFile) const;
-    SourceLoc getBestAddImportFixItLoc(const Decl *Member) const {
-      return getBestAddImportFixItLoc(Member, nullptr);
-    }
+    SourceLoc getBestAddImportFixItLoc(SourceFile *sf) const;
   };
 
   inline SourceManager &InFlightDiagnostic::getSourceManager() {
@@ -1289,12 +1361,12 @@ namespace swift {
     }
 
     bool hasErrors() const {
-      ArrayRef<Diagnostic> diagnostics(Engine.TentativeDiagnostics.begin() +
-                                           PrevDiagnostics,
-                                       Engine.TentativeDiagnostics.end());
+      ArrayRef<detail::ActiveDiagnostic> diagnostics(
+          Engine.TentativeDiagnostics.begin() + PrevDiagnostics,
+          Engine.TentativeDiagnostics.end());
 
       for (auto &diagnostic : diagnostics) {
-        auto behavior = Engine.state.determineBehavior(diagnostic);
+        auto behavior = Engine.state.determineBehavior(diagnostic.Diag);
         if (behavior == DiagnosticBehavior::Fatal ||
             behavior == DiagnosticBehavior::Error)
           return true;
@@ -1359,14 +1431,14 @@ namespace swift {
 
       // The first diagnostic is assumed to be the parent. If this is not an
       // error or warning, we'll assert later when trying to add children.
-      Diagnostic &parent = Engine.TentativeDiagnostics[PrevDiagnostics];
+      Diagnostic &parent = Engine.TentativeDiagnostics[PrevDiagnostics].Diag;
 
       // Associate the children with the parent.
       for (auto diag =
                Engine.TentativeDiagnostics.begin() + PrevDiagnostics + 1;
            diag != Engine.TentativeDiagnostics.end(); ++diag) {
-        diag->setIsChildNote(true);
-        parent.addChildNote(std::move(*diag));
+        diag->Diag.setIsChildNote(true);
+        parent.addChildNote(std::move(diag->Diag));
       }
 
       // Erase the children, they'll be emitted alongside their parent.
@@ -1425,6 +1497,13 @@ namespace swift {
 
     /// Retrieve the underlying engine which will receive the diagnostics.
     DiagnosticEngine &getUnderlyingDiags() const { return UnderlyingEngine; }
+
+    /// Iterates over each captured diagnostic, running a lambda with it.
+    void forEach(llvm::function_ref<void(const Diagnostic &)> body) const;
+
+    /// Filters the queued diagnostics, dropping any where the predicate
+    /// returns \c false.
+    void filter(llvm::function_ref<bool(const Diagnostic &)> predicate);
 
     /// Clear this queue and erase all diagnostics recorded.
     void clear() {

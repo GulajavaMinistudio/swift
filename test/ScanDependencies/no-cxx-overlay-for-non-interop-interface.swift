@@ -1,3 +1,4 @@
+
 // RUN: %empty-directory(%t)
 // RUN: %empty-directory(%t/deps)
 // RUN: split-file %s %t
@@ -8,12 +9,27 @@
 // RUN: %target-swift-frontend -scan-dependencies -o %t/deps_no_interop_dep.json %t/clientNoInteropDep.swift -I %t/deps -cxx-interoperability-mode=default -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import -verify
 // RUN: cat %t/deps_no_interop_dep.json | %FileCheck %s -check-prefix=DISABLE-CHECK
 
+// RUN: %target-swift-frontend -emit-module %t/BinaryDepNoInterop.swift -emit-module-path %t/deps/BinaryDepNoInterop.swiftmodule -module-name BinaryDepNoInterop -I %t/deps -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import
+// RUN: %target-swift-frontend -scan-dependencies -o %t/deps_no_interop_binary_dep.json %t/clientNoInteropBinaryDep.swift -I %t/deps -cxx-interoperability-mode=default -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import -verify
+// RUN: cat %t/deps_no_interop_binary_dep.json | %FileCheck %s -check-prefix=DISABLE-BINARY-CHECK
+
+// RUN: %target-swift-frontend -scan-dependencies -o %t/deps_darwin_dep.json %t/clientDarwin.swift -I %t/deps -cxx-interoperability-mode=default -disable-implicit-string-processing-module-import -disable-implicit-concurrency-module-import -verify
+// RUN: cat %t/deps_darwin_dep.json | %FileCheck %s -check-prefix=DARWIN-CHECK
+
 //--- deps/bar.h
 void bar(void);
+
+//--- deps/baz.h
+#include "bar.h"
+void baz(void);
 
 //--- deps/module.modulemap
 module std_Bar [system] {
   header "bar.h"
+  export *
+}
+module normal {
+  header "baz.h"
   export *
 }
 
@@ -30,11 +46,27 @@ public struct Foo1 {}
 import std_Bar
 public struct Foo2 {}
 
+//--- deps/Darwin.swiftinterface
+// swift-interface-format-version: 1.0
+// swift-module-flags: -module-name Darwin -enable-library-evolution
+import std_Bar
+public struct Foo3 {}
+
+//--- BinaryDepNoInterop.swift
+import normal
+public struct Foo6 {}
+
 //--- clientWithInteropDep.swift
 import Foo
 
 //--- clientNoInteropDep.swift
 import FooNoInterop
+
+//--- clientNoInteropBinaryDep.swift
+import BinaryDepNoInterop
+
+//--- clientDarwin.swift
+import Darwin
 
 // Ensure that when the 'Foo' dependency was built with C++ interop enabled,
 // it gets the C++ standard library overlay for its 'std_*' dependency
@@ -75,4 +107,25 @@ import FooNoInterop
 // DISABLE-CHECK:        }
 // DISABLE-CHECK:      ],
 
+// DISABLE-BINARY-CHECK: "modulePath": "{{.*}}{{/|\\}}BinaryDepNoInterop.swiftmodule"
+// DISABLE-BINARY-CHECK:      "directDependencies": [
+// DISABLE-BINARY-CHECK-NEXT:        {
+// DISABLE-BINARY-CHECK-NEXT:          "swift": "Swift"
+// DISABLE-BINARY-CHECK-NEXT:        },
+// DISABLE-BINARY-CHECK-NEXT:        {
+// DISABLE-BINARY-CHECK-NEXT:          "swift": "SwiftOnoneSupport"
+// DISABLE-BINARY-CHECK-NEXT:        },
+// DISABLE-BINARY-CHECK-NEXT:        {
+// DISABLE-BINARY-CHECK-NEXT:          "clang": "normal"
+// DISABLE-BINARY-CHECK-NEXT:        }
+// DISABLE-BINARY-CHECK-NEXT:      ],
 
+// DARWIN-CHECK: "modulePath": "{{.*}}{{/|\\}}Darwin-{{.*}}.swiftmodule"
+// DARWIN-CHECK:      "directDependencies": [
+// DARWIN-CHECK-NEXT:        {
+// DARWIN-CHECK-NEXT:          "swift": "SwiftOnoneSupport"
+// DARWIN-CHECK-NEXT:        },
+// DARWIN-CHECK-NEXT:        {
+// DARWIN-CHECK-NEXT:          "clang": "std_Bar"
+// DARWIN-CHECK-NEXT:        }
+// DARWIN-CHECK-NEXT:      ],

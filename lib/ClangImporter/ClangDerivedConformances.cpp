@@ -142,7 +142,7 @@ static ValueDecl *lookupOperator(NominalTypeDecl *decl, Identifier id,
 
   // If no member operator was found, look for out-of-class definitions in the
   // same module.
-  auto module = decl->getModuleContext();
+  auto module = decl->getModuleContextForNameLookup();
   SmallVector<ValueDecl *> nonMemberResults;
   module->lookupValue(id, NLKind::UnqualifiedLookup, nonMemberResults);
   for (const auto &nonMember : nonMemberResults) {
@@ -265,15 +265,25 @@ instantiateTemplatedOperator(ClangImporter::Implementation &impl,
       classDecl->getLocation(), clang::OverloadCandidateSet::CSK_Operator,
       clang::OverloadCandidateSet::OperatorRewriteInfo(opKind,
                                               clang::SourceLocation(), false));
-  clangSema.LookupOverloadedBinOp(candidateSet, opKind, ops, {arg, arg}, true);
+  std::array<clang::Expr *, 2> args{arg, arg};
+  clangSema.LookupOverloadedBinOp(candidateSet, opKind, ops, args, true);
 
   clang::OverloadCandidateSet::iterator best;
   switch (candidateSet.BestViableFunction(clangSema, clang::SourceLocation(),
                                           best)) {
   case clang::OR_Success: {
     if (auto clangCallee = best->Function) {
-      auto lookupTable = impl.findLookupTable(classDecl);
-      addEntryToLookupTable(*lookupTable, clangCallee, impl.getNameImporter());
+      // Declarations inside of a C++ namespace are added into two lookup
+      // tables: one for the __ObjC module, one for the actual owning Clang
+      // module of the decl. This is a hack that is meant to address the case
+      // when a namespace spans across multiple Clang modules. Mimic that
+      // behavior for the operator that we just instantiated.
+      auto lookupTable1 = impl.findLookupTable(classDecl);
+      addEntryToLookupTable(*lookupTable1, clangCallee, impl.getNameImporter());
+      auto owningModule = impl.getClangOwningModule(classDecl);
+      auto lookupTable2 = impl.findLookupTable(owningModule);
+      if (lookupTable1 != lookupTable2)
+        addEntryToLookupTable(*lookupTable2, clangCallee, impl.getNameImporter());
       return clangCallee;
     }
     break;
@@ -376,8 +386,13 @@ static bool synthesizeCXXOperator(ClangImporter::Implementation &impl,
   equalEqualDecl->setBody(equalEqualBody);
 
   impl.synthesizedAndAlwaysVisibleDecls.insert(equalEqualDecl);
-  auto lookupTable = impl.findLookupTable(classDecl);
-  addEntryToLookupTable(*lookupTable, equalEqualDecl, impl.getNameImporter());
+  auto lookupTable1 = impl.findLookupTable(classDecl);
+  addEntryToLookupTable(*lookupTable1, equalEqualDecl, impl.getNameImporter());
+  auto owningModule = impl.getClangOwningModule(classDecl);
+  auto lookupTable2 = impl.findLookupTable(owningModule);
+  if (lookupTable1 != lookupTable2)
+    addEntryToLookupTable(*lookupTable2, equalEqualDecl,
+                          impl.getNameImporter());
   return true;
 }
 
@@ -667,6 +682,8 @@ void swift::conformToCxxOptionalIfNeeded(
   assert(decl);
   assert(clangDecl);
   ASTContext &ctx = decl->getASTContext();
+  clang::ASTContext &clangCtx = impl.getClangASTContext();
+  clang::Sema &clangSema = impl.getClangSema();
 
   if (!isStdDecl(clangDecl, {"optional"}))
     return;
@@ -689,6 +706,64 @@ void swift::conformToCxxOptionalIfNeeded(
 
   impl.addSynthesizedTypealias(decl, ctx.getIdentifier("Wrapped"), pointeeTy);
   impl.addSynthesizedProtocolAttrs(decl, {KnownProtocolKind::CxxOptional});
+
+  // `std::optional` has a C++ constructor that takes the wrapped value as a
+  // parameter. Unfortunately this constructor has templated parameter type, so
+  // it isn't directly usable from Swift. Let's explicitly instantiate a
+  // constructor with the wrapped value type, and then import it into Swift.
+
+  auto valueTypeDecl = lookupNestedClangTypeDecl(clangDecl, "value_type");
+  if (!valueTypeDecl)
+    // `std::optional` without a value_type?!
+    return;
+  auto valueType = clangCtx.getTypeDeclType(valueTypeDecl);
+
+  auto constRefValueType =
+      clangCtx.getLValueReferenceType(valueType.withConst());
+  // Create a fake variable with type of the wrapped value.
+  auto fakeValueVarDecl = clang::VarDecl::Create(
+      clangCtx, /*DC*/ clangCtx.getTranslationUnitDecl(),
+      clang::SourceLocation(), clang::SourceLocation(), /*Id*/ nullptr,
+      constRefValueType, clangCtx.getTrivialTypeSourceInfo(constRefValueType),
+      clang::StorageClass::SC_None);
+  auto fakeValueRefExpr = new (clangCtx) clang::DeclRefExpr(
+      clangCtx, fakeValueVarDecl, false,
+      constRefValueType.getNonReferenceType(), clang::ExprValueKind::VK_LValue,
+      clang::SourceLocation());
+
+  auto clangDeclTyInfo = clangCtx.getTrivialTypeSourceInfo(
+      clang::QualType(clangDecl->getTypeForDecl(), 0));
+  SmallVector<clang::Expr *, 1> constructExprArgs = {fakeValueRefExpr};
+
+  // Instantiate the templated constructor that would accept this fake variable.
+  clang::Sema::SFINAETrap trap(clangSema);
+  auto constructExprResult = clangSema.BuildCXXTypeConstructExpr(
+      clangDeclTyInfo, clangDecl->getLocation(), constructExprArgs,
+      clangDecl->getLocation(), /*ListInitialization*/ false);
+  if (!constructExprResult.isUsable() || trap.hasErrorOccurred())
+    return;
+
+  auto castExpr = dyn_cast_or_null<clang::CastExpr>(constructExprResult.get());
+  if (!castExpr)
+    return;
+
+  // The temporary bind expression will only be present for some non-trivial C++
+  // types.
+  auto bindTempExpr =
+      dyn_cast_or_null<clang::CXXBindTemporaryExpr>(castExpr->getSubExpr());
+
+  auto constructExpr = dyn_cast_or_null<clang::CXXConstructExpr>(
+      bindTempExpr ? bindTempExpr->getSubExpr() : castExpr->getSubExpr());
+  if (!constructExpr)
+    return;
+
+  auto constructorDecl = constructExpr->getConstructor();
+
+  auto importedConstructor =
+      impl.importDecl(constructorDecl, impl.CurrentVersion);
+  if (!importedConstructor)
+    return;
+  decl->addMember(importedConstructor);
 }
 
 void swift::conformToCxxSequenceIfNeeded(
@@ -1273,7 +1348,7 @@ void swift::conformToCxxSpanIfNeeded(ClangImporter::Implementation &impl,
 
   auto attr = AvailableAttr::createUniversallyDeprecated(
       importedConstructor->getASTContext(), "use 'init(_:)' instead.", "");
-  importedConstructor->getAttrs().add(attr);
+  importedConstructor->addAttribute(attr);
 
   decl->addMember(importedConstructor);
 

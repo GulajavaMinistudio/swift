@@ -256,8 +256,6 @@ void swift::runJobInEstablishedExecutorContext(Job *job) {
 #if SWIFT_OBJC_INTEROP
   objc_autoreleasePoolPop(pool);
 #endif
-
-  _swift_tsan_release(job);
 }
 
 void swift::adoptTaskVoucher(AsyncTask *task) {
@@ -487,9 +485,15 @@ extern "C" SWIFT_CC(swift) void _swift_task_enqueueOnTaskExecutor(
 // Implemented in Swift to avoid some annoying hard-coding about
 // SerialExecutor's protocol witness table.  We could inline this
 // with effort, though.
+#if SWIFT_CONCURRENCY_EMBEDDED
+extern "C" SWIFT_CC(swift) void _swift_task_enqueueOnExecutor(
+    Job *job, HeapObject *executor,
+    const SerialExecutorWitnessTable *wtable);
+#else
 extern "C" SWIFT_CC(swift) void _swift_task_enqueueOnExecutor(
     Job *job, HeapObject *executor, const Metadata *executorType,
     const SerialExecutorWitnessTable *wtable);
+#endif // #if SWIFT_CONCURRENCY_EMBEDDED
 
 SWIFT_CC(swift)
 static bool swift_task_isCurrentExecutorWithFlagsImpl(
@@ -2393,13 +2397,15 @@ static bool mustSwitchToRun(SerialExecutorRef currentSerialExecutor,
   }
 
   // else, we may have to switch if the preferred task executor is different
-  auto differentTaskExecutor =
-      currentTaskExecutor.getIdentity() != newTaskExecutor.getIdentity();
-  if (differentTaskExecutor) {
-    return true;
-  }
+  if (currentTaskExecutor.getIdentity() == newTaskExecutor.getIdentity())
+    return false;
 
-  return false;
+  if (currentTaskExecutor.isUndefined())
+    currentTaskExecutor = swift_getDefaultExecutor();
+  if (newTaskExecutor.isUndefined())
+    newTaskExecutor = swift_getDefaultExecutor();
+
+  return currentTaskExecutor.getIdentity() != newTaskExecutor.getIdentity();
 }
 
 /// Given that we've assumed control of an executor on this thread,
@@ -2576,7 +2582,7 @@ static void swift_task_deinitOnExecutorImpl(void *object,
                                             SerialExecutorRef newExecutor,
                                             size_t rawFlags) {
   // Sign the function pointer
-  work = swift_auth_code_function(
+  work = swift_auth_code(
       work, SpecialPointerAuthDiscriminators::DeinitWorkFunction);
   // If the current executor is compatible with running the new executor,
   // we can just immediately continue running with the resume function
@@ -2704,7 +2710,11 @@ static void swift_task_enqueueImpl(Job *job, SerialExecutorRef serialExecutorRef
     return swift_defaultActor_enqueue(job, serialExecutorRef.getDefaultActor());
   }
 
-#if SWIFT_CONCURRENCY_EMBEDDED
+#if SWIFT_CONCURRENCY_EMBEDDED && defined(__wasi__)
+  auto serialExecutorIdentity = serialExecutorRef.getIdentity();
+  auto serialExecutorWtable = serialExecutorRef.getSerialExecutorWitnessTable();
+  _swift_task_enqueueOnExecutor(job, serialExecutorIdentity, serialExecutorWtable);
+#elif SWIFT_CONCURRENCY_EMBEDDED
   swift_unreachable("custom executors not supported in embedded Swift");
 #else
   // For main actor or actors with custom executors
@@ -2764,7 +2774,8 @@ swift::swift_distributedActor_remote_initialize(const Metadata *actorType) {
 
   // TODO: remove this memset eventually, today we only do this to not have
   //       to modify the destructor logic, as releasing zeroes is no-op
-  memset(alloc + 1, 0, metadata->getInstanceSize() - sizeof(HeapObject));
+  memset((void *)(alloc + 1), 0,
+         metadata->getInstanceSize() - sizeof(HeapObject));
 
   // TODO(distributed): a remote one does not have to have the "real"
   //  default actor body, e.g. we don't need an executor at all; so

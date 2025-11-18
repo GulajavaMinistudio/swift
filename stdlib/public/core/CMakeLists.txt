@@ -94,6 +94,7 @@ split_embedded_sources(
   EMBEDDED Identifiable.swift
   EMBEDDED Indices.swift
   EMBEDDED InlineArray.swift
+  EMBEDDED _InlineArray.swift
   EMBEDDED InputStream.swift
   EMBEDDED IntegerParsing.swift
   EMBEDDED Integers.swift
@@ -158,6 +159,8 @@ split_embedded_sources(
   EMBEDDED Sort.swift
   EMBEDDED Span/MutableRawSpan.swift
   EMBEDDED Span/MutableSpan.swift
+  EMBEDDED Span/OutputRawSpan.swift
+  EMBEDDED Span/OutputSpan.swift
   EMBEDDED Span/RawSpan.swift
   EMBEDDED Span/Span.swift
   EMBEDDED StaticString.swift
@@ -259,6 +262,7 @@ split_embedded_sources(
 
     NORMAL AtomicInt.swift.gyb
   EMBEDDED FloatingPointParsing.swift.gyb
+  EMBEDDED FloatingPointToString.swift
   EMBEDDED FloatingPointTypes.swift.gyb
   EMBEDDED IntegerTypes.swift.gyb
   EMBEDDED LegacyInt128.swift.gyb
@@ -268,15 +272,25 @@ split_embedded_sources(
   )
 
 if(SWIFT_STDLIB_ENABLE_VECTOR_TYPES)
+  split_embedded_sources(
+    OUT_LIST_EMBEDDED SWIFTLIB_EMBEDDED_VECTOR_GYB_SOURCES
+    OUT_LIST_NORMAL SWIFTLIB_VECTOR_GYB_SOURCES
+    
+    EMBEDDED SIMDIntegerConcreteOperations.swift.gyb
+    EMBEDDED SIMDFloatConcreteOperations.swift.gyb
+    EMBEDDED SIMDMaskConcreteOperations.swift.gyb
+    EMBEDDED SIMDVectorTypes.swift.gyb
+  )
+
   list(APPEND SWIFTLIB_SOURCES SIMDVector.swift)
-  list(APPEND SWIFTLIB_GYB_SOURCES SIMDConcreteOperations.swift.gyb SIMDVectorTypes.swift.gyb)
+  list(APPEND SWIFTLIB_GYB_SOURCES ${SWIFTLIB_VECTOR_GYB_SOURCES})
 
   list(APPEND SWIFTLIB_EMBEDDED_SOURCES SIMDVector.swift)
-  list(APPEND SWIFTLIB_EMBEDDED_GYB_SOURCES SIMDConcreteOperations.swift.gyb SIMDVectorTypes.swift.gyb)
+  list(APPEND SWIFTLIB_EMBEDDED_GYB_SOURCES ${SWIFTLIB_EMBEDDED_VECTOR_GYB_SOURCES})
 endif()
 
 # Freestanding and Linux/Android builds both have failures to resolve.
-if(NOT BOOTSTRAPPING_MODE STREQUAL "OFF" AND NOT SWIFT_FREESTANDING_FLAVOR AND NOT SWIFT_HOST_VARIANT_SDK STREQUAL "LINUX" AND NOT SWIFT_HOST_VARIANT_SDK STREQUAL "ANDROID")
+if(NOT BOOTSTRAPPING_MODE STREQUAL "OFF" AND NOT SWIFT_FREESTANDING_FLAVOR AND NOT SWIFT_HOST_VARIANT_SDK STREQUAL "ANDROID")
   list(APPEND SWIFTLIB_SOURCES ObjectIdentifier+DebugDescription.swift)
 endif()
 
@@ -433,6 +447,11 @@ if(TARGET libSwiftScan)
   list(APPEND tooling_stdlib_deps libSwiftScan)
 endif()
 
+set(stdlib_link_libraries)
+if(SWIFT_BUILD_SWIFT_DIRECT_RUNTIME)
+  list(APPEND stdlib_link_libraries swiftSwiftDirectRuntime)
+endif()
+
 add_swift_target_library(swiftCore
                   ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES}
                   ${swiftCore_common_options}
@@ -464,15 +483,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   foreach(sdk ${SWIFT_SDKS})
     set(lib_dir "${SWIFT_SDK_${sdk}_LIB_SUBDIR}")
     set(lib_path "${SWIFTLIB_DIR}/${lib_dir}")
-    set(compat_lib_name "${lib_path}/libswiftCompatibilitySpan.dylib")
 
     # This doesn't depend on libswiftCore.dylib because we don't actually need
     # for it to exist to create the symlink, nor is there any need to recreate
     # the symlink if the dylib changes.
     add_custom_command_target(unused_var
                               CUSTOM_TARGET_NAME "swiftCompatibilitySpan-symlink-${lib_dir}"
-                              OUTPUT "${compat_lib_name}"
-                              COMMAND ${CMAKE_COMMAND} "-E" "create_symlink" "${lib_path}/libswiftCore.dylib" "${compat_lib_name}")
+                              OUTPUT "${lib_path}/libswiftCompatibilitySpan.dylib"
+                              COMMAND ${CMAKE_COMMAND} "-E" "create_symlink" "libswiftCore.dylib" "libswiftCompatibilitySpan.dylib"
+                              WORKING_DIRECTORY ${lib_path})
     foreach(ARCH ${SWIFT_SDK_${sdk}_ARCHITECTURES})
       add_dependencies("swiftCore-${lib_dir}-${ARCH}" "swiftCompatibilitySpan-symlink-${lib_dir}")
     endforeach()
@@ -515,6 +534,9 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB)
     set(SWIFT_SDK_embedded_ARCH_${arch}_MODULE "${mod}")
     set(SWIFT_SDK_embedded_LIB_SUBDIR "embedded")
     set(SWIFT_SDK_embedded_ARCH_${arch}_TRIPLE "${triple}")
+    if(SWIFT_EMBEDDED_STDLIB_SDKS_FOR_TARGET_TRIPLES)
+      set(SWIFT_SDK_embedded_ARCH_${arch}_PATH "${EMBEDDED_STDLIB_SDK_FOR_${triple}}")
+    endif()
     add_swift_target_library_single(
       embedded-stdlib-${mod}
       swiftCore
@@ -524,7 +546,6 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB)
       GYB_SOURCES ${SWIFTLIB_EMBEDDED_GYB_SOURCES}
       SWIFT_COMPILE_FLAGS
         ${swift_stdlib_compile_flags} -Xcc -ffreestanding -enable-experimental-feature Embedded
-        -Xfrontend -enable-ossa-modules
       MODULE_DIR "${CMAKE_BINARY_DIR}/lib/swift/embedded"
       SDK "embedded"
       ARCHITECTURE "${arch}"

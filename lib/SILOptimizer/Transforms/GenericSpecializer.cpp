@@ -40,8 +40,8 @@ static void transferSpecializeAttributeTargets(SILModule &M,
                                                SILOptFunctionBuilder &builder,
                                                Decl *d) {
   auto *vd = cast<AbstractFunctionDecl>(d);
-  for (auto *A : vd->getAttrs().getAttributes<SpecializeAttr>()) {
-    auto *SA = cast<SpecializeAttr>(A);
+  for (auto *A : vd->getAttrs().getAttributes<AbstractSpecializeAttr>()) {
+    auto *SA = cast<AbstractSpecializeAttr>(A);
     // Filter _spi.
     auto spiGroups = SA->getSPIGroups();
     auto hasSPIGroup = !spiGroups.empty();
@@ -106,6 +106,17 @@ bool swift::specializeAppliesInFunction(SILFunction &F,
       auto *Callee = Apply.getReferencedFunctionOrNull();
       if (!Callee)
         continue;
+
+      // TODO: Enable GenericSpecializer for borrow accessors in OSSA
+      // Currently disabled since GenericSpecializer generates store_borrow to a
+      // temporary stack location and returns a projection from the
+      // store_borrow. This does not work for borrow accessors that return the
+      // projection from within the store_borrow scope.
+      if (F.hasOwnership() &&
+          (Callee->getConventions().hasAddressResult() ||
+           Callee->getConventions().hasGuaranteedResult())) {
+        continue;
+      }
 
       FunctionBuilder.getModule().performOnceForPrespecializedImportedExtensions(
         [&FunctionBuilder](AbstractFunctionDecl *pre) {

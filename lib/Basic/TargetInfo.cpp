@@ -65,6 +65,14 @@ void printTargetInfo(const CompilerInvocation &invocation,
   writeEscaped(version::getSwiftFullVersion(version::Version::getCurrentLanguageVersion()), out);
   out << "\",\n";
 
+  // Distribution tag, if any.
+  StringRef tag = version::getCurrentCompilerTag();
+  if (!tag.empty()) {
+    out << "  \"swiftCompilerTag\": \"";
+    writeEscaped(tag, out);
+    out << "\",\n";
+  }
+
   // Target triple and target variant triple.
   auto runtimeVersion =
     invocation.getIRGenOptions().AutolinkRuntimeCompatibilityLibraryVersion;
@@ -137,13 +145,13 @@ void printTripleInfo(const CompilerInvocation &invocation,
   out << "    \"arch\": \"" << swift::getMajorArchitectureName(triple)
       << "\",\n";
 
-  clang::DiagnosticsEngine DE{new clang::DiagnosticIDs(),
-                              new clang::DiagnosticOptions(),
+  clang::DiagnosticOptions diagOpts;
+  clang::DiagnosticsEngine DE{new clang::DiagnosticIDs(), diagOpts,
                               new clang::IgnoringDiagConsumer()};
-  std::shared_ptr<clang::TargetOptions> TO =
-      std::make_shared<clang::TargetOptions>();
-  TO->Triple = triple.str();
-  clang::TargetInfo *TI = clang::TargetInfo::CreateTargetInfo(DE, TO);
+
+  clang::TargetOptions targetOpts;
+  targetOpts.Triple = triple.str();
+  clang::TargetInfo *TI = clang::TargetInfo::CreateTargetInfo(DE, targetOpts);
   out << "    \"pointerWidthInBits\": "
       << TI->getPointerWidth(clang::LangAS::Default) << ",\n";
   out << "    \"pointerWidthInBytes\": "

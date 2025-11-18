@@ -51,6 +51,8 @@ public:
     beginMangling();
     appendEntity(func);
     appendOperator("Tj");
+    if (func->isDistributedThunk())
+      appendSymbolKind(SymbolKind::DistributedThunk);
     return finalize();
   }
 
@@ -86,6 +88,8 @@ public:
     beginMangling();
     appendEntity(func);
     appendOperator("Tq");
+    if (func->isDistributedThunk())
+      appendSymbolKind(SymbolKind::DistributedThunk);
     return finalize();
   }
 
@@ -681,7 +685,8 @@ public:
   std::string mangleSymbolNameForMangledMetadataAccessorString(
                                            const char *kind,
                                            CanGenericSignature genericSig,
-                                           CanType type);
+                                           CanType type,
+                                           MangledTypeRefRole role);
 
   std::string mangleSymbolNameForMangledConformanceAccessorString(
                                            const char *kind,

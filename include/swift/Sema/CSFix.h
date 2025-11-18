@@ -186,6 +186,10 @@ enum class FixKind : uint8_t {
   /// no access control.
   AllowInaccessibleMember,
 
+  /// If a module selector prevented us from selecting a member, pretend that it
+  /// was not specified.
+  AllowMemberFromWrongModule,
+
   /// Allow KeyPaths to use AnyObject as root type
   AllowAnyObjectKeyPathRoot,
 
@@ -394,6 +398,9 @@ enum class FixKind : uint8_t {
   /// Ignore a type imposed by an assignment destination e.g. `let x: Int = ...`
   IgnoreAssignmentDestinationType,
 
+  /// Ignore a non-metatype contextual type for a `type(of:)` expression.
+  IgnoreNonMetatypeDynamicType,
+
   /// Allow argument-to-parameter subtyping even when parameter type
   /// is marked as `inout`.
   AllowConversionThroughInOut,
@@ -488,6 +495,9 @@ enum class FixKind : uint8_t {
   /// the type it's attempting to bind to.
   AllowInlineArrayLiteralCountMismatch,
 
+  /// Reached the limit of @dynamicMemberLookup depth.
+  TooManyDynamicMemberLookups,
+
   /// Ignore that a conformance is isolated but is not allowed to be.
   IgnoreIsolatedConformance,
 };
@@ -558,6 +568,11 @@ public:
 
   virtual bool diagnoseForAmbiguity(CommonFixesArray commonFixes) const {
     return false;
+  }
+
+  template <typename E>
+  bool directlyAt() const {
+    return getLocator()->directlyAt<E>();
   }
 
   void print(llvm::raw_ostream &Out) const;
@@ -655,7 +670,7 @@ public:
   std::string getName() const override { return "re-label argument(s)"; }
 
   ArrayRef<Identifier> getLabels() const {
-    return {getTrailingObjects<Identifier>(), NumLabels};
+    return getTrailingObjects(NumLabels);
   }
 
   bool diagnose(const Solution &solution, bool asNote = false) const override;
@@ -672,7 +687,7 @@ public:
 
 private:
   MutableArrayRef<Identifier> getLabelsBuffer() {
-    return {getTrailingObjects<Identifier>(), NumLabels};
+    return getTrailingObjects(NumLabels);
   }
 };
 
@@ -848,12 +863,12 @@ public:
     // produce another diagnostic for the contextual mismatch complaining that
     // a type is not convertible to a placeholder type.
     if (auto fromPlaceholder = getFromType()->getAs<PlaceholderType>()) {
-      if (fromPlaceholder->getOriginator().is<ErrorExpr *>()) {
+      if (isa<ErrorExpr *>(fromPlaceholder->getOriginator())) {
         return true;
       }
     }
     if (auto toPlaceholder = getToType()->getAs<PlaceholderType>()) {
-      if (toPlaceholder->getOriginator().is<ErrorExpr *>()) {
+      if (isa<ErrorExpr *>(toPlaceholder->getOriginator())) {
         return true;
       }
     }
@@ -1193,7 +1208,7 @@ public:
   }
 
   ArrayRef<unsigned> getMismatches() const {
-    return {getTrailingObjects<unsigned>(), NumMismatches};
+    return getTrailingObjects(NumMismatches);
   }
 
   bool coalesceAndDiagnose(const Solution &solution,
@@ -1216,7 +1231,7 @@ private:
                 bool asNote = false) const;
 
   MutableArrayRef<unsigned> getMismatchesBuf() {
-    return {getTrailingObjects<unsigned>(), NumMismatches};
+    return getTrailingObjects(NumMismatches);
   }
 };
 
@@ -1786,7 +1801,7 @@ public:
   std::string getName() const override { return "synthesize missing argument(s)"; }
 
   ArrayRef<SynthesizedArg> getSynthesizedArguments() const {
-    return {getTrailingObjects<SynthesizedArg>(), NumSynthesized};
+    return getTrailingObjects(NumSynthesized);
   }
 
   bool diagnose(const Solution &solution, bool asNote = false) const override;
@@ -1805,7 +1820,7 @@ public:
 
 private:
   MutableArrayRef<SynthesizedArg> getSynthesizedArgumentsBuf() {
-    return {getTrailingObjects<SynthesizedArg>(), NumSynthesized};
+    return getTrailingObjects(NumSynthesized);
   }
 };
 
@@ -1834,7 +1849,7 @@ public:
   std::string getName() const override { return "remove extraneous argument(s)"; }
 
   ArrayRef<IndexedParam> getExtraArguments() const {
-    return {getTrailingObjects<IndexedParam>(), NumExtraneous};
+    return getTrailingObjects(NumExtraneous);
   }
 
   bool diagnose(const Solution &solution, bool asNote = false) const override;
@@ -1862,7 +1877,7 @@ public:
 
 private:
   MutableArrayRef<IndexedParam> getExtraArgumentsBuf() {
-    return {getTrailingObjects<IndexedParam>(), NumExtraneous};
+    return getTrailingObjects(NumExtraneous);
   }
 };
 
@@ -1928,6 +1943,25 @@ public:
   static bool classof(const ConstraintFix *fix) {
     return fix->getKind() == FixKind::AllowInaccessibleMember;
   }
+};
+
+class AllowMemberFromWrongModule final : public AllowInvalidMemberRef {
+  AllowMemberFromWrongModule(ConstraintSystem &cs, Type baseType,
+                             ValueDecl *member, DeclNameRef name,
+                             ConstraintLocator *locator)
+      : AllowInvalidMemberRef(cs, FixKind::AllowMemberFromWrongModule, baseType,
+                              member, name, locator) {}
+
+public:
+  std::string getName() const override {
+    return "allow reference to member from wrong module";
+  }
+
+  bool diagnose(const Solution &solution, bool asNote = false) const override;
+
+  static AllowMemberFromWrongModule *create(ConstraintSystem &cs, Type baseType,
+                                            ValueDecl *member, DeclNameRef name,
+                                            ConstraintLocator *locator);
 };
 
 class AllowAnyObjectKeyPathRoot final : public ConstraintFix {
@@ -2019,6 +2053,8 @@ class AllowInvalidRefInKeyPath final : public ConstraintFix {
     AsyncOrThrowsMethod,
     // Allow a reference to an enum case as a key path component.
     EnumCase,
+    // Allow a reference to a type as a key path component.
+    TypeReference,
   } Kind;
 
   ValueDecl *Member;
@@ -2051,6 +2087,8 @@ public:
     case RefKind::AsyncOrThrowsMethod:
       return "allow reference to async or throwing method as a key path "
              "component";
+    case RefKind::TypeReference:
+      return "allow reference to a type as a key path component";
     }
     llvm_unreachable("covered switch");
   }
@@ -2262,7 +2300,7 @@ public:
   }
 
   ArrayRef<Expr *> getElements() const {
-    return {getTrailingObjects<Expr *>(), NumElements};
+    return getTrailingObjects(NumElements);
   }
 
   bool diagnose(const Solution &solution, bool asNote = false) const override;
@@ -2277,7 +2315,7 @@ public:
 
 private:
   MutableArrayRef<Expr *> getElementBuffer() {
-    return {getTrailingObjects<Expr *>(), NumElements};
+    return getTrailingObjects(NumElements);
   }
 };
 
@@ -2419,6 +2457,30 @@ public:
 
   static bool classof(const ConstraintFix *fix) {
     return fix->getKind() == FixKind::IgnoreAssignmentDestinationType;
+  }
+};
+
+/// Ignore a non-metatype contextual type for a `type(of:)` expression, for
+/// example `let x: Int = type(of: foo)`.
+class IgnoreNonMetatypeDynamicType final : public ContextualMismatch {
+  IgnoreNonMetatypeDynamicType(ConstraintSystem &cs, Type instanceTy,
+                               Type metatypeTy, ConstraintLocator *locator)
+      : ContextualMismatch(cs, FixKind::IgnoreNonMetatypeDynamicType,
+                           instanceTy, metatypeTy, locator) {}
+
+public:
+  std::string getName() const override {
+    return "ignore non-metatype result for 'type(of:)'";
+  }
+
+  bool diagnose(const Solution &solution, bool asNote = false) const override;
+
+  static IgnoreNonMetatypeDynamicType *create(ConstraintSystem &cs,
+                                              Type instanceTy, Type metatypeTy,
+                                              ConstraintLocator *locator);
+
+  static bool classof(const ConstraintFix *fix) {
+    return fix->getKind() == FixKind::IgnoreNonMetatypeDynamicType;
   }
 };
 
@@ -3396,7 +3458,8 @@ public:
   }
 };
 
-/// Emit a warning for mismatched tuple labels.
+/// Emit a warning for mismatched tuple labels, which is upgraded to an error
+/// for a future language mode.
 class AllowTupleLabelMismatch final : public ContextualMismatch {
   AllowTupleLabelMismatch(ConstraintSystem &cs, Type fromType, Type toType,
                           ConstraintLocator *locator)
@@ -3516,14 +3579,14 @@ class RenameConflictingPatternVariables final
   }
 
   MutableArrayRef<VarDecl *> getConflictingBuffer() {
-    return {getTrailingObjects<VarDecl *>(), NumConflicts};
+    return getTrailingObjects(NumConflicts);
   }
 
 public:
   std::string getName() const override { return "rename pattern variables"; }
 
   ArrayRef<VarDecl *> getConflictingVars() const {
-    return {getTrailingObjects<VarDecl *>(), NumConflicts};
+    return getTrailingObjects(NumConflicts);
   }
 
   bool diagnose(const Solution &solution, bool asNote = false) const override;
@@ -3873,6 +3936,33 @@ public:
 
   static bool classof(const ConstraintFix *fix) {
     return fix->getKind() == FixKind::AllowInlineArrayLiteralCountMismatch;
+  }
+};
+
+class TooManyDynamicMemberLookups : public ConstraintFix {
+  DeclNameRef Name;
+
+  TooManyDynamicMemberLookups(ConstraintSystem &cs, DeclNameRef name,
+                              ConstraintLocator *locator)
+      : ConstraintFix(cs, FixKind::TooManyDynamicMemberLookups, locator),
+        Name(name) {}
+
+public:
+  std::string getName() const override {
+    return "too many dynamic member lookups";
+  }
+
+  bool diagnose(const Solution &solution, bool asNote = false) const override;
+
+  bool diagnoseForAmbiguity(CommonFixesArray commonFixes) const override {
+    return diagnose(*commonFixes.front().first);
+  }
+
+  static TooManyDynamicMemberLookups *
+  create(ConstraintSystem &cs, DeclNameRef name, ConstraintLocator *locator);
+
+  static bool classof(const ConstraintFix *fix) {
+    return fix->getKind() == FixKind::TooManyDynamicMemberLookups;
   }
 };
 

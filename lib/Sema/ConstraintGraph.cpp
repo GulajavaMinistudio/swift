@@ -254,36 +254,40 @@ void ConstraintGraphNode::truncateEquivalenceClass(unsigned prevSize) {
 void ConstraintGraphNode::addReferencedVar(TypeVariableType *typeVar) {
   bool inserted = References.insert(typeVar);
   if (!inserted) {
-    llvm::errs() << "$T" << TypeVar->getImpl().getID() << " already "
-                 << "references $T" << typeVar->getImpl().getID() << "\n";
-    abort();
+    ABORT([&](auto &out) {
+      out << "$T" << TypeVar->getImpl().getID() << " already "
+          << "references $T" << typeVar->getImpl().getID();
+    });
   }
 }
 
 void ConstraintGraphNode::addReferencedBy(TypeVariableType *typeVar) {
   bool inserted = ReferencedBy.insert(typeVar);
   if (!inserted) {
-    llvm::errs() << "$T" << TypeVar->getImpl().getID() << " already "
-                 << "referenced by $T" << typeVar->getImpl().getID() << "\n";
-    abort();
+    ABORT([&](auto &out) {
+      out << "$T" << TypeVar->getImpl().getID() << " already "
+          << "referenced by $T" << typeVar->getImpl().getID();
+    });
   }
 }
 
 void ConstraintGraphNode::removeReference(TypeVariableType *typeVar) {
   auto removed = References.remove(typeVar);
   if (!removed) {
-    llvm::errs() << "$T" << TypeVar->getImpl().getID() << " does not "
-                 << "reference $T" << typeVar->getImpl().getID() << "\n";
-    abort();
+    ABORT([&](auto &out) {
+      out << "$T" << TypeVar->getImpl().getID() << " does not "
+          << "reference $T" << typeVar->getImpl().getID();
+    });
   }
 }
 
 void ConstraintGraphNode::removeReferencedBy(TypeVariableType *typeVar) {
   auto removed = ReferencedBy.remove(typeVar);
   if (!removed) {
-    llvm::errs() << "$T" << TypeVar->getImpl().getID() << " not "
-                 << "referenced by $T" << typeVar->getImpl().getID() << "\n";
-    abort();
+    ABORT([&](auto &out) {
+      out << "$T" << TypeVar->getImpl().getID() << " not "
+          << "referenced by $T" << typeVar->getImpl().getID();
+    });
   }
 }
 
@@ -806,7 +810,7 @@ namespace {
 
       for (auto typeVar : typeVars) {
         auto &impl = typeVar->getImpl();
-        if (impl.getRepresentativeOrFixed().is<TypeBase *>()) {
+        if (isa<TypeBase *>(impl.getRepresentativeOrFixed())) {
           auto &node = cg[typeVar];
           for (auto otherTypeVar : node.getReferencedVars()) {
             unionSets(typeVar, otherTypeVar);
@@ -917,7 +921,8 @@ bool ConstraintGraph::contractEdges() {
     // us enough information to decided on l-valueness.
     if (tyvar1->getImpl().canBindToInOut()) {
       bool isNotContractable = true;
-      if (auto bindings = CS.getBindingsFor(tyvar1)) {
+      auto bindings = CS.getBindingsFor(tyvar1);
+      if (bindings.isViable()) {
         // Holes can't be contracted.
         if (bindings.isHole())
           continue;
@@ -983,7 +988,7 @@ void ConstraintGraph::incrementConstraintsPerContractionCounter() {
 #pragma mark Debugging output
 
 void ConstraintGraphNode::print(llvm::raw_ostream &out, unsigned indent,
-                                PrintOptions PO) const {
+                                const PrintOptions &PO) const {
   out.indent(indent);
   Type(TypeVar).print(out, PO);
   out << ":\n";
@@ -1044,19 +1049,14 @@ void ConstraintGraphNode::print(llvm::raw_ostream &out, unsigned indent,
 }
 
 void ConstraintGraphNode::dump() const {
-  PrintOptions PO;
-  PO.PrintTypesForDebugging = true;
-  print(llvm::dbgs(), 0, PO);
+  print(llvm::dbgs(), 0, PrintOptions::forDebugging());
 }
 
 void ConstraintGraph::print(ArrayRef<TypeVariableType *> typeVars,
                             llvm::raw_ostream &out) {
-  PrintOptions PO;
-  PO.PrintTypesForDebugging = true;
-
   for (auto typeVar : typeVars) {
-    (*this)[typeVar].print(
-        out, (CS.solverState ? CS.solverState->getCurrentIndent() : 0) + 2, PO);
+    auto indent = (CS.solverState ? CS.solverState->getCurrentIndent() : 0) + 2;
+    (*this)[typeVar].print(out, indent, PrintOptions::forDebugging());
     out << "\n";
   }
 }
@@ -1073,8 +1073,7 @@ void ConstraintGraph::printConnectedComponents(
     ArrayRef<TypeVariableType *> typeVars,
     llvm::raw_ostream &out) {
   auto components = computeConnectedComponents(typeVars);
-  PrintOptions PO;
-  PO.PrintTypesForDebugging = true;
+
   for (const auto& component : components) {
     out.indent((CS.solverState ? CS.solverState->getCurrentIndent() : 0) + 2);
     out << component.solutionIndex << ": ";
@@ -1083,13 +1082,12 @@ void ConstraintGraph::printConnectedComponents(
     };
 
     // Print all of the type variables in this connected component.
-    interleave(component.typeVars,
-               [&](TypeVariableType *typeVar) {
-                 Type(typeVar).print(out, PO);
-               },
-               [&] {
-                 out << ' ';
-               });
+    interleave(
+        component.typeVars,
+        [&](TypeVariableType *typeVar) {
+          Type(typeVar).print(out, PrintOptions::forDebugging());
+        },
+        [&] { out << ' '; });
   }
 }
 

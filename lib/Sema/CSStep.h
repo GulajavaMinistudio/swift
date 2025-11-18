@@ -407,15 +407,12 @@ private:
       auto &log = getDebugLogger();
       log << "Type variables in scope = "
           << "[";
-      auto typeVars = CS.getTypeVariables();
-      PrintOptions PO;
-      PO.PrintTypesForDebugging = true;
-      interleave(typeVars, [&](TypeVariableType *typeVar) {
-                   Type(typeVar).print(log, PO);
-                 },
-                 [&] {
-                   log << ", ";
-                 });
+      interleave(
+          CS.getTypeVariables(),
+          [&](TypeVariableType *typeVar) {
+            Type(typeVar).print(log, PrintOptions::forDebugging());
+          },
+          [&] { log << ", "; });
       log << "]" << '\n';
     }
 
@@ -553,9 +550,8 @@ public:
   StepResult resume(bool prevFailed) override;
 
   void print(llvm::raw_ostream &Out) override {
-    PrintOptions PO;
-    PO.PrintTypesForDebugging = true;
-    Out << "TypeVariableStep for " << TypeVar->getString(PO) << '\n';
+    Out << "TypeVariableStep for ";
+    Out << TypeVar->getString(PrintOptions::forDebugging()) << '\n';
   }
 
 protected:
@@ -613,9 +609,17 @@ class DisjunctionStep final : public BindingStep<DisjunctionChoiceProducer> {
   std::optional<std::pair<Constraint *, Score>> LastSolvedChoice;
 
 public:
+  DisjunctionStep(
+      ConstraintSystem &cs,
+      std::pair<Constraint *, llvm::TinyPtrVector<Constraint *>> &disjunction,
+      SmallVectorImpl<Solution> &solutions)
+      : DisjunctionStep(cs, disjunction.first, disjunction.second, solutions) {}
+
   DisjunctionStep(ConstraintSystem &cs, Constraint *disjunction,
+                  llvm::TinyPtrVector<Constraint *> &favoredChoices,
                   SmallVectorImpl<Solution> &solutions)
-      : BindingStep(cs, {cs, disjunction}, solutions), Disjunction(disjunction) {
+      : BindingStep(cs, {cs, disjunction, favoredChoices}, solutions),
+        Disjunction(disjunction) {
     assert(Disjunction->getKind() == ConstraintKind::Disjunction);
     pruneOverloadSet(Disjunction);
     ++cs.solverState->NumDisjunctions;
@@ -684,6 +688,9 @@ private:
   // chained together. If so, disable choices which differ
   // from currently selected representative.
   void pruneOverloadSet(Constraint *disjunction) {
+    if (!CS.performanceHacksEnabled())
+      return;
+
     auto *choice = disjunction->getNestedConstraints().front();
     if (choice->getKind() != ConstraintKind::BindOverload)
       return;

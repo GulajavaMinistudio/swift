@@ -138,7 +138,7 @@ static EnumElementDecl *
 lookupUnqualifiedEnumMemberElement(DeclContext *DC, DeclNameRef name,
                                    SourceLoc UseLoc) {
   // FIXME: We should probably pay attention to argument labels someday.
-  name = name.withoutArgumentLabels();
+  name = name.withoutArgumentLabels(DC->getASTContext());
 
   auto lookup =
       TypeChecker::lookupUnqualified(DC, name, UseLoc,
@@ -153,7 +153,7 @@ static LookupResult lookupMembers(DeclContext *DC, Type ty, DeclNameRef name,
     return LookupResult();
 
   // FIXME: We should probably pay attention to argument labels someday.
-  name = name.withoutArgumentLabels();
+  name = name.withoutArgumentLabels(DC->getASTContext());
 
   // Look up the case inside the enum.
   // FIXME: We should be able to tell if this is a private lookup.
@@ -221,6 +221,11 @@ static DeclRefTypeRepr *translateExprToDeclRefTypeRepr(Expr *E, ASTContext &C) {
     }
 
     DeclRefTypeRepr *visitUnresolvedDeclRefExpr(UnresolvedDeclRefExpr *udre) {
+      if (!udre->getName().isSimpleName() ||
+          udre->getName().isOperator() ||
+          udre->getName().isSpecial())
+        return nullptr;
+
       return UnqualifiedIdentTypeRepr::create(C, udre->getNameLoc(),
                                               udre->getName());
     }
@@ -709,7 +714,7 @@ validateTypedPattern(TypedPattern *TP, DeclContext *dc,
       return ErrorType::get(Context);
     }
 
-    return named->getDecl()->getDeclContext()->mapTypeIntoContext(opaqueTy);
+    return named->getDecl()->getDeclContext()->mapTypeIntoEnvironment(opaqueTy);
   }
 
   const auto ty = TypeResolution::resolveContextualType(
@@ -768,13 +773,27 @@ ExprPatternMatchRequest::evaluate(Evaluator &evaluator,
       DeclNameLoc(EP->getLoc()));
   matchOp->setImplicit();
 
+  auto subExpr = EP->getSubExpr();
+
+  // Pull off the outer "unsafe" expression.
+  UnsafeExpr *unsafeExpr = dyn_cast<UnsafeExpr>(subExpr);
+  if (unsafeExpr) {
+    subExpr = unsafeExpr->getSubExpr();
+  }
+
   // Note we use getEndLoc here to have the BinaryExpr source range be the same
   // as the expr pattern source range.
   auto *matchVarRef =
       new (ctx) DeclRefExpr(matchVar, DeclNameLoc(EP->getEndLoc()),
                             /*Implicit=*/true);
-  auto *matchCall = BinaryExpr::create(ctx, EP->getSubExpr(), matchOp,
+  Expr *matchCall = BinaryExpr::create(ctx, subExpr, matchOp,
                                        matchVarRef, /*implicit*/ true);
+
+  // If there was an "unsafe", put it outside of the match call.
+  if (unsafeExpr) {
+    matchCall = new (ctx) UnsafeExpr(unsafeExpr->getLoc(), matchCall);
+  }
+
   return {matchVar, matchCall};
 }
 
@@ -826,11 +845,7 @@ Type PatternTypeRequest::evaluate(Evaluator &evaluator,
     HandlePlaceholderTypeReprFn placeholderHandler = nullptr;
     OpenPackElementFn packElementOpener = nullptr;
     if (pattern.allowsInference()) {
-      unboundTyOpener = [](auto unboundTy) {
-        // FIXME: Don't let unbound generic types escape type resolution.
-        // For now, just return the unbound generic type.
-        return unboundTy;
-      };
+      unboundTyOpener = TypeResolution::defaultUnboundTypeOpener;
       // FIXME: Don't let placeholder types escape type resolution.
       // For now, just return the placeholder type.
       placeholderHandler = PlaceholderType::get;
@@ -847,7 +862,7 @@ Type PatternTypeRequest::evaluate(Evaluator &evaluator,
     // If we're type checking this pattern in a context that can provide type
     // information, then the lack of type information is not an error.
     if (options & TypeResolutionFlags::AllowUnspecifiedTypes)
-      return Context.TheUnresolvedType;
+      return PlaceholderType::get(Context, P);
 
     Context.Diags.diagnose(P->getLoc(), diag::cannot_infer_type_for_pattern);
     if (auto named = dyn_cast<NamedPattern>(P)) {
@@ -894,11 +909,7 @@ Type PatternTypeRequest::evaluate(Evaluator &evaluator,
       HandlePlaceholderTypeReprFn placeholderHandler = nullptr;
       OpenPackElementFn packElementOpener = nullptr;
       if (pattern.allowsInference()) {
-        unboundTyOpener = [](auto unboundTy) {
-          // FIXME: Don't let unbound generic types escape type resolution.
-          // For now, just return the unbound generic type.
-          return unboundTy;
-        };
+        unboundTyOpener = TypeResolution::defaultUnboundTypeOpener;
         // FIXME: Don't let placeholder types escape type resolution.
         // For now, just return the placeholder type.
         placeholderHandler = PlaceholderType::get;
@@ -927,7 +938,7 @@ Type PatternTypeRequest::evaluate(Evaluator &evaluator,
       return ErrorType::get(Context);
     }
 
-    return Context.TheUnresolvedType;
+    return PlaceholderType::get(Context, P);
   }
   llvm_unreachable("bad pattern kind!");
 }
@@ -991,7 +1002,6 @@ void repairTupleOrAssociatedValuePatternIfApplicable(
         auto trailingParen = SourceRange(enumElementInnerPat->getEndLoc());
         diag.fixItRemove(leadingParen).fixItRemove(trailingParen);
       }
-      diag.flush();
       addDeclNote();
       enumElementInnerPat = semantic;
     } else {
@@ -1573,8 +1583,9 @@ Pattern *TypeChecker::coercePatternToType(
             parentTy->getAnyNominal() == type->getAnyNominal()) {
           enumTy = type;
         } else {
-          diags.diagnose(EEP->getLoc(), diag::ambiguous_enum_pattern_type,
-                         parentTy, type);
+          if (!type->hasError())
+            diags.diagnose(EEP->getLoc(), diag::ambiguous_enum_pattern_type,
+                           parentTy, type);
           return nullptr;
         }
       }
@@ -1680,15 +1691,17 @@ Pattern *TypeChecker::coercePatternToType(
     Type elementType = type->getOptionalObjectType();
 
     if (elementType.isNull()) {
-      auto diagID = diag::optional_element_pattern_not_valid_type;
-      SourceLoc loc = OP->getQuestionLoc();
-      // Produce tailored diagnostic for if/let and other conditions.
-      if (OP->isImplicit()) {
-        diagID = diag::condition_optional_element_pattern_not_valid_type;
-        loc = OP->getLoc();
-      }
+      if (!type->hasError()) {
+        auto diagID = diag::optional_element_pattern_not_valid_type;
+        SourceLoc loc = OP->getQuestionLoc();
+        // Produce tailored diagnostic for if/let and other conditions.
+        if (OP->isImplicit()) {
+          diagID = diag::condition_optional_element_pattern_not_valid_type;
+          loc = OP->getLoc();
+        }
 
-      diags.diagnose(loc, diagID, type);
+        diags.diagnose(loc, diagID, type);
+      }
       return nullptr;
     }
 
@@ -1718,41 +1731,18 @@ Pattern *TypeChecker::coercePatternToType(
 /// contextual type.
 void TypeChecker::coerceParameterListToType(ParameterList *P,
                                             AnyFunctionType *FN) {
-
-  // Local function to check if the given type is valid e.g. doesn't have
-  // errors, type variables or unresolved types related to it.
-  auto isValidType = [](Type type) -> bool {
-    return !(type->hasError() || type->hasUnresolvedType());
-  };
-
-  // Local function to check whether type of given parameter
-  // should be coerced to a given contextual type or not.
-  auto shouldOverwriteParam = [&](ParamDecl *param) -> bool {
-    return !isValidType(param->getTypeInContext());
-  };
-
-  auto handleParameter = [&](ParamDecl *param, Type ty, bool forceMutable) {
-    if (forceMutable)
-      param->setSpecifier(ParamDecl::Specifier::InOut);
-
-    // If contextual type is invalid and we have a valid argument type
-    // trying to coerce argument to contextual type would mean erasing
-    // valuable diagnostic information.
-    if (isValidType(ty) || shouldOverwriteParam(param)) {
-      param->setInterfaceType(ty->mapTypeOutOfContext());
-    }
-  };
-
   // Coerce each parameter to the respective type.
   ArrayRef<AnyFunctionType::Param> params = FN->getParams();
   for (unsigned i = 0, e = P->size(); i != e; ++i) {
     auto &param = P->get(i);
     assert(param->getArgumentName().empty() &&
            "Closures cannot have API names");
-    
-    handleParameter(param,
-                    params[i].getParameterType(),
-                    params[i].isInOut());
     assert(!param->isDefaultArgument() && "Closures cannot have default args");
+
+    if (params[i].isInOut())
+      param->setSpecifier(ParamDecl::Specifier::InOut);
+
+    param->setInterfaceType(
+        params[i].getParameterType()->mapTypeOutOfEnvironment());
   }
 }

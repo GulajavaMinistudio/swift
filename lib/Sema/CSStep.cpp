@@ -272,7 +272,7 @@ StepResult ComponentStep::take(bool prevFailed) {
     }
   });
 
-  auto *disjunction = CS.selectDisjunction();
+  auto disjunction = CS.selectDisjunction();
   auto *conjunction = CS.selectConjunction();
 
   if (CS.isDebugMode()) {
@@ -280,13 +280,11 @@ StepResult ComponentStep::take(bool prevFailed) {
     CS.collectDisjunctions(disjunctions);
     std::vector<std::string> overloadDisjunctions;
     for (const auto &disjunction : disjunctions) {
-      PrintOptions PO;
-      PO.PrintTypesForDebugging = true;
-
       auto constraints = disjunction->getNestedConstraints();
       if (constraints[0]->getKind() == ConstraintKind::BindOverload)
         overloadDisjunctions.push_back(
-            constraints[0]->getFirstType()->getString(PO));
+            constraints[0]->getFirstType()->getString(
+                PrintOptions::forDebugging()));
     }
 
     if (!potentialBindings.empty() || !overloadDisjunctions.empty()) {
@@ -315,7 +313,8 @@ StepResult ComponentStep::take(bool prevFailed) {
     // Bindings usually happen first, but sometimes we want to prioritize a
     // disjunction or conjunction.
     if (bestBindings) {
-      if (disjunction && !bestBindings->favoredOverDisjunction(disjunction))
+      if (disjunction &&
+          !bestBindings->favoredOverDisjunction(disjunction->first))
         return StepKind::Disjunction;
 
       if (conjunction && !bestBindings->favoredOverConjunction(conjunction))
@@ -338,9 +337,9 @@ StepResult ComponentStep::take(bool prevFailed) {
       return suspend(
           std::make_unique<TypeVariableStep>(*bestBindings, Solutions));
     case StepKind::Disjunction: {
-      CS.retireConstraint(disjunction);
+      CS.retireConstraint(disjunction->first);
       return suspend(
-          std::make_unique<DisjunctionStep>(CS, disjunction, Solutions));
+          std::make_unique<DisjunctionStep>(CS, *disjunction, Solutions));
     }
     case StepKind::Conjunction: {
       CS.retireConstraint(conjunction);
@@ -356,14 +355,11 @@ StepResult ComponentStep::take(bool prevFailed) {
     // we can't solve this system unless we have free type variables
     // allowed in the solution.
     if (CS.isDebugMode()) {
-      PrintOptions PO;
-      PO.PrintTypesForDebugging = true;
-
       auto &log = getDebugLogger();
       log << "(failed due to free variables:";
       for (auto *typeVar : CS.getTypeVariables()) {
         if (!typeVar->getImpl().hasRepresentativeOrFixed()) {
-          log << " " << typeVar->getString(PO);
+          log << " " << typeVar->getString(PrintOptions::forDebugging());
         }
       }
       log << ")\n";
@@ -634,12 +630,30 @@ bool DisjunctionStep::shouldSkip(const DisjunctionChoice &choice) const {
   if (choice.isDisabled())
     return skip("disabled");
 
-  // Skip unavailable overloads (unless in diagnostic mode).
-  if (choice.isUnavailable() && !CS.shouldAttemptFixes())
-    return skip("unavailable");
+  if (!CS.shouldAttemptFixes()) {
+    // Skip unavailable overloads.
+    if (choice.isUnavailable())
+      return skip("unavailable");
 
-  if (ctx.TypeCheckerOpts.DisableConstraintSolverPerformanceHacks)
-    return false;
+    // Since the disfavored overloads are always located at the end of
+    // the partition they could be skipped if there was at least one
+    // valid solution for this partition already, because the solution
+    // they produce would always be worse.
+    if (choice.isDisfavored() && LastSolvedChoice) {
+      bool canSkipDisfavored = true;
+      auto &lastScore = LastSolvedChoice->second;
+      for (unsigned i = 0, n = unsigned(SK_DisfavoredOverload) + 1; i != n;
+           ++i) {
+        if (lastScore.Data[i] > 0) {
+          canSkipDisfavored = false;
+          break;
+        }
+      }
+
+      if (canSkipDisfavored)
+        return skip("disfavored");
+    }
+  }
 
   // If the solver already found a solution with a better overload choice that
   // can be unconditionally substituted by the current choice, skip the current
@@ -726,14 +740,9 @@ bool swift::isSIMDOperator(ValueDecl *value) {
 
 bool DisjunctionStep::shortCircuitDisjunctionAt(
     Constraint *currentChoice, Constraint *lastSuccessfulChoice) const {
-  auto &ctx = CS.getASTContext();
-
   // Anything without a fix is better than anything with a fix.
   if (currentChoice->getFix() && !lastSuccessfulChoice->getFix())
     return true;
-
-  if (ctx.TypeCheckerOpts.DisableConstraintSolverPerformanceHacks)
-    return false;
 
   if (auto restriction = currentChoice->getRestriction()) {
     // Non-optional conversions are better than optional-to-optional
@@ -873,23 +882,24 @@ StepResult ConjunctionStep::resume(bool prevFailed) {
     if (Solutions.size() > 1)
       filterSolutions(Solutions, /*minimize=*/true);
 
-    // In diagnostic mode we need to stop a conjunction
-    // but consider it successful if there are:
+    // In diagnostic mode we need to stop a conjunction but consider it
+    // successful if there are:
     //
-    // - More than one solution for this element. Ambiguity
-    //   needs to get propagated back to the outer context
-    //   to be diagnosed.
-    // - A single solution that requires one or more fixes,
-    //   continuing would result in more errors associated
-    //   with the failed element.
+    // - More than one solution for this element. Ambiguity needs to get
+    //   propagated back to the outer context to be diagnosed.
+    // - A single solution that requires one or more fixes or holes, since
+    //   continuing would result in more errors associated with the failed
+    //   element, and we don't preserve scores across elements.
     if (CS.shouldAttemptFixes()) {
       if (Solutions.size() > 1)
         Producer.markExhausted();
 
       if (Solutions.size() == 1) {
         auto score = Solutions.front().getFixedScore();
-        if (score.Data[SK_Fix] > 0 && !CS.isForCodeCompletion())
-          Producer.markExhausted();
+        if (!CS.isForCodeCompletion()) {
+          if (score.Data[SK_Fix] > 0 || score.Data[SK_Hole] > 0)
+            Producer.markExhausted();
+        }
       }
     } else if (Solutions.size() != 1) {
       return failConjunction();
@@ -967,7 +977,15 @@ StepResult ConjunctionStep::resume(bool prevFailed) {
                 ++numHoles;
               }
             }
-            CS.increaseScore(SK_Hole, Conjunction->getLocator(), numHoles);
+            // Increase the score for each hole we bind. Avoid doing this for
+            // completion since it's entirely expected we'll end up with
+            // ambiguities in the body of a closure if we're completing e.g
+            // `someOverloadedFn(#^CC^#)`. As such we don't want to penalize the
+            // solution for unbound type variables outside of the body since
+            // that will prevent us from being able to eagerly prune e.g
+            // disfavored overloads in the outer scope.
+            if (!CS.isForCodeCompletion())
+              CS.increaseScore(SK_Hole, Conjunction->getLocator(), numHoles);
           }
 
           if (CS.worseThanBestSolution())
@@ -1031,7 +1049,7 @@ void ConjunctionStep::SolverSnapshot::replaySolution(const Solution &solution) {
 
   // If inference succeeded, we are done.
   auto score = solution.getFixedScore();
-  if (score.Data[SK_Fix] == 0)
+  if (score.Data[SK_Fix] == 0 && score.Data[SK_Hole] == 0)
     return;
 
   // If this conjunction represents a closure and inference

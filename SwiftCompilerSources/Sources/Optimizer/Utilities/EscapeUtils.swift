@@ -387,7 +387,7 @@ fileprivate struct EscapeWalker<V: EscapeVisitor> : ValueDefUseWalker,
       if handleDestroy(of: operand.value, path: path) == .abortWalk {
         return .abortWalk
       }
-    case is ReturnInst:
+    case is ReturnInstruction:
       return isEscaping
     case is ApplyInst, is TryApplyInst, is BeginApplyInst:
       return walkDownCallee(argOp: operand, apply: instruction as! FullApplySite, path: path)
@@ -534,7 +534,7 @@ fileprivate struct EscapeWalker<V: EscapeVisitor> : ValueDefUseWalker,
       if handleDestroy(of: operand.value, path: path) == .abortWalk {
         return .abortWalk
       }
-    case is ReturnInst:
+    case is ReturnInstruction:
       return isEscaping
     case is ApplyInst, is TryApplyInst, is BeginApplyInst:
       return walkDownCallee(argOp: operand, apply: instruction as! FullApplySite, path: path)
@@ -640,7 +640,7 @@ fileprivate struct EscapeWalker<V: EscapeVisitor> : ValueDefUseWalker,
     }
 
     // Indirect arguments cannot escape the function, but loaded values from such can.
-    if !followLoads(at: path) {
+    if argOp.value.type.isAddress && !followLoads(at: path) {
       if let beginApply = apply as? BeginApplyInst {
         // begin_apply can yield an address value.
         if !indirectResultEscapes(of: beginApply, path: path) {

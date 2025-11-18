@@ -20,6 +20,7 @@
 
 #include "clang/CAS/CASOptions.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/CAS/CASConfiguration.h"
 
 namespace swift {
 
@@ -34,11 +35,11 @@ public:
   /// Skip replaying outputs from cache.
   bool CacheSkipReplay = false;
 
-  /// CASOptions
-  clang::CASOptions CASOpts;
+  /// Import modules from CAS.
+  bool ImportModuleFromCAS = false;
 
-  /// CASFS Root.
-  std::vector<std::string> CASFSRootIDs;
+  /// CAS Configuration.
+  llvm::cas::CASConfiguration Config;
 
   /// Clang Include Trees.
   std::string ClangIncludeTree;
@@ -62,9 +63,8 @@ public:
   /// Check to see if a CASFileSystem is required.
   bool requireCASFS() const {
     return EnableCaching &&
-           (!CASFSRootIDs.empty() || !ClangIncludeTree.empty() ||
-            !ClangIncludeTreeFileList.empty() || !InputFileKey.empty() ||
-            !BridgingHeaderPCHCacheKey.empty());
+           (!ClangIncludeTree.empty() || !ClangIncludeTreeFileList.empty() ||
+            !InputFileKey.empty() || !BridgingHeaderPCHCacheKey.empty());
   }
 
   /// Return a hash code of any components from these options that should

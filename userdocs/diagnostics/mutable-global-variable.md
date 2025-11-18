@@ -1,4 +1,9 @@
-# Unsafe mutable global and static variables
+# Unsafe mutable global and static variables (MutableGlobalVariable)
+
+
+## Overview
+
+Mutable global and static variables that can be accessed from anywhere can cause data races in your program. Resolve this error by making the state immutable or protecting it with a global actor.
 
 Concurrency checking prohibits mutable global and static variables that are `nonisolated` because they can be accessed from arbitrary concurrency domains at once and lead to data races.
 
@@ -44,7 +49,7 @@ This code is also diagnosed under complete concurrency checking. Even though the
 ```swift
 class MyModel {
   @MainActor
-  static let shared = MyModel() 
+  static let shared = MyModel()
 }
 ```
 

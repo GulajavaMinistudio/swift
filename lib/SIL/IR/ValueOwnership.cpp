@@ -76,6 +76,7 @@ CONSTANT_OWNERSHIP_INST(Guaranteed, BeginBorrow)
 CONSTANT_OWNERSHIP_INST(Guaranteed, BorrowedFrom)
 CONSTANT_OWNERSHIP_INST(Guaranteed, LoadBorrow)
 CONSTANT_OWNERSHIP_INST(Guaranteed, FunctionExtractIsolation)
+CONSTANT_OWNERSHIP_INST(Guaranteed, ImplicitActorToOpaqueIsolationCast)
 CONSTANT_OWNERSHIP_INST(None, GlobalValue)
 CONSTANT_OWNERSHIP_INST(Owned, AllocBox)
 CONSTANT_OWNERSHIP_INST(Owned, AllocExistentialBox)
@@ -322,6 +323,7 @@ FORWARDING_OWNERSHIP_INST(MarkUnresolvedReferenceBinding)
 FORWARDING_OWNERSHIP_INST(MoveOnlyWrapperToCopyableValue)
 FORWARDING_OWNERSHIP_INST(CopyableToMoveOnlyWrapperValue)
 FORWARDING_OWNERSHIP_INST(MoveOnlyWrapperToCopyableBox)
+FORWARDING_OWNERSHIP_INST(UncheckedOwnership)
 #undef FORWARDING_OWNERSHIP_INST
 
 ValueOwnershipKind
@@ -647,9 +649,8 @@ CONSTANT_OWNERSHIP_BUILTIN(None, BuildOrdinarySerialExecutorRef)
 CONSTANT_OWNERSHIP_BUILTIN(None, BuildComplexEqualitySerialExecutorRef)
 CONSTANT_OWNERSHIP_BUILTIN(None, BuildDefaultActorExecutorRef)
 CONSTANT_OWNERSHIP_BUILTIN(None, BuildMainActorExecutorRef)
-CONSTANT_OWNERSHIP_BUILTIN(None, StartAsyncLet)
-CONSTANT_OWNERSHIP_BUILTIN(None, EndAsyncLet)
 CONSTANT_OWNERSHIP_BUILTIN(None, StartAsyncLetWithLocalBuffer)
+CONSTANT_OWNERSHIP_BUILTIN(None, FinishAsyncLet)
 CONSTANT_OWNERSHIP_BUILTIN(None, EndAsyncLetLifetime)
 CONSTANT_OWNERSHIP_BUILTIN(None, CreateTaskGroup)
 CONSTANT_OWNERSHIP_BUILTIN(None, CreateTaskGroupWithFlags)
@@ -662,6 +663,13 @@ CONSTANT_OWNERSHIP_BUILTIN(None, InjectEnumTag)
 CONSTANT_OWNERSHIP_BUILTIN(Owned, DistributedActorAsAnyActor)
 CONSTANT_OWNERSHIP_BUILTIN(Guaranteed, ExtractFunctionIsolation) // unreachable
 CONSTANT_OWNERSHIP_BUILTIN(None, AddressOfRawLayout)
+
+CONSTANT_OWNERSHIP_BUILTIN(None, TaskAddCancellationHandler)
+CONSTANT_OWNERSHIP_BUILTIN(None, TaskRemoveCancellationHandler)
+CONSTANT_OWNERSHIP_BUILTIN(None, TaskAddPriorityEscalationHandler)
+CONSTANT_OWNERSHIP_BUILTIN(None, TaskRemovePriorityEscalationHandler)
+CONSTANT_OWNERSHIP_BUILTIN(None, TaskLocalValuePush)
+CONSTANT_OWNERSHIP_BUILTIN(None, TaskLocalValuePop)
 
 #undef CONSTANT_OWNERSHIP_BUILTIN
 
@@ -678,7 +686,10 @@ UNOWNED_OR_NONE_DEPENDING_ON_RESULT(CmpXChg)
 UNOWNED_OR_NONE_DEPENDING_ON_RESULT(AtomicLoad)
 UNOWNED_OR_NONE_DEPENDING_ON_RESULT(ExtractElement)
 UNOWNED_OR_NONE_DEPENDING_ON_RESULT(InsertElement)
+UNOWNED_OR_NONE_DEPENDING_ON_RESULT(Select)
 UNOWNED_OR_NONE_DEPENDING_ON_RESULT(ShuffleVector)
+UNOWNED_OR_NONE_DEPENDING_ON_RESULT(Interleave)
+UNOWNED_OR_NONE_DEPENDING_ON_RESULT(Deinterleave)
 #undef UNOWNED_OR_NONE_DEPENDING_ON_RESULT
 
 #define OWNED_OR_NONE_DEPENDING_ON_RESULT(ID)                                  \
@@ -693,6 +704,7 @@ UNOWNED_OR_NONE_DEPENDING_ON_RESULT(ShuffleVector)
 // fields. The initialized value is immediately consumed by an assignment, so it
 // must be owned.
 OWNED_OR_NONE_DEPENDING_ON_RESULT(ZeroInitializer)
+OWNED_OR_NONE_DEPENDING_ON_RESULT(PrepareInitialization)
 #undef OWNED_OR_NONE_DEPENDING_ON_RESULT
 
 #define BUILTIN(X,Y,Z)

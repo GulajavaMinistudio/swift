@@ -20,6 +20,7 @@
 #include "swift/ABI/MetadataValues.h"
 #include "swift/ABI/ObjectFile.h"
 #include "swift/AST/DiagnosticsIRGen.h"
+#include "swift/AST/DiagnosticsFrontend.h"
 #include "swift/AST/IRGenOptions.h"
 #include "swift/AST/IRGenRequests.h"
 #include "swift/AST/LinkLibrary.h"
@@ -71,6 +72,9 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/ProfileData/InstrProfReader.h"
+#include "llvm/Remarks/Remark.h"
+#include "llvm/Remarks/RemarkStreamer.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -85,7 +89,6 @@
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/ThinLTOBitcodeWriter.h"
-#include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "llvm/Transforms/Instrumentation/InstrProfiling.h"
 #include "llvm/Transforms/Instrumentation/SanitizerCoverage.h"
@@ -93,6 +96,7 @@
 #include "llvm/Transforms/ObjCARC.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/DCE.h"
+#include "llvm/Transforms/Utils/Instrumentation.h"
 
 #include "llvm/CodeGen/MachineOptimizationRemarkEmitter.h"
 #include "llvm/IR/DiagnosticInfo.h"
@@ -132,6 +136,9 @@ swift::getIRTargetOptions(const IRGenOptions &Opts, ASTContext &Ctx) {
   // FIXME: We should do this entirely through Clang, for consistency.
   TargetOptions TargetOpts;
 
+  // Linker support for this is not widespread enough.
+  TargetOpts.SupportIndirectSymViaGOTPCRel_AArch64_ELF = false;
+
   // Explicitly request debugger tuning for LLDB which is the default
   // on Darwin platforms but not on others.
   TargetOpts.DebuggerTuning = llvm::DebuggerKind::LLDB;
@@ -152,6 +159,8 @@ swift::getIRTargetOptions(const IRGenOptions &Opts, ASTContext &Ctx) {
   // ie either setting the default based on the OS or -Xcc -f{no-,}emulated-tls
   // command-line flags.
   TargetOpts.EmulatedTLS = Clang->getCodeGenOpts().EmulatedTLS;
+
+  TargetOpts.MCOptions.AsmVerbose = Opts.VerboseAsm;
 
   // WebAssembly doesn't support atomics yet, see
   // https://github.com/apple/swift/issues/54533 for more details.
@@ -211,20 +220,99 @@ static void align(llvm::Module *Module) {
     }
 }
 
+static std::unique_ptr<llvm::IndexedInstrProfReader>
+getProfileReader(const Twine &ProfileName, llvm::vfs::FileSystem &FS,
+                 DiagnosticEngine &Diags) {
+  auto ReaderOrErr = llvm::IndexedInstrProfReader::create(ProfileName, FS);
+  if (auto E = ReaderOrErr.takeError()) {
+    llvm::handleAllErrors(std::move(E), [&](const llvm::ErrorInfoBase &EI) {
+      Diags.diagnose(SourceLoc(), diag::ir_profile_read_failed,
+                     ProfileName.str(), EI.message());
+    });
+    return nullptr;
+  }
+  return std::move(*ReaderOrErr);
+}
+
+static std::optional<PGOOptions> buildIRUseOptions(const IRGenOptions &Opts,
+                                                   DiagnosticEngine &Diags) {
+  if (Opts.UseIRProfile.empty())
+    return std::nullopt;
+
+  auto FS = llvm::vfs::getRealFileSystem();
+  std::unique_ptr<llvm::IndexedInstrProfReader> Reader =
+      getProfileReader(Opts.UseIRProfile.c_str(), *FS, Diags);
+  if (!Reader)
+    return std::nullopt;
+
+  // Currently memprof profiles are only added at the IR level. Mark the
+  // profile type as IR in that case as well and the subsequent matching
+  // needs to detect which is available (might be one or both).
+  const bool IsIR = Reader->isIRLevelProfile() || Reader->hasMemoryProfile();
+  if (!IsIR) {
+    Diags.diagnose(SourceLoc(), diag::ir_profile_invalid,
+                   Opts.UseIRProfile.c_str());
+    return std::nullopt;
+  }
+
+  const bool IsCS = Reader->hasCSIRLevelProfile();
+  return PGOOptions(
+      /*ProfileFile=*/Opts.UseIRProfile,
+      /*CSProfileGenFile=*/"",
+      /*ProfileRemappingFile=*/"",
+      /*MemoryProfile=*/"",
+      /*Action=*/PGOOptions::IRUse,
+      /*CSPGOAction=*/IsCS ? PGOOptions::CSIRUse : PGOOptions::NoCSAction,
+      /*ColdType=*/PGOOptions::ColdFuncOpt::Default,
+      /*DebugInfoForProfiling=*/Opts.DebugInfoForProfiling);
+}
+
 static void populatePGOOptions(std::optional<PGOOptions> &Out,
-                               const IRGenOptions &Opts) {
+                               const IRGenOptions &Opts,
+                               DiagnosticEngine &Diags) {
   if (!Opts.UseSampleProfile.empty()) {
     Out = PGOOptions(
       /*ProfileFile=*/ Opts.UseSampleProfile,
       /*CSProfileGenFile=*/ "",
       /*ProfileRemappingFile=*/ "",
       /*MemoryProfile=*/ "",
-      /*FS=*/ llvm::vfs::getRealFileSystem(), // TODO: is this fine?
       /*Action=*/ PGOOptions::SampleUse,
       /*CSPGOAction=*/ PGOOptions::NoCSAction,
       /*ColdType=*/ PGOOptions::ColdFuncOpt::Default,
       /*DebugInfoForProfiling=*/ Opts.DebugInfoForProfiling
     );
+    return;
+  }
+
+  if (Opts.EnableCSIRProfileGen) {
+    const bool hasUse = !Opts.UseIRProfile.empty();
+    Out = PGOOptions(
+        /*ProfileFile=*/Opts.UseIRProfile,
+        /*CSProfileGenFile=*/Opts.InstrProfileOutput,
+        /*ProfileRemappingFile=*/"",
+        /*MemoryProfile=*/"",
+        /*Action=*/hasUse ? PGOOptions::IRUse : PGOOptions::NoAction,
+        /*CSPGOAction=*/PGOOptions::CSIRInstr,
+        /*ColdType=*/PGOOptions::ColdFuncOpt::Default,
+        /*DebugInfoForProfiling=*/Opts.DebugInfoForProfiling);
+    return;
+  }
+
+  if (Opts.EnableIRProfileGen) {
+    Out = PGOOptions(
+        /*ProfileFile=*/Opts.InstrProfileOutput,
+        /*CSProfileGenFile=*/"",
+        /*ProfileRemappingFile=*/"",
+        /*MemoryProfile=*/"",
+        /*Action=*/PGOOptions::IRInstr,
+        /*CSPGOAction=*/PGOOptions::NoCSAction,
+        /*ColdType=*/PGOOptions::ColdFuncOpt::Default,
+        /*DebugInfoForProfiling=*/Opts.DebugInfoForProfiling);
+    return;
+  }
+
+  if (auto IRUseOptions = buildIRUseOptions(Opts, Diags)) {
+    Out = *IRUseOptions;
     return;
   }
 
@@ -234,7 +322,6 @@ static void populatePGOOptions(std::optional<PGOOptions> &Out,
         /*CSProfileGenFile=*/ "",
         /*ProfileRemappingFile=*/ "",
         /*MemoryProfile=*/ "",
-        /*FS=*/ nullptr,
         /*Action=*/ PGOOptions::NoAction,
         /*CSPGOAction=*/ PGOOptions::NoCSAction,
         /*ColdType=*/ PGOOptions::ColdFuncOpt::Default,
@@ -263,7 +350,7 @@ void swift::performLLVMOptimizations(const IRGenOptions &Opts,
                                      llvm::TargetMachine *TargetMachine,
                                      llvm::raw_pwrite_stream *out) {
   std::optional<PGOOptions> PGOOpt;
-  populatePGOOptions(PGOOpt, Opts);
+  populatePGOOptions(PGOOpt, Opts, Diags);
 
   PipelineTuningOptions PTO;
 
@@ -342,7 +429,8 @@ void swift::performLLVMOptimizations(const IRGenOptions &Opts,
             FPM.addPass(SwiftARCOptPass());
         });
     PB.registerOptimizerLastEPCallback([&](ModulePassManager &MPM,
-                                          OptimizationLevel Level) {
+                                           OptimizationLevel Level,
+                                           llvm::ThinOrFullLTOPhase) {
       if (Level != OptimizationLevel::O0)
         MPM.addPass(createModuleToFunctionPassAdaptor(SwiftARCContractPass()));
       if (Level == OptimizationLevel::O0)
@@ -357,7 +445,8 @@ void swift::performLLVMOptimizations(const IRGenOptions &Opts,
 
   if (Opts.Sanitizers & SanitizerKind::Address) {
     PB.registerOptimizerLastEPCallback([&](ModulePassManager &MPM,
-                                           OptimizationLevel Level) {
+                                           OptimizationLevel Level,
+                                           llvm::ThinOrFullLTOPhase) {
       AddressSanitizerOptions ASOpts;
       ASOpts.CompileKernel = false;
       ASOpts.Recover = bool(Opts.SanitizersWithRecoveryInstrumentation &
@@ -376,17 +465,19 @@ void swift::performLLVMOptimizations(const IRGenOptions &Opts,
   }
 
   if (Opts.Sanitizers & SanitizerKind::Thread) {
-    PB.registerOptimizerLastEPCallback(
-        [&](ModulePassManager &MPM, OptimizationLevel Level) {
-          MPM.addPass(ModuleThreadSanitizerPass());
-          MPM.addPass(createModuleToFunctionPassAdaptor(ThreadSanitizerPass()));
-        });
+    PB.registerOptimizerLastEPCallback([&](ModulePassManager &MPM,
+                                           OptimizationLevel Level,
+                                           llvm::ThinOrFullLTOPhase) {
+      MPM.addPass(ModuleThreadSanitizerPass());
+      MPM.addPass(createModuleToFunctionPassAdaptor(ThreadSanitizerPass()));
+    });
   }
 
   if (Opts.SanitizeCoverage.CoverageType !=
       llvm::SanitizerCoverageOptions::SCK_None) {
     PB.registerOptimizerLastEPCallback([&](ModulePassManager &MPM,
-                                           OptimizationLevel Level) {
+                                           OptimizationLevel Level,
+                                           llvm::ThinOrFullLTOPhase) {
       std::vector<std::string> allowlistFiles;
       std::vector<std::string> ignorelistFiles;
       MPM.addPass(SanitizerCoveragePass(Opts.SanitizeCoverage,
@@ -395,14 +486,15 @@ void swift::performLLVMOptimizations(const IRGenOptions &Opts,
   }
 
   if (RunSwiftSpecificLLVMOptzns && !Opts.DisableLLVMMergeFunctions) {
-    PB.registerOptimizerLastEPCallback(
-        [&](ModulePassManager &MPM, OptimizationLevel Level) {
-          if (Level != OptimizationLevel::O0) {
-            const PointerAuthSchema &schema = Opts.PointerAuth.FunctionPointers;
-            unsigned key = (schema.isEnabled() ? schema.getKey() : 0);
-            MPM.addPass(SwiftMergeFunctionsPass(schema.isEnabled(), key));
-          }
-        });
+    PB.registerOptimizerLastEPCallback([&](ModulePassManager &MPM,
+                                           OptimizationLevel Level,
+                                           llvm::ThinOrFullLTOPhase) {
+      if (Level != OptimizationLevel::O0) {
+        const PointerAuthSchema &schema = Opts.PointerAuth.FunctionPointers;
+        unsigned key = (schema.isEnabled() ? schema.getKey() : 0);
+        MPM.addPass(SwiftMergeFunctionsPass(schema.isEnabled(), key));
+      }
+    });
   }
 
   if (Opts.GenerateProfile) {
@@ -424,7 +516,13 @@ void swift::performLLVMOptimizations(const IRGenOptions &Opts,
   bool isThinLTO = Opts.LLVMLTOKind  == IRGenLLVMLTOKind::Thin;
   bool isFullLTO = Opts.LLVMLTOKind  == IRGenLLVMLTOKind::Full;
   if (!Opts.shouldOptimize() || Opts.DisableLLVMOptzns) {
-    MPM = PB.buildO0DefaultPipeline(level, isFullLTO || isThinLTO);
+    auto phase = llvm::ThinOrFullLTOPhase::None;
+    if (isFullLTO) {
+      phase = llvm::ThinOrFullLTOPhase::FullLTOPreLink;
+    } else if (isThinLTO) {
+      phase = llvm::ThinOrFullLTOPhase::ThinLTOPreLink;
+    }
+    MPM = PB.buildO0DefaultPipeline(level, phase);
   } else if (isThinLTO) {
     MPM = PB.buildThinLTOPreLinkDefaultPipeline(level);
   } else if (isFullLTO) {
@@ -703,31 +801,10 @@ bool swift::performLLVM(const IRGenOptions &Opts,
     assert(Opts.OutputKind == IRGenOutputKind::Module && "no output specified");
   }
 
-  std::string OptRemarksRecordFile;
-  if (Opts.AnnotateCondFailMessage && !OutputFilename.empty()) {
-    OptRemarksRecordFile = std::string(OutputFilename);
-    OptRemarksRecordFile.append(".opt.yaml");
-  }
-
   auto &Ctxt = Module->getContext();
   std::unique_ptr<llvm::DiagnosticHandler> OldDiagnosticHandler =
           Ctxt.getDiagnosticHandler();
   Ctxt.setDiagnosticHandler(std::make_unique<SwiftDiagnosticHandler>(Opts));
-
-  llvm::Expected<std::unique_ptr<llvm::ToolOutputFile>> OptRecordFileOrErr =
-    setupLLVMOptimizationRemarks(Ctxt, OptRemarksRecordFile.c_str(), "annotation-remarks", "yaml",
-                                 false/*RemarksWithHotness*/,
-                                 0/*RemarksHotnessThreshold*/);
-
-  if (Error E = OptRecordFileOrErr.takeError()) {
-    diagnoseSync(Diags, DiagMutex, SourceLoc(), diag::error_opening_output,
-                 StringRef(OptRemarksRecordFile.c_str()),
-                 toString(std::move(E)));
-    return true;
-  }
-
-  std::unique_ptr<llvm::ToolOutputFile> OptRecordFile =
-    std::move(*OptRecordFileOrErr);
 
   performLLVMOptimizations(Opts, Diags, DiagMutex, Module, TargetMachine,
                            OutputFile ? &OutputFile->getOS() : nullptr);
@@ -759,10 +836,8 @@ bool swift::performLLVM(const IRGenOptions &Opts,
   }
 
   auto res = compileAndWriteLLVM(Module, TargetMachine, Opts, Stats, Diags,
-                             *OutputFile, DiagMutex,
-                             CASIDFile ? CASIDFile.get() : nullptr);
-  if (OptRecordFile)
-    OptRecordFile->keep();
+                                 *OutputFile, DiagMutex,
+                                 CASIDFile ? CASIDFile.get() : nullptr);
 
   Ctxt.setDiagnosticHandler(std::move(OldDiagnosticHandler));
 
@@ -1010,6 +1085,22 @@ static void setPointerAuthOptions(PointerAuthOptions &opts,
 
   opts.CoroPartialApplyCapture =
       PointerAuthSchema(nonABIDataKey, /*address*/ true, Discrimination::Decl);
+
+  opts.CoroAllocationFunction = PointerAuthSchema(
+      codeKey, /*address*/ true, Discrimination::Constant,
+      SpecialPointerAuthDiscriminators::CoroAllocationFunction);
+
+  opts.CoroDeallocationFunction = PointerAuthSchema(
+      codeKey, /*address*/ true, Discrimination::Constant,
+      SpecialPointerAuthDiscriminators::CoroDeallocationFunction);
+
+  opts.CoroFrameAllocationFunction = PointerAuthSchema(
+      codeKey, /*address*/ true, Discrimination::Constant,
+      SpecialPointerAuthDiscriminators::CoroFrameAllocationFunction);
+
+  opts.CoroFrameDeallocationFunction = PointerAuthSchema(
+      codeKey, /*address*/ true, Discrimination::Constant,
+      SpecialPointerAuthDiscriminators::CoroFrameDeallocationFunction);
 }
 
 std::unique_ptr<llvm::TargetMachine>
@@ -1067,7 +1158,7 @@ swift::createTargetMachine(const IRGenOptions &Opts, ASTContext &Ctx) {
 
   // Create a target machine.
   llvm::TargetMachine *TargetMachine = Target->createTargetMachine(
-      EffectiveTriple.str(), CPU, targetFeatures, TargetOpts, Reloc::PIC_,
+      EffectiveTriple, CPU, targetFeatures, TargetOpts, Reloc::PIC_,
       cmodel, OptLevel);
   if (!TargetMachine) {
     Ctx.Diags.diagnose(SourceLoc(), diag::no_llvm_target,
@@ -1096,8 +1187,7 @@ static void embedBitcode(llvm::Module *M, const IRGenOptions &Opts)
   // Save llvm.compiler.used and remove it.
   SmallVector<llvm::Constant*, 2> UsedArray;
   SmallVector<llvm::GlobalValue*, 4> UsedGlobals;
-  auto *UsedElementType =
-    llvm::Type::getInt8Ty(M->getContext())->getPointerTo(0);
+  auto *UsedElementType = llvm::PointerType::getUnqual(M->getContext());
   llvm::GlobalVariable *Used =
     collectUsedGlobalVariables(*M, UsedGlobals, true);
   for (auto *GV : UsedGlobals) {
@@ -1166,11 +1256,11 @@ static void embedBitcode(llvm::Module *M, const IRGenOptions &Opts)
   NewUsed->setSection("llvm.metadata");
 }
 
-static void initLLVMModule(const IRGenModule &IGM, SILModule &SIL) {
+static void initLLVMModule(IRGenModule &IGM, SILModule &SIL, std::optional<unsigned> idx = {}) {
   auto *Module = IGM.getModule();
   assert(Module && "Expected llvm:Module for IR generation!");
-  
-  Module->setTargetTriple(IGM.Triple.str());
+
+  Module->setTargetTriple(IGM.Triple);
 
   if (IGM.Context.LangOpts.SDKVersion) {
     if (Module->getSDKVersion().empty())
@@ -1208,8 +1298,69 @@ static void initLLVMModule(const IRGenModule &IGM, SILModule &SIL) {
                                                              "standard-library"),
                                          llvm::ConstantAsMetadata::get(Value)}));
 
-  if (auto *streamer = SIL.getSILRemarkStreamer()) {
-    streamer->intoLLVMContext(Module->getContext());
+  if (auto *SILstreamer = SIL.getSILRemarkStreamer()) {
+    auto remarkStream = SILstreamer->releaseStream();
+    if (remarkStream) {
+      // Install RemarkStreamer into LLVM and keep the remarks file alive. This is
+      // required even if no LLVM remarks are enabled, because the AsmPrinter
+      // serializes meta information about the remarks into the object file.
+      IGM.RemarkStream = std::move(remarkStream);
+      SILstreamer->intoLLVMContext(Context);
+      auto &RS = *IGM.getLLVMContext().getMainRemarkStreamer();
+      if (IGM.getOptions().AnnotateCondFailMessage) {
+        Context.setLLVMRemarkStreamer(
+           std::make_unique<llvm::LLVMRemarkStreamer>(RS));
+      } else {
+        // Don't filter for now.
+        Context.setLLVMRemarkStreamer(
+            std::make_unique<llvm::LLVMRemarkStreamer>(RS));
+      }
+    } else {
+      assert(idx && "Not generating multiple output files?");
+
+      // Construct llvmremarkstreamer objects for LLVM remarks originating in
+      // the LLVM backend and install it in the remaining LLVMModule(s).
+      auto &SILOpts = SIL.getOptions();
+      assert(SILOpts.AuxOptRecordFiles.size() > (*idx - 1));
+
+      const auto &filename = SILOpts.AuxOptRecordFiles[*idx - 1];
+      auto &diagEngine = SIL.getASTContext().Diags;
+      std::error_code errorCode;
+      auto file = std::make_unique<llvm::raw_fd_ostream>(filename, errorCode,
+                                                         llvm::sys::fs::OF_None);
+      if (errorCode) {
+        diagEngine.diagnose(SourceLoc(), diag::cannot_open_file, filename,
+                            errorCode.message());
+        return;
+      }
+
+      const auto format = SILOpts.OptRecordFormat;
+      llvm::Expected<std::unique_ptr<llvm::remarks::RemarkSerializer>>
+        remarkSerializerOrErr = llvm::remarks::createRemarkSerializer(
+          format, llvm::remarks::SerializerMode::Separate, *file);
+      if (llvm::Error err = remarkSerializerOrErr.takeError()) {
+        diagEngine.diagnose(SourceLoc(), diag::error_creating_remark_serializer,
+                            toString(std::move(err)));
+        return;
+      }
+
+      auto auxRS = std::make_unique<llvm::remarks::RemarkStreamer>(
+        std::move(*remarkSerializerOrErr), filename);
+      const auto passes = SILOpts.OptRecordPasses;
+      if (!passes.empty()) {
+        if (llvm::Error err = auxRS->setFilter(passes)) {
+          diagEngine.diagnose(SourceLoc(), diag::error_creating_remark_serializer,
+                          toString(std::move(err)));
+          return ;
+        }
+      }
+
+      Context.setMainRemarkStreamer(std::move(auxRS));
+      Context.setLLVMRemarkStreamer(
+        std::make_unique<llvm::LLVMRemarkStreamer>(
+          *Context.getMainRemarkStreamer()));
+      IGM.RemarkStream = std::move(file);
+    }
   }
 }
 
@@ -1557,6 +1708,7 @@ static void performParallelIRGeneration(IRGenDescriptor desc) {
   auto &Ctx = M->getASTContext();
   // Create an IRGenModule for each source file.
   bool DidRunSILCodeGenPreparePasses = false;
+  unsigned idx = 0;
   for (auto *File : M->getFiles()) {
     auto nextSF = dyn_cast<SourceFile>(File);
     if (!nextSF)
@@ -1573,11 +1725,12 @@ static void performParallelIRGeneration(IRGenDescriptor desc) {
     if (!targetMachine) continue;
 
     // Create the IR emitter.
+    auto outputName = *OutputIter++;
     IRGenModule *IGM = new IRGenModule(
-        irgen, std::move(targetMachine), nextSF, desc.ModuleName, *OutputIter++,
+        irgen, std::move(targetMachine), nextSF, desc.ModuleName, outputName,
         nextSF->getFilename(), nextSF->getPrivateDiscriminator().str());
 
-    initLLVMModule(*IGM, *SILMod);
+    initLLVMModule(*IGM, *SILMod, idx++);
     if (!DidRunSILCodeGenPreparePasses) {
       // Run SIL level IRGen preparation passes on the module the first time
       // around.
@@ -1587,9 +1740,7 @@ static void performParallelIRGeneration(IRGenDescriptor desc) {
 
     (void)layoutStringsEnabled(*IGM, /*diagnose*/ true);
 
-    // Only need to do this once.
-    if (!IGMcreated)
-      IGM->addLinkLibraries();
+    IGM->addLinkLibraries();
     IGMcreated = true;
   }
 
@@ -1717,6 +1868,37 @@ static void performParallelIRGeneration(IRGenDescriptor desc) {
     }
   }
 
+  // Write IR outputs if requested
+  // In WMO mode, IR generation creates separate modules per source file
+  auto irOutputFilenames = desc.parallelIROutputFilenames;
+
+  if (!irOutputFilenames.empty()) {
+    auto IRIter = irOutputFilenames.begin();
+
+    for (auto *File : M->getFiles()) {
+      auto nextSF = dyn_cast<SourceFile>(File);
+      if (!nextSF)
+        continue;
+
+      // Write IR output for this source file
+      if (IRIter != irOutputFilenames.end()) {
+        auto irOutputPath = *IRIter++;
+        if (!irOutputPath.empty()) {
+          CurrentIGMPtr IGM = irgen.getGenModule(nextSF);
+          std::error_code EC;
+          llvm::raw_fd_ostream irOut(irOutputPath, EC);
+          if (!EC) {
+            IGM->getModule()->print(irOut, nullptr);
+            irOut.close();
+          } else {
+            Ctx.Diags.diagnose(SourceLoc(), diag::error_opening_output,
+                               irOutputPath, EC.message());
+          }
+        }
+      }
+    }
+  }
+
   // Bail out if there are any errors.
   if (Ctx.hadError()) return;
 
@@ -1748,6 +1930,7 @@ GeneratedModule swift::performIRGeneration(
     const TBDGenOptions &TBDOpts, std::unique_ptr<SILModule> SILMod,
     StringRef ModuleName, const PrimarySpecificPaths &PSPs,
     ArrayRef<std::string> parallelOutputFilenames,
+    ArrayRef<std::string> parallelIROutputFilenames,
     llvm::GlobalVariable **outModuleHash) {
   // Get a pointer to the SILModule to avoid a potential use-after-move.
   const auto *SILModPtr = SILMod.get();
@@ -1755,7 +1938,7 @@ GeneratedModule swift::performIRGeneration(
   auto desc = IRGenDescriptor::forWholeModule(
       M, Opts, TBDOpts, SILOpts, SILModPtr->Types, std::move(SILMod),
       ModuleName, PSPs, /*symsToEmit*/ std::nullopt, parallelOutputFilenames,
-      outModuleHash);
+      parallelIROutputFilenames, outModuleHash);
 
   if (Opts.shouldPerformIRGenerationInParallel() &&
       !parallelOutputFilenames.empty() &&
@@ -1809,8 +1992,12 @@ void swift::createSwiftModuleObjectFile(SILModule &SILMod, StringRef Buffer,
       llvm::ConstantDataArray::getString(IGM.getLLVMContext(),
                                          Buffer, /*AddNull=*/false);
   auto &M = *IGM.getModule();
+  // Use PrivateLinkage here. The ".swift_ast" section is specially recognized
+  // by LLVM’s object emission and classified as a "metadata" section. On
+  // WebAssembly, metadata symbols must not appear in the object file symbol
+  // table, so using PrivateLinkage avoids exposing the symbol.
   auto *ASTSym = new llvm::GlobalVariable(M, Ty, /*constant*/ true,
-                                          llvm::GlobalVariable::InternalLinkage,
+                                          llvm::GlobalValue::PrivateLinkage,
                                           Data, "__Swift_AST");
 
   std::string Section;

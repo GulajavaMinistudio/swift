@@ -3,7 +3,7 @@
 
 // CHECK-LABEL: sil hidden [ossa] @$s4test16unspecifiedAsyncyyYaF : $@convention(thin) @async () -> ()
 // CHECK:         bb0:
-// CHECK-NEXT:      [[GENERIC:%[0-9]+]] = enum $Optional<Builtin.Executor>, #Optional.none!enumelt
+// CHECK-NEXT:      [[GENERIC:%[0-9]+]] = enum $Optional<any Actor>, #Optional.none!enumelt
 // CHECK-NEXT:      hop_to_executor [[GENERIC]]
 // CHECK:       } // end sil function '$s4test16unspecifiedAsyncyyYaF'
 func unspecifiedAsync() async {}
@@ -13,7 +13,7 @@ actor MyActor {
   private var p: Int
 
   // CHECK-LABEL: sil hidden [ossa] @$s4test7MyActorC6calleeyySiYaF : $@convention(method) @async (Int, @guaranteed MyActor) -> () {
-  // CHECK:       [[GENERIC_EXEC:%.*]] = enum $Optional<Builtin.Executor>, #Optional.none
+  // CHECK:       [[GENERIC_EXEC:%.*]] = enum $Optional<any Actor>, #Optional.none
   // CHECK:       hop_to_executor [[GENERIC_EXEC]] :
   // CHECK:     } // end sil function '$s4test7MyActorC6calleeyySiYaF'
   nonisolated func callee(_ x: Int) async {
@@ -21,7 +21,7 @@ actor MyActor {
   }
 
   // CHECK-LABEL: sil hidden [ossa] @$s4test7MyActorC14throwingCalleeyySiYaKF : $@convention(method) @async (Int, @guaranteed MyActor) -> @error any Error {
-  // CHECK:       [[GENERIC_EXEC:%.*]] = enum $Optional<Builtin.Executor>, #Optional.none
+  // CHECK:       [[GENERIC_EXEC:%.*]] = enum $Optional<any Actor>, #Optional.none
   // CHECK:       hop_to_executor [[GENERIC_EXEC]] :
   // CHECK:     } // end sil function '$s4test7MyActorC14throwingCalleeyySiYaKF'
   nonisolated func throwingCallee(_ x: Int) async throws {
@@ -283,7 +283,7 @@ struct BlueActor {
 }
 
 // CHECK-LABEL: sil hidden [ossa] @$s4test20unspecifiedAsyncFuncyyYaF : $@convention(thin) @async () -> () {
-// CHECK:         [[GENERIC_EXEC:%.*]] = enum $Optional<Builtin.Executor>, #Optional.none
+// CHECK:         [[GENERIC_EXEC:%.*]] = enum $Optional<any Actor>, #Optional.none
 // CHECK-NEXT:    hop_to_executor [[GENERIC_EXEC]] :
 // CHECK:         [[BORROW:%[0-9]+]] = begin_borrow {{%[0-9]+}} : $RedActorImpl
 // CHECK-NEXT:    hop_to_executor [[BORROW]] : $RedActorImpl
@@ -298,7 +298,7 @@ func unspecifiedAsyncFunc() async {
 
 // CHECK-LABEL: sil hidden [ossa] @$s4test27anotherUnspecifiedAsyncFuncyyAA12RedActorImplCYaF : $@convention(thin) @async (@guaranteed RedActorImpl) -> () {
 // CHECK:       bb0([[RED:%[0-9]+]] : @guaranteed $RedActorImpl):
-// CHECK:         [[GENERIC_EXEC:%.*]] = enum $Optional<Builtin.Executor>, #Optional.none
+// CHECK:         [[GENERIC_EXEC:%.*]] = enum $Optional<any Actor>, #Optional.none
 // CHECK-NEXT:    hop_to_executor [[GENERIC_EXEC]] :
 // CHECK:         [[INTARG:%[0-9]+]] = apply {{%[0-9]+}}({{%[0-9]+}}, {{%[0-9]+}}) : $@convention(method) (Builtin.IntLiteral, @thin Int.Type) -> Int
 // CHECK:         [[METH:%[0-9]+]] = class_method [[RED]] : $RedActorImpl, #RedActorImpl.hello : (isolated RedActorImpl) -> (Int) -> (), $@convention(method) (Int, @sil_isolated @guaranteed RedActorImpl) -> ()
@@ -311,19 +311,21 @@ func anotherUnspecifiedAsyncFunc(_ red : RedActorImpl) async {
 }
 
 // CHECK-LABEL: sil hidden [ossa] @$s4test0A20GlobalActorFuncValueyyyyAA03RedC0VYcXEYaF
-// CHECK: [[GENERIC_EXEC:%.*]] = enum $Optional<Builtin.Executor>, #Optional.none
+// CHECK: [[GENERIC_EXEC:%.*]] = enum $Optional<any Actor>, #Optional.none
 // CHECK: hop_to_executor [[GENERIC_EXEC]] :
 // CHECK: function_ref @$s4test8RedActorV6sharedAA0bC4ImplCvgZ
 // CHECK: hop_to_executor [[RED:%[0-9]+]] : $RedActorImpl
 // CHECK-NEXT: end_borrow [[RED]]
 // CHECK-NEXT: begin_borrow
 // CHECK-NEXT: apply
-// CHECK:      hop_to_executor [[GENERIC_EXEC:%[0-9]+]] : $Optional<Builtin.Executor>
+// CHECK:      hop_to_executor [[GENERIC_EXEC:%[0-9]+]] : $Optional<any Actor>
 func testGlobalActorFuncValue(_ fn: @RedActor () -> Void) async {
   await fn()
 }
 
 func acceptAsyncSendableClosureInheriting<T>(@_inheritActorContext _: @Sendable () async -> T) { }
+func acceptAsyncSendableClosureAlwaysInheriting<T>(@_inheritActorContext(always) _: @Sendable () async -> T) { }
+func acceptAsyncSendableClosureAlwaysInheritingErased<T>(@_inheritActorContext(always) _: sending @isolated(any) () async -> T) { }
 
 extension MyActor {
   func synchronous() { }
@@ -337,6 +339,66 @@ extension MyActor {
     acceptAsyncSendableClosureInheriting {
       synchronous()
     }
+  }
+
+  // CHECK-LABEL: sil private [ossa] @$s4test7MyActorC0A16AlwaysInheritingyyFyyYaYbXEfU_
+  // CHECK: debug_value [[SELF:%[0-9]+]] : $MyActor
+  // CHECK-NEXT: [[COPY:%[0-9]+]] = copy_value [[SELF]] : $MyActor
+  // CHECK-NEXT: [[BORROW:%[0-9]+]] = begin_borrow [[COPY]] : $MyActor
+  // CHECK-NEXT: hop_to_executor [[BORROW]] : $MyActor
+  func testAlwaysInheriting() {
+    acceptAsyncSendableClosureAlwaysInheriting {
+    }
+  }
+}
+
+func testIsolatedParameterWithInheritActorContext(_ isolation: isolated (any Actor)?) {
+  // CHECK-LABEL: sil private [ossa] @$s4test0A40IsolatedParameterWithInheritActorContextyyScA_pSgYiFyyYaYbXEfU_
+  // CHECK: debug_value [[ISOLATION:%[0-9]+]] : $Optional<any Actor>
+  // CHECK-NEXT: [[COPY:%[0-9]+]] = copy_value [[ISOLATION]] : $Optional<any Actor>
+  // CHECK-NEXT: [[BORROW:%[0-9]+]] = begin_borrow [[COPY]] : $Optional<any Actor>
+  // CHECK-NEXT: hop_to_executor [[BORROW]] : $Optional<any Actor>
+  acceptAsyncSendableClosureAlwaysInheriting {
+  }
+
+  // CHECK-LABEL: sil private [ossa] @$s4test0A40IsolatedParameterWithInheritActorContextyyScA_pSgYiFyyYaYbScMYcXEfU0_
+  // CHECK: hop_to_executor {{.*}} : $MainActor
+  acceptAsyncSendableClosureAlwaysInheriting { @MainActor in
+    // CHECK-LABEL: sil private [ossa] @$s4test0A40IsolatedParameterWithInheritActorContextyyScA_pSgYiFyyYaYbScMYcXEfU0_yyYaYbXEfU_
+    // CHECK: hop_to_executor {{.*}} : $MainActor
+    acceptAsyncSendableClosureAlwaysInheriting {
+    }
+  }
+
+  // CHECK-LABEL: sil private [ossa] @$s4test0A40IsolatedParameterWithInheritActorContextyyScA_pSgYiFyyYaYbXEfU1_
+  // CHECK: debug_value [[ISOLATION:%[0-9]+]] : $Optional<any Actor>
+  // CHECK-NEXT: [[COPY:%[0-9]+]] = copy_value [[ISOLATION]] : $Optional<any Actor>
+  // CHECK-NEXT: [[BORROW:%[0-9]+]] = begin_borrow [[COPY]] : $Optional<any Actor>
+  // CHECK-NEXT: hop_to_executor [[BORROW]] : $Optional<any Actor>
+  acceptAsyncSendableClosureAlwaysInheriting {
+    // CHECK-LABEL: sil private [ossa] @$s4test0A40IsolatedParameterWithInheritActorContextyyScA_pSgYiFyyYaYbXEfU1_yyYaYbXEfU_
+    // CHECK: debug_value [[ISOLATION:%[0-9]+]] : $Optional<any Actor>
+    // CHECK-NEXT: [[COPY:%[0-9]+]] = copy_value [[ISOLATION]] : $Optional<any Actor>
+    // CHECK-NEXT: [[BORROW:%[0-9]+]] = begin_borrow [[COPY]] : $Optional<any Actor>
+    // CHECK-NEXT: hop_to_executor [[BORROW]] : $Optional<any Actor>
+    acceptAsyncSendableClosureAlwaysInheriting {
+    }
+  }
+}
+
+// CHECK-LABEL: sil hidden [ossa] @$s4test0a17IsolatedParamWithB3AnyyyScA_pYiF
+// CHECK: [[CLOSURE_REF:%.*]] = function_ref @$s4test0a17IsolatedParamWithB3AnyyyScA_pYiFyyYaXEfU_
+// CHECK-NEXT: [[ISOLATION_COPY_1:%.*]] = copy_value %0 : $any Actor
+// CHECK-NEXT: [[ISOLATION_COPY_2:%.*]] = copy_value [[ISOLATION_COPY_1]] : $any Actor
+// CHECK-NEXT: [[DYNAMIC_ISOLATION:%.*]] = enum $Optional<any Actor>, #Optional.some!enumelt, [[ISOLATION_COPY_2]] : $any Actor
+// CHECK-NEXT: [[CLOSURE_WITH_APPLIED_ISOLATION:%.*]] = partial_apply [callee_guaranteed] [isolated_any] [[CLOSURE_REF]]([[DYNAMIC_ISOLATION]], [[ISOLATION_COPY_1]])
+func testIsolatedParamWithIsolatedAny(_ isolation: isolated any Actor) {
+  // CHECK-LABEL: sil private [ossa] @$s4test0a17IsolatedParamWithB3AnyyyScA_pYiFyyYaXEfU_
+  // CHECK: bb0(%0 : $*(), [[DYNAMIC_ISOLATION:%[0-9]+]] : @guaranteed $Optional<any Actor>, [[CAPTURED_ISOLATION:%[0-9]+]] : @closureCapture @guaranteed $any Actor):
+  // CHECK: [[COPY:%[0-9]+]] = copy_value [[CAPTURED_ISOLATION]] : $any Actor
+  // CHECK-NEXT: [[BORROW:%[0-9]+]] = begin_borrow [[COPY]] : $any Actor
+  // CHECK-NEXT: hop_to_executor [[BORROW]] : $any Actor
+  acceptAsyncSendableClosureAlwaysInheritingErased {
   }
 }
 
@@ -420,18 +482,18 @@ extension MyActor {
 func testImplicitAsyncIsolatedParam(
   i: Int, d: Double, actor: MyActor, otherActor: MyActor
 ) async {
-  // CHECK: [[GENERIC_EXEC:%.*]] = enum $Optional<Builtin.Executor>, #Optional.none
+  // CHECK: [[GENERIC_EXEC:%.*]] = enum $Optional<any Actor>, #Optional.none
   // CHECK-NEXT: hop_to_executor [[GENERIC_EXEC]] :
   // CHECK: [[FN1:%.*]] = function_ref @$s4test19acceptIsolatedParamyySi_AA7MyActorCYiSdtF
   // CHECK-NEXT: hop_to_executor [[ACTOR:%.*]] : $MyActor
   // CHECK-NEXT: apply [[FN1]](%0, %2, %1) : $@convention(thin) (Int, @sil_isolated @guaranteed MyActor, Double) -> ()
-  // CHECK-NEXT: hop_to_executor [[GENERIC_EXEC]] : $Optional<Builtin.Executor>
+  // CHECK-NEXT: hop_to_executor [[GENERIC_EXEC]] : $Optional<any Actor>
   await acceptIsolatedParam(i, actor, d)
 
   // CHECK: [[FN2:%.*]] = function_ref @$s4test7MyActorC13otherIsolatedyySi_ACYiSdtF : $@convention(method) (Int, @sil_isolated @guaranteed MyActor, Double, @guaranteed MyActor) -> ()
   // CHECK-NEXT: hop_to_executor [[ACTOR:%.*]] : $MyActor
   // CHECK-NEXT: apply [[FN2]](%0, %2, %1, %3) : $@convention(method) (Int, @sil_isolated @guaranteed MyActor, Double, @guaranteed MyActor) -> ()
-  // CHECK-NEXT: hop_to_executor [[GENERIC_EXEC]] : $Optional<Builtin.Executor>
+  // CHECK-NEXT: hop_to_executor [[GENERIC_EXEC]] : $Optional<any Actor>
   await otherActor.otherIsolated(i, actor, d)
 }
 

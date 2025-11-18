@@ -38,6 +38,7 @@ namespace swift {
   class TypeRepr;
   class UnsafeUse;
   class ValueDecl;
+  enum class DisallowedOriginKind : uint8_t;
 
 enum class DeclAvailabilityFlag : uint8_t {
   /// Do not diagnose uses of protocols in versions before they were introduced.
@@ -69,7 +70,8 @@ enum class DeclAvailabilityFlag : uint8_t {
 using DeclAvailabilityFlags = OptionSet<DeclAvailabilityFlag>;
 
 // This enum must be kept in sync with
-// diag::decl_from_hidden_module and
+// diag::decl_from_hidden_module,
+// diag::typealias_desugars_to_type_from_hidden_module, and
 // diag::conformance_from_implementation_only_module.
 enum class ExportabilityReason : unsigned {
   General,
@@ -77,7 +79,9 @@ enum class ExportabilityReason : unsigned {
   ResultBuilder,
   ExtensionWithPublicMembers,
   ExtensionWithConditionalConformances,
-  Inheritance
+  Inheritance,
+  AvailableAttribute,
+  PublicVarDecl,
 };
 
 /// A description of the restrictions on what declarations can be referenced
@@ -188,6 +192,10 @@ public:
   /// because it is the signature context of an exported declaration, or
   /// because it is the function body context of an inlinable function.
   bool mustOnlyReferenceExportedDecls() const;
+
+  /// If true, the context reference a dependency of \p originKind  without
+  /// restriction.
+  bool canReferenceOrigin(DisallowedOriginKind originKind) const;
 
   /// Get the ExportabilityReason for diagnostics. If this is 'None', there
   /// are no restrictions on referencing unexported declarations.

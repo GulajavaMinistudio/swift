@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift
+// RUN: %target-typecheck-verify-swift -verify-ignore-unrelated
 
 var a : Int
 
@@ -219,3 +219,34 @@ do {
     subscript(_: inout Double...) -> Bool { true } // expected-error {{'inout' may only be used on function or initializer parameters}}
   }
 }
+
+let tupleTypeWithTrailingComma: (
+  bar: String,
+  quux: String,
+)
+
+let _ = (bar: String, quux: String,).self
+
+let closureTypeWithTrailingCommas: (
+  String,
+  String,
+) -> (
+  bar: String,
+  quux: String,
+)
+
+let _ = Array<(
+  foo: Int,
+  bar: String,
+)>()
+
+let _ = Dictionary<
+  String,
+  Dictionary<
+    String,
+    Array<(
+      foo: Int,
+      bar: String,
+    )>,
+  >,
+>()

@@ -77,6 +77,15 @@ bool SILInliner::canInlineApplySite(FullApplySite apply) {
   if (auto BA = dyn_cast<BeginApplyInst>(apply))
     return canInlineBeginApply(BA);
 
+  if (apply.hasGuaranteedResult()) {
+    if (auto *callee = apply.getReferencedFunctionOrNull()) {
+      auto returnBB = callee->findReturnBB();
+      if (returnBB != callee->end() &&
+          isa<ReturnBorrowInst>(returnBB->getTerminator())) {
+        return false;
+      }
+    }
+  }
   return true;
 }
 
@@ -127,6 +136,32 @@ public:
       auto *abortApply = abortApplyInsts.pop_back_val();
       collectAbortApply(abortApply);
       endBorrowInsertPts.push_back(&*std::next(abortApply->getIterator()));
+    }
+
+    // We may have a mark_dependence/mark_dependence_addr on the coroutine's
+    // token. This is needed to represent lifetime dependence on values created
+    // within the coroutine. Delete such mark_dependence instructions since the
+    // dependencies on values created within the coroutine will be exposed after
+    // inlining.
+    if (BeginApply->getCalleeFunction()
+            ->getLoweredFunctionType()
+            ->hasLifetimeDependencies()) {
+      SmallVector<SILInstruction *> toDelete;
+      for (auto *tokenUser : BeginApply->getTokenResult()->getUsers()) {
+        auto mdi = MarkDependenceInstruction(tokenUser);
+        if (!mdi) {
+          continue;
+        }
+        assert(mdi.isNonEscaping());
+        if (auto *valueMDI = dyn_cast<MarkDependenceInst>(*mdi)) {
+          valueMDI->replaceAllUsesWith(valueMDI->getValue());
+        }
+        toDelete.push_back(*mdi);
+      }
+
+      for (auto *inst : toDelete) {
+        inst->eraseFromParent();
+      }
     }
   }
 
@@ -281,10 +316,10 @@ public:
 
 namespace swift {
 class SILInlineCloner
-    : public TypeSubstCloner<SILInlineCloner, SILOptFunctionBuilder> {
+    : public TypeSubstCloner<SILInlineCloner> {
   friend class SILInstructionVisitor<SILInlineCloner>;
   friend class SILCloner<SILInlineCloner>;
-  using SuperTy = TypeSubstCloner<SILInlineCloner, SILOptFunctionBuilder>;
+  using SuperTy = TypeSubstCloner<SILInlineCloner>;
   using InlineKind = SILInliner::InlineKind;
 
   SILOptFunctionBuilder &FuncBuilder;
@@ -350,7 +385,8 @@ protected:
 
   SILLocation remapLocation(SILLocation InLoc) {
     // For performance inlining return the original location.
-    if (IKind == InlineKind::PerformanceInline)
+    if (IKind == InlineKind::PerformanceInline ||
+        IKind == InlineKind::InlineAlwaysInline)
       return InLoc;
     // Inlined location wraps the call site that is being inlined, regardless of
     // the input location.
@@ -741,6 +777,14 @@ Scope scopeForArgument(Scope nonlexicalScope, SILValue callArg, unsigned index,
     // the argument.  Just do an ownership conversion if needed.
     return nonlexicalScope;
   }
+
+  // Use non-lexical scope for functions returning @guaranteed results.
+  // TODO: Represent the SILFunctionArgument of borrow accessors as non-lexical
+  // during SILGen.
+  if (callee->getConventions().hasGuaranteedResult()) {
+    return nonlexicalScope;
+  }
+
   // Lexical lifetimes are enabled, the function argument's lifetime is
   // lexical, but the caller's value is not lexical.  Extra care is required to
   // maintain the function argument's lifetime.  We need to add a lexical
@@ -905,6 +949,8 @@ InlineCost swift::instructionInlineCost(SILInstruction &I) {
   case SILInstructionKind::CopyableToMoveOnlyWrapperAddrInst:
   case SILInstructionKind::MoveOnlyWrapperToCopyableBoxInst:
   case SILInstructionKind::IgnoredUseInst:
+  case SILInstructionKind::ImplicitActorToOpaqueIsolationCastInst:
+  case SILInstructionKind::UncheckedOwnershipInst:
     return InlineCost::Free;
 
   // Typed GEPs are free.
@@ -1021,6 +1067,7 @@ InlineCost swift::instructionInlineCost(SILInstruction &I) {
   // Return and unreachable are free.
   case SILInstructionKind::UnreachableInst:
   case SILInstructionKind::ReturnInst:
+  case SILInstructionKind::ReturnBorrowInst:
   case SILInstructionKind::ThrowInst:
   case SILInstructionKind::ThrowAddrInst:
   case SILInstructionKind::UnwindInst:
@@ -1054,7 +1101,6 @@ InlineCost swift::instructionInlineCost(SILInstruction &I) {
   case SILInstructionKind::ValueMetatypeInst:
   case SILInstructionKind::WitnessMethodInst:
   case SILInstructionKind::AssignInst:
-  case SILInstructionKind::AssignByWrapperInst:
   case SILInstructionKind::AssignOrInitInst:
   case SILInstructionKind::CheckedCastBranchInst:
   case SILInstructionKind::CheckedCastAddrBranchInst:

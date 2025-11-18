@@ -68,6 +68,7 @@ private:
   std::unique_ptr<llvm::LLVMContext> Context;
   std::unique_ptr<llvm::Module> Module;
   std::unique_ptr<llvm::TargetMachine> Target;
+  std::unique_ptr<llvm::raw_fd_ostream> RemarkStream;
 
   GeneratedModule() : Context(nullptr), Module(nullptr), Target(nullptr) {}
 
@@ -81,13 +82,14 @@ public:
   /// needed, use \c GeneratedModule::null() instead.
   explicit GeneratedModule(std::unique_ptr<llvm::LLVMContext> &&Context,
                            std::unique_ptr<llvm::Module> &&Module,
-                           std::unique_ptr<llvm::TargetMachine> &&Target)
-    : Context(std::move(Context)), Module(std::move(Module)),
-      Target(std::move(Target)) {
-      assert(getModule() && "Use GeneratedModule::null() instead");
-      assert(getContext() && "Use GeneratedModule::null() instead");
-      assert(getTargetMachine() && "Use GeneratedModule::null() instead");
-    }
+                           std::unique_ptr<llvm::TargetMachine> &&Target,
+                           std::unique_ptr<llvm::raw_fd_ostream> &&RemarkStream)
+      : Context(std::move(Context)), Module(std::move(Module)),
+        Target(std::move(Target)), RemarkStream(std::move(RemarkStream)) {
+    assert(getModule() && "Use GeneratedModule::null() instead");
+    assert(getContext() && "Use GeneratedModule::null() instead");
+    assert(getTargetMachine() && "Use GeneratedModule::null() instead");
+  }
 
   GeneratedModule(GeneratedModule &&) = default;
   GeneratedModule& operator=(GeneratedModule &&) = default;
@@ -149,6 +151,7 @@ struct IRGenDescriptor {
   const PrimarySpecificPaths &PSPs;
   StringRef PrivateDiscriminator;
   ArrayRef<std::string> parallelOutputFilenames;
+  ArrayRef<std::string> parallelIROutputFilenames;
   llvm::GlobalVariable **outModuleHash;
   llvm::raw_pwrite_stream *out = nullptr;
 
@@ -186,6 +189,7 @@ public:
                            PSPs,
                            PrivateDiscriminator,
                            {},
+                           {},
                            outModuleHash};
   }
 
@@ -195,6 +199,7 @@ public:
       std::unique_ptr<SILModule> &&SILMod, StringRef ModuleName,
       const PrimarySpecificPaths &PSPs, SymsToEmit symsToEmit = std::nullopt,
       ArrayRef<std::string> parallelOutputFilenames = {},
+      ArrayRef<std::string> parallelIROutputFilenames = {},
       llvm::GlobalVariable **outModuleHash = nullptr) {
     return IRGenDescriptor{M,
                            symsToEmit,
@@ -207,6 +212,7 @@ public:
                            PSPs,
                            "",
                            parallelOutputFilenames,
+                           parallelIROutputFilenames,
                            outModuleHash};
   }
 

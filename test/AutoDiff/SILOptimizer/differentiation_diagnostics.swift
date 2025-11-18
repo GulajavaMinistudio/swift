@@ -46,6 +46,24 @@ func try_apply_rethrows(_ x: Float) -> Float {
   return x
 }
 
+func throwing_result(_ x: Float) throws -> Float { return x; }
+
+@differentiable(reverse)
+func active_try_apply(_ x: Float) -> Float {
+  do {
+    return try throwing_result(x);
+  } catch {
+    return x
+  }
+}
+
+@differentiable(reverse)
+func map_nondiff(_ a: [Float]) -> [Float] {
+  // expected-error @+2 {{expression is not differentiable}}
+  // expected-note @+1 {{cannot differentiate functions that have not been marked '@differentiable' and that are defined in other files}}
+  return a.map { $0 }
+}
+
 //===----------------------------------------------------------------------===//
 // Unreachable
 //===----------------------------------------------------------------------===//
@@ -669,9 +687,7 @@ extension DifferentiableWrapper: Differentiable where Value: Differentiable {}
 // accesses.
 
 struct Struct: Differentiable {
-  // expected-error @+4 {{expression is not differentiable}}
-  // expected-error @+3 {{expression is not differentiable}}
-  // expected-note @+2 {{cannot differentiate access to property 'Struct._x' because 'Struct.TangentVector' does not have a stored property named '_x'}}
+  // expected-error @+2 {{expression is not differentiable}}
   // expected-note @+1 {{cannot differentiate access to property 'Struct._x' because 'Struct.TangentVector' does not have a stored property named '_x'}}  
   @DifferentiableWrapper @DifferentiableWrapper var x: Float = 10
 

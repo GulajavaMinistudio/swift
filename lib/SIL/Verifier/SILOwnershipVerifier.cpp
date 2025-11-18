@@ -20,6 +20,7 @@
 #include "swift/AST/Decl.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/Module.h"
+#include "swift/AST/SemanticAttrs.h"
 #include "swift/AST/Types.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/Basic/Range.h"
@@ -344,6 +345,10 @@ bool SILValueOwnershipChecker::gatherUsers(
   while (!uses.empty()) {
     Operand *op = uses.pop_back_val();
     SILInstruction *user = op->getUser();
+
+    if (isa<UncheckedOwnershipInst>(user)) {
+      continue;
+    }
 
     // If this op is a type dependent operand, skip it. It is not interesting
     // from an ownership perspective.
@@ -865,6 +870,14 @@ void SILInstruction::verifyOperandOwnership(
   if (!getModule().getOptions().VerifyAll)
     return;
 #endif
+
+  if (getModule().getOptions().VerifyNone) {
+    return;
+  }
+
+  if (getFunction()->hasSemanticsAttr(semantics::NO_SIL_VERIFICATION)) {
+    return;
+  }
 
   // If SILOwnership is not enabled, do not perform verification.
   if (!getModule().getOptions().VerifySILOwnership)

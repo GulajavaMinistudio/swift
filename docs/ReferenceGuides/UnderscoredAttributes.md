@@ -600,6 +600,43 @@ inherit the actor context (i.e. what actor it should be run on) based on the
 declaration site of the closure rather than be non-Sendable. This does not do
 anything if the closure is synchronous.
 
+This works with global actors as expected:
+
+```swift 
+@MainActor
+func test() {
+  Task { /* main actor isolated */ }
+}
+```
+
+However, for the inference to work with instance actors (i.e. `isolated` parameters),
+the closure must capture the isolated parameter explicitly:
+
+```swift 
+func test(actor: isolated (any Actor)) {
+  Task { /* non isolated */ } // !!!
+}
+
+func test(actor: isolated (any Actor)) {
+  Task { // @_inheritActorContext
+    _ = actor // 'actor'-isolated 
+  }
+}
+```
+
+The attribute takes an optional modifier '`always`', which changes this behavior 
+and *always* captures the enclosing isolated context, rather than forcing developers
+to perform the explicit capture themselfes:
+
+```swift
+func test(actor: isolated (any Actor)) {
+  Task.immediate { // @_inheritActorContext(always)
+    // 'actor'-isolated!
+    // (without having to capture 'actor explicitly')
+  }
+}
+```
+
 DISCUSSION: The reason why this does nothing when the closure is synchronous is
 since it does not have the ability to hop to the appropriate executor before it
 is run, so we may create concurrency errors.
@@ -1080,12 +1117,6 @@ if it is never explicitly bound using a typed pointer method like
 bound, it must only be used with compatible typed memory accesses for as long
 as the binding is active.
 
-## `@_section("section_name")`
-
-Places a global variable or a top-level function into a section of the object
-file with the given name. It's the equivalent of clang's
-`__attribute__((section))`.
-
 ## `@_semantics("uniquely.recognized.id")`
 
 Allows the optimizer to make use of some key invariants in performance critical
@@ -1282,12 +1313,6 @@ for more details.
 ## `@_unsafeInheritExecutor`
 
 This `async` function uses the pre-SE-0338 semantics of unsafely inheriting the caller's executor.  This is an underscored feature because the right way of inheriting an executor is to pass in the required executor and switch to it.  Unfortunately, there are functions in the standard library which need to inherit their caller's executor but cannot change their ABI because they were not defined as `@_alwaysEmitIntoClient` in the initial release.
-
-## `@_used`
-
-Marks a global variable or a top-level function as "used externally" even if it
-does not have visible users in the compilation unit. It's the equivalent of
-clang's `__attribute__((used))`.
 
 ## `@_weakLinked`
 

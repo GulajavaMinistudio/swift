@@ -27,6 +27,10 @@ class MyClass {
 
 // actor exporting Objective-C entry points.
 
+enum ObjCError: Int, Error {
+  case Others
+}
+
 // CHECK: actor MyActor
 actor MyActor {
   // CHECK: @objc func doBigJobActor() async -> Int
@@ -38,7 +42,7 @@ actor MyActor {
   // CHECK-DUMP-LABEL: func_decl{{.*}}doBigJobOrFailActor{{.*}}
   // CHECK-DUMP: (foreign_async_convention completion_handler_type="@convention(block) (Optional<AnyObject>, Int, Optional<any Error>) -> ()" completion_handler_param=1 error_param=2)
   @objc func doBigJobOrFailActor(_: Int) async throws -> (AnyObject, Int) { return (self, 0) }
-  // expected-warning@-1{{non-sendable type '(AnyObject, Int)' returned by actor-isolated '@objc' instance method 'doBigJobOrFailActor' cannot cross actor boundary}}
+  // expected-warning@-1{{non-Sendable type '(AnyObject, Int)' returned by actor-isolated '@objc' instance method 'doBigJobOrFailActor' cannot cross actor boundary}}
 
   // Actor-isolated entities cannot be exposed to Objective-C.
   @objc func synchronousBad() { } // expected-error{{actor-isolated instance method 'synchronousBad()' cannot be '@objc'}}
@@ -49,6 +53,10 @@ actor MyActor {
 
   // CHECK: @objc nonisolated func synchronousGood()
   @objc nonisolated func synchronousGood() { }
+
+  @objc func objcAsyncThrowsError() async throws(Error) -> Void {}
+  @objc func objcAsyncThrowsObjCError() async throws(ObjCError) -> Void {}
+  // expected-error@-1 {{typed 'throws' instance method cannot be represented in Objective-C}}
 }
 
 actor class MyActor2 { }

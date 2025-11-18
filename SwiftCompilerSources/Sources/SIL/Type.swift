@@ -59,8 +59,6 @@ public struct Type : TypeProperties, CustomStringConvertible, NoReflectionChildr
     return bridged.isReferenceCounted(function.bridged)
   }
 
-  public var isBox: Bool { bridged.isBox() }
-
   public var isMoveOnly: Bool { bridged.isMoveOnly() }
 
   /// Return true if this type conforms to Escapable.
@@ -105,6 +103,29 @@ public struct Type : TypeProperties, CustomStringConvertible, NoReflectionChildr
     bridged.isAddressableForDeps(function.bridged)
   }
 
+  /// If this is a raw layout type, returns the substituted like-type.
+  public var rawLayoutSubstitutedLikeType: AST.`Type`? {
+    .init(bridgedOrNil: bridged.getRawLayoutSubstitutedLikeType())
+  }
+
+  /// If this is a raw layout type, returns the substituted count-type.
+  public var rawLayoutSubstitutedCountType: AST.`Type`? {
+    .init(bridgedOrNil: bridged.getRawLayoutSubstitutedCountType())
+  }
+
+  public var approximateFormalPackType: CanonicalType {
+    precondition(isSILPack);
+    return CanonicalType(bridged: bridged.getApproximateFormalPackType());
+  }
+
+  /// True if destroying a value of this type might invoke a custom deinitialer
+  /// with side effects. This includes any recursive deinitializers that may be
+  /// invoked by releasing a reference. False if this only has default
+  /// deinitialization.
+  public func mayHaveCustomDeinit(in function: Function) -> Bool {
+    return bridged.mayHaveCustomDeinit(function.bridged)
+  }
+
   //===--------------------------------------------------------------------===//
   //                Properties of lowered `SILFunctionType`s
   //===--------------------------------------------------------------------===//
@@ -123,7 +144,7 @@ public struct Type : TypeProperties, CustomStringConvertible, NoReflectionChildr
   public var hasValidSignatureForEmbedded: Bool {
     let genericSignature = invocationGenericSignatureOfFunction
     for genParam in genericSignature.genericParameters {
-      let mappedParam = genericSignature.mapTypeIntoContext(genParam)
+      let mappedParam = genericSignature.mapTypeIntoEnvironment(genParam)
       if mappedParam.isArchetype && !mappedParam.archetypeRequiresClass {
         return false
       }
@@ -150,13 +171,21 @@ public struct Type : TypeProperties, CustomStringConvertible, NoReflectionChildr
 
   public func getBoxFields(in function: Function) -> BoxFieldsArray {
     precondition(isBox)
-    return BoxFieldsArray(type: self, function: function)
+    return BoxFieldsArray(boxType: canonicalType, function: function)
+  }
+
+  public var packElements: PackElementArray {
+    precondition(isSILPack)
+    return PackElementArray(type: self)
   }
 
   /// Returns nil if the nominal is a resilient type because in this case the complete list
   /// of fields is not known.
   public func getNominalFields(in function: Function) -> NominalFieldsArray? {
     guard let nominal = nominal, !nominal.isResilient(in: function) else {
+      return nil
+    }
+    if let structDecl = nominal as? StructDecl, structDecl.hasUnreferenceableStorage {
       return nil
     }
     return NominalFieldsArray(type: self, function: function)
@@ -296,14 +325,29 @@ public struct TupleElementArray : RandomAccessCollection, FormattedLikeArray {
 }
 
 public struct BoxFieldsArray : RandomAccessCollection, FormattedLikeArray {
-  fileprivate let type: Type
-  fileprivate let function: Function
+  public let boxType: CanonicalType
+  public let function: Function
 
   public var startIndex: Int { return 0 }
-  public var endIndex: Int { Int(type.bridged.getNumBoxFields()) }
+  public var endIndex: Int { BridgedType.getNumBoxFields(boxType.bridged) }
 
   public subscript(_ index: Int) -> Type {
-    type.bridged.getBoxFieldType(index, function.bridged).type
+    BridgedType.getBoxFieldType(boxType.bridged, index, function.bridged).type
+  }
+
+  public func isMutable(fieldIndex: Int) -> Bool {
+    BridgedType.getBoxFieldIsMutable(boxType.bridged, fieldIndex)
+  }
+}
+
+public struct PackElementArray : RandomAccessCollection, FormattedLikeArray {
+  fileprivate let type: Type
+
+  public var startIndex: Int { return 0 }
+  public var endIndex: Int { Int(type.bridged.getNumPackElements()) }
+
+  public subscript(_ index: Int) -> Type {
+    type.bridged.getPackElementType(index).type
   }
 }
 

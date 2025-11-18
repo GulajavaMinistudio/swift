@@ -82,19 +82,16 @@ bool swift::irgen::useDllStorage(const llvm::Triple &triple) {
 UniversalLinkageInfo::UniversalLinkageInfo(IRGenModule &IGM)
     : UniversalLinkageInfo(IGM.Triple, IGM.IRGen.hasMultipleIGMs(),
                            IGM.IRGen.Opts.ForcePublicLinkage,
-                           IGM.IRGen.Opts.InternalizeSymbols,
-                           IGM.IRGen.Opts.MergeableSymbols) {}
+                           IGM.IRGen.Opts.InternalizeSymbols) {}
 
 UniversalLinkageInfo::UniversalLinkageInfo(const llvm::Triple &triple,
                                            bool hasMultipleIGMs,
                                            bool forcePublicDecls,
-                                           bool isStaticLibrary,
-                                           bool mergeableSymbols)
+                                           bool isStaticLibrary)
     : IsELFObject(triple.isOSBinFormatELF()),
       IsMSVCEnvironment(triple.isWindowsMSVCEnvironment()),
       UseDLLStorage(useDllStorage(triple)), Internalize(isStaticLibrary),
-      HasMultipleIGMs(hasMultipleIGMs), ForcePublicDecls(forcePublicDecls),
-      MergeableSymbols(mergeableSymbols) {}
+      HasMultipleIGMs(hasMultipleIGMs), ForcePublicDecls(forcePublicDecls) {}
 
 LinkEntity LinkEntity::forSILGlobalVariable(SILGlobalVariable *G,
                                             IRGenModule &IGM) {
@@ -411,6 +408,10 @@ std::string LinkEntity::mangleAsString(ASTContext &Ctx) const {
   }
 
   case Kind::SILFunction: {
+    auto asmName = getSILFunction()->asmName();
+    if (!asmName.empty())
+      return asmName.str();
+
     std::string Result(getSILFunction()->getName());
     if (isDynamicallyReplaceable()) {
       Result.append("TI");
@@ -468,8 +469,13 @@ std::string LinkEntity::mangleAsString(ASTContext &Ctx) const {
     return Result;
   }
 
-  case Kind::SILGlobalVariable:
+  case Kind::SILGlobalVariable: {
+    auto asmName = getSILGlobalVariable()->asmName();
+    if (!asmName.empty())
+      return asmName.str();
+
     return getSILGlobalVariable()->getName().str();
+  }
 
   case Kind::ReadOnlyGlobalObject:
     return getSILGlobalVariable()->getName().str() + "r";
@@ -585,6 +591,8 @@ std::string LinkEntity::mangleAsString(ASTContext &Ctx) const {
       return "_swift_coro_async_allocator";
     case CoroAllocatorKind::Malloc:
       return "_swift_coro_malloc_allocator";
+    case CoroAllocatorKind::TypedMalloc:
+      return "_swift_coro_typed_malloc_allocator";
     }
   }
   }
@@ -807,14 +815,14 @@ SILLinkage LinkEntity::getLinkage(ForDefinition_t forDefinition) const {
 
     // With conditionally available substitutions, the opaque result type
     // descriptor has to be emitted into a client module when associated with
-    // `@_alwaysEmitIntoClient` declaration which means it's linkage
+    // always-emitted-into-client declaration which means it's linkage
     // has to be "shared".
     //
     // If we don't have conditionally available substitutions, we won't emit
     // the descriptor at all, but still make sure we report "shared" linkage
     // so that TBD files don't include a bogus symbol.
     auto *srcDecl = opaqueType->getNamingDecl();
-    if (srcDecl->getAttrs().hasAttribute<AlwaysEmitIntoClientAttr>())
+    if (srcDecl->isAlwaysEmittedIntoClient())
       return SILLinkage::Shared;
 
     return getSILLinkage(getDeclLinkage(opaqueType), forDefinition);
@@ -1147,7 +1155,7 @@ llvm::Type *LinkEntity::getDefaultDeclarationType(IRGenModule &IGM) const {
   case Kind::ProtocolWitnessTableLazyCacheVariable:
     return IGM.WitnessTablePtrTy;
   case Kind::SILFunction:
-    return IGM.FunctionPtrTy->getPointerTo();
+    return IGM.PtrTy;
   case Kind::MethodDescriptor:
   case Kind::MethodDescriptorInitializer:
   case Kind::MethodDescriptorAllocator:
@@ -1733,4 +1741,39 @@ bool LinkEntity::isAlwaysSharedLinkage() const {
   default:
     return false;
   }
+}
+
+bool LinkEntity::hasNonUniqueDefinition() const {
+  if (isDeclKind(getKind())) {
+    auto decl = getDecl();
+    return SILDeclRef::declHasNonUniqueDefinition(decl);
+  }
+
+  if (hasSILFunction()) {
+    return getSILFunction()->hasNonUniqueDefinition();
+  }
+
+  if (getKind() == Kind::SILGlobalVariable ||
+      getKind() == Kind::ReadOnlyGlobalObject)
+    return getSILGlobalVariable()->hasNonUniqueDefinition();
+
+  if (getKind() == Kind::TypeMetadata) {
+    // For a nominal type, check its declaration.
+    CanType type = getType();
+    if (auto nominal = type->getAnyNominal()) {
+      return SILDeclRef::declHasNonUniqueDefinition(nominal);
+    }
+
+    // All other type metadata is nonuniqued.
+    return true;
+  }
+
+  // Always treat witness tables as having non-unique definitions.
+  if (getKind() == Kind::ProtocolWitnessTable) {
+    if (auto context = getDeclContextForEmission())
+      if (context->getParentModule()->getASTContext().LangOpts.hasFeature(Feature::Embedded))
+        return true;
+  }
+
+  return false;
 }

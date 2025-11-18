@@ -50,6 +50,8 @@ public struct Type: TypeProperties, CustomStringConvertible, NoReflectionChildre
 
   public var staticTypeOfDynamicSelf: Type { Type(bridged: bridged.getStaticTypeOfDynamicSelf()) }
 
+  public var interfaceTypeOfArchetype: Type { Type(bridged: bridged.getInterfaceTypeOfArchetype()) }
+
   public var superClassType: Type? {
     precondition(isClass)
     let bridgedSuperClassTy = bridged.getSuperClassType()
@@ -60,8 +62,6 @@ public struct Type: TypeProperties, CustomStringConvertible, NoReflectionChildre
   }
 
   public var builtinVectorElementType: Type { Type(bridged: bridged.getBuiltinVectorElementType()) }
-
-  public var builtinFixedArrayElementType: Type { Type(bridged: bridged.getBuiltinFixedArrayElementType()) }
 
   public func subst(with substitutionMap: SubstitutionMap) -> Type {
     return Type(bridged: bridged.subst(substitutionMap.bridged))
@@ -82,8 +82,6 @@ public struct CanonicalType: TypeProperties, CustomStringConvertible, NoReflecti
   public var superClassType: CanonicalType? { rawType.superClassType?.canonical }
 
   public var builtinVectorElementType: CanonicalType { rawType.builtinVectorElementType.canonical }
-
-  public var builtinFixedArrayElementType: CanonicalType { rawType.builtinFixedArrayElementType.canonical }
 
   public func subst(with substitutionMap: SubstitutionMap) -> CanonicalType {
     return rawType.subst(with: substitutionMap).canonical
@@ -138,6 +136,8 @@ extension TypeProperties {
   public var isArchetype: Bool { rawType.bridged.isArchetype() }
   public var isExistentialArchetype: Bool { rawType.bridged.isExistentialArchetype() }
   public var isExistentialArchetypeWithError: Bool { rawType.bridged.isExistentialArchetypeWithError() }
+  public var isRootArchetype: Bool { rawType.interfaceTypeOfArchetype.isGenericTypeParameter }
+  public var isRootExistentialArchetype: Bool { isExistentialArchetype && isRootArchetype }
   public var isExistential: Bool { rawType.bridged.isExistential() }
   public var isClassExistential: Bool { rawType.bridged.isClassExistential() }
   public var isGenericTypeParameter: Bool { rawType.bridged.isGenericTypeParam() }
@@ -145,15 +145,11 @@ extension TypeProperties {
   public var isMetatype: Bool { rawType.bridged.isMetatypeType() }
   public var isExistentialMetatype: Bool { rawType.bridged.isExistentialMetatypeType() }
   public var isDynamicSelf: Bool { rawType.bridged.isDynamicSelf()}
-
-  /// True if this is the type which represents an integer literal used in a type position.
-  /// For example `N` in `struct T<let N: Int> {}`
-  public var isInteger: Bool { rawType.bridged.isInteger() }
+  public var isBox: Bool { rawType.bridged.isBox() }
+  public var isPack: Bool { rawType.bridged.isPack() }
+  public var isSILPack: Bool { rawType.bridged.isSILPack() }
 
   public var canBeClass: Type.TraitResult { rawType.bridged.canBeClass().result }
-
-  /// True if this the nominal type `Swift.Optional`.
-  public var isOptional: Bool { rawType.bridged.isOptional() }
 
   /// True if this type is a value type (struct/enum) that defines a `deinit`.
   public var isValueTypeWithDeinit: Bool {
@@ -161,6 +157,34 @@ extension TypeProperties {
       return true
     }
     return false
+  }
+
+  //===--------------------------------------------------------------------===//
+  //                      Checks for stdlib types
+  //===--------------------------------------------------------------------===//
+
+  /// True if this is the type which represents an integer literal used in a type position.
+  /// For example `N` in `struct T<let N: Int> {}`
+  public var isInteger: Bool { rawType.bridged.isInteger() }
+
+  /// True if this the nominal type `Swift.Optional`.
+  public var isOptional: Bool { rawType.bridged.isOptional() }
+
+  /// A non-nil result type implies isUnsafe[Raw][Mutable]Pointer. A raw
+  /// pointer has a `void` element type.
+  public var unsafePointerElementType: Type? {
+    Type(bridgedOrNil: rawType.bridged.getAnyPointerElementType())
+  }
+
+  public var isAnyUnsafePointer: Bool {
+    unsafePointerElementType != nil
+  }
+
+  public var isAnyUnsafeBufferPointer: Bool {
+    rawType.bridged.isUnsafeBufferPointerType()
+      || rawType.bridged.isUnsafeMutableBufferPointerType()
+      || rawType.bridged.isUnsafeRawBufferPointerType()
+      || rawType.bridged.isUnsafeMutableRawBufferPointerType()
   }
 
   //===--------------------------------------------------------------------===//
@@ -195,6 +219,23 @@ extension TypeProperties {
     rawType.bridged.getRepresentationOfMetatype().representation
   }
 
+  public var builtinFixedArrayElementType: CanonicalType {
+    CanonicalType(bridged: rawType.bridged.getBuiltinFixedArrayElementType())
+  }
+  public var builtinFixedArraySizeType: CanonicalType {
+    CanonicalType(bridged: rawType.bridged.getBuiltinFixedArraySizeType())
+  }
+
+  /// Returns the value of an integer value type (see `isInteger`).
+  /// Returns nil if the value is not representable in an `Int`.
+  public var valueOfInteger: Int? {
+    let optionalInt = rawType.bridged.getValueOfIntegerType()
+    if optionalInt.hasValue {
+      return optionalInt.value
+    }
+    return nil
+  }
+
   /// Assumes this is a nominal type. Returns a substitution map that sends each
   /// generic parameter of the declaration's generic signature to the corresponding
   /// generic argument of this nominal type.
@@ -223,6 +264,14 @@ extension TypeProperties {
   /// abstract, concrete or pack conformance, depending on the lookup type.
   public func checkConformance(to protocol: ProtocolDecl) -> Conformance {
     return Conformance(bridged: rawType.bridged.checkConformance(`protocol`.bridged))
+  }
+
+  public var containsSILPackExpansionType: Bool {
+    return rawType.bridged.containsSILPackExpansionType()
+  }
+
+  public var isSILPackElementAddress: Bool {
+    return rawType.bridged.isSILPackElementAddress()
   }
 }
 

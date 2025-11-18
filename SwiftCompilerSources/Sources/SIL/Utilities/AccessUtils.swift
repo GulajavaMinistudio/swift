@@ -120,7 +120,7 @@ public enum AccessBase : CustomStringConvertible, Hashable {
     }
   }
 
-  /// Return 'nil' for global varabiables and unidentified addresses.
+  /// Return 'nil' for global variables and unidentified addresses.
   public var address: Value? {
     switch self {
       case .global, .unidentified: return nil
@@ -323,8 +323,19 @@ public enum AccessBase : CustomStringConvertible, Hashable {
              isDifferentAllocation(rea.instance, otherRea.instance) ||
              hasDifferentType(rea.instance, otherRea.instance)
     case (.tail(let rta), .tail(let otherRta)):
-      return isDifferentAllocation(rta.instance, otherRta.instance) ||
-             hasDifferentType(rta.instance, otherRta.instance)
+      if isDifferentAllocation(rta.instance, otherRta.instance) {
+        return true
+      }
+      if hasDifferentType(rta.instance, otherRta.instance),
+         // In contrast to `ref_element_addr`, tail addresses can also be obtained via a superclass
+         // (in case the derived class doesn't add any stored properties).
+         // Therefore if the instance types differ by sub-superclass relationship, the base is _not_ different.
+         !rta.instance.type.isExactSuperclass(of: otherRta.instance.type),
+         !otherRta.instance.type.isExactSuperclass(of: rta.instance.type)
+      {
+        return true
+      }
+      return false
     case (.argument(let arg), .argument(let otherArg)):
       return (arg.convention.isExclusiveIndirect || otherArg.convention.isExclusiveIndirect) && arg != otherArg
       
@@ -391,6 +402,11 @@ public struct AccessPath : CustomStringConvertible, Hashable {
   ///   `%value.s0` contains `%value.s0.s1`
   public func isEqualOrContains(_ other: AccessPath) -> Bool {
     return getProjection(to: other) != nil
+  }
+  
+  /// Returns true if this access contains `other` access and is not equal.
+  public func contains(_ other: AccessPath) -> Bool {
+    return !(getProjection(to: other)?.isEmpty ?? true)
   }
 
   public var materializableProjectionPath: SmallProjectionPath? {
@@ -493,6 +509,22 @@ public extension PointerToAddressInst {
        let global = callee.globalOfGlobalInitFunction
     {
       return global
+    }
+    return nil
+  }
+
+  // If this address is the result of a call to unsafe[Mutable]Address, return the 'self' operand of the apply. This
+  // represents the base value into which this address projects.
+  func isResultOfUnsafeAddressor() -> Operand? {
+    if isStrict,
+       let extract = pointer as? StructExtractInst,
+       extract.`struct`.type.isAnyUnsafePointer,
+       let addressorApply = extract.`struct` as? ApplyInst,
+       let addressorFunc = addressorApply.referencedFunction,
+       addressorFunc.isAddressor
+    {
+      let selfArgIdx = addressorFunc.selfArgumentIndex!
+      return addressorApply.argumentOperands[selfArgIdx]
     }
     return nil
   }
@@ -746,7 +778,7 @@ extension Value {
   // Although an AccessPathWalker is created for each call of these properties,
   // it's very unlikely that this will end up in memory allocations.
   // Only in the rare case of `pointer_to_address` -> `address_to_pointer` pairs, which
-  // go through phi-arguments, the AccessPathWalker will allocate memnory in its cache.
+  // go through phi-arguments, the AccessPathWalker will allocate memory in its cache.
 
   /// Computes the access base of this address value.
   public var accessBase: AccessBase { accessPath.base }
@@ -869,4 +901,12 @@ extension Function {
     }
     return nil
   }
+}
+
+let getAccessBaseTest = Test("swift_get_access_base") {
+  function, arguments, context in
+  let address = arguments.takeValue()
+  print("Address: \(address)")
+  let base = address.accessBase
+  print("Base: \(base)")
 }

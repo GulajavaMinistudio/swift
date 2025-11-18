@@ -163,15 +163,16 @@ static void splitConcreteEquivalenceClasses(
       ctx.LangOpts.RequirementMachineMaxSplitConcreteEquivClassAttempts;
 
   if (attempt >= maxAttempts) {
-    llvm::errs() << "Splitting concrete equivalence classes did not "
-                 << "reach fixed point after " << attempt << " attempts.\n";
-    llvm::errs() << "Last attempt produced these requirements:\n";
-    for (auto req : requirements) {
-      req.dump(llvm::errs());
-      llvm::errs() << "\n";
-    }
-    machine->dump(llvm::errs());
-    abort();
+    ABORT([&](auto &out) {
+      out << "Splitting concrete equivalence classes did not "
+          << "reach fixed point after " << attempt << " attempts.\n";
+      out << "Last attempt produced these requirements:\n";
+      for (auto req : requirements) {
+        req.dump(out);
+        out << "\n";
+      }
+      machine->dump(out);
+    });
   }
 
   splitRequirements.clear();
@@ -628,7 +629,7 @@ AbstractGenericSignatureRequest::evaluate(
             }
             return Type(type);
           },
-          MakeAbstractConformanceForGenericType(),
+          LookUpConformanceInModule(),
           SubstFlags::PreservePackExpansionLevel);
       resugaredRequirements.push_back(resugaredReq);
     }
@@ -671,7 +672,8 @@ AbstractGenericSignatureRequest::evaluate(
 
   SmallVector<StructuralRequirement, 2> defaults;
   InverseRequirement::expandDefaults(ctx, paramsAsTypes, defaults);
-  applyInverses(ctx, paramsAsTypes, inverses, defaults, errors);
+  applyInverses(ctx, paramsAsTypes, inverses, requirements,
+                defaults, errors);
   requirements.append(defaults);
 
   auto &rewriteCtx = ctx.getRewriteContext();
@@ -746,26 +748,6 @@ AbstractGenericSignatureRequest::evaluate(
 
     return GenericSignatureWithError(result, errorFlags);
   }
-}
-
-/// If completion fails, build a dummy generic signature where everything is
-/// Copyable and Escapable, to avoid spurious downstream diagnostics
-/// concerning move-only types.
-static GenericSignature getPlaceholderGenericSignature(
-    ASTContext &ctx, ArrayRef<GenericTypeParamType *> genericParams) {
-  SmallVector<Requirement, 2> requirements;
-  for (auto param : genericParams) {
-    if (param->isValue())
-      continue;
-
-    for (auto ip : InvertibleProtocolSet::allKnown()) {
-      auto proto = ctx.getProtocol(getKnownProtocolKind(ip));
-      requirements.emplace_back(RequirementKind::Conformance, param,
-                                proto->getDeclaredInterfaceType());
-    }
-  }
-
-  return GenericSignature::get(genericParams, requirements);
 }
 
 GenericSignatureWithError
@@ -884,7 +866,8 @@ InferredGenericSignatureRequest::evaluate(
 
   SmallVector<StructuralRequirement, 2> defaults;
   InverseRequirement::expandDefaults(ctx, paramTypes, defaults);
-  applyInverses(ctx, paramTypes, inverses, defaults, errors);
+  applyInverses(ctx, paramTypes, inverses, requirements,
+                defaults, errors);
   
   // Any remaining implicit defaults in a conditional inverse requirement
   // extension must be made explicit.
@@ -993,7 +976,7 @@ InferredGenericSignatureRequest::evaluate(
                          diag::requirement_machine_completion_rule,
                          rule);
 
-      auto result = getPlaceholderGenericSignature(ctx, genericParams);
+      auto result = GenericSignature::forInvalid(genericParams);
 
       if (rewriteCtx.getDebugOptions().contains(DebugFlags::Timers)) {
         rewriteCtx.endTimer("InferredGenericSignatureRequest");

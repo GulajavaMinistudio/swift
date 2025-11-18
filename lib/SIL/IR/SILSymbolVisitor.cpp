@@ -472,7 +472,7 @@ public:
 
   void visitAbstractFunctionDecl(AbstractFunctionDecl *AFD) {
     // Add exported prespecialized symbols.
-    for (auto *attr : AFD->getAttrs().getAttributes<SpecializeAttr>()) {
+    for (auto *attr : AFD->getAttrs().getAttributes<AbstractSpecializeAttr>()) {
       if (!attr->isExported())
         continue;
 
@@ -489,7 +489,7 @@ public:
       }
     }
 
-    addFunction(SILDeclRef(AFD));
+    addFunction(SILDeclRef(AFD).asForeign(AFD->hasOnlyCEntryPoint()));
 
     ASSERT(ABIRoleInfo(AFD).providesAPI()
               && "SILSymbolVisitorImpl visiting ABI-only decl?");
@@ -499,10 +499,12 @@ public:
       Visitor.addDynamicFunction(AFD, *dynKind);
     }
 
-    if (AFD->getAttrs().hasAttribute<CDeclAttr>()) {
-      // A @_cdecl("...") function has an extra symbol, with the name from the
-      // attribute.
-      addFunction(SILDeclRef(AFD).asForeign());
+    if (auto cdeclAttr = AFD->getAttrs().getAttribute<CDeclAttr>()) {
+      if (cdeclAttr->Underscored) {
+        // A @_cdecl("...") function has an extra symbol, with the name from the
+        // attribute.
+        addFunction(SILDeclRef(AFD).asForeign());
+      }
     }
 
     if (auto distributedThunk = AFD->getDistributedThunk()) {
@@ -569,7 +571,7 @@ public:
 
   void visitAbstractStorageDecl(AbstractStorageDecl *ASD) {
     // Add the property descriptor if the decl needs it.
-    if (ASD->exportsPropertyDescriptor()) {
+    if (ASD->getPropertyDescriptorGenericSignature()) {
       Visitor.addPropertyDescriptor(ASD);
     }
 
@@ -621,6 +623,8 @@ public:
       if (initInfo.hasInitFromWrappedValue() && !VD->isStatic()) {
         addFunction(SILDeclRef(
             VD, SILDeclRef::Kind::PropertyWrapperBackingInitializer));
+        addFunction(
+            SILDeclRef(VD, SILDeclRef::Kind::PropertyWrappedFieldInitAccessor));
       }
     }
     visitAbstractStorageDecl(VD);
@@ -804,6 +808,7 @@ public:
     case DeclKind::PostfixOperator:
     case DeclKind::Macro:
     case DeclKind::MacroExpansion:
+    case DeclKind::Using:
       return false;
     case DeclKind::Missing:
       llvm_unreachable("missing decl should not show up here");
@@ -916,6 +921,7 @@ public:
   UNINTERESTING_DECL(PrecedenceGroup)
   UNINTERESTING_DECL(TopLevelCode)
   UNINTERESTING_DECL(Value)
+  UNINTERESTING_DECL(Using)
 
 #undef UNINTERESTING_DECL
 };

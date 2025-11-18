@@ -120,6 +120,10 @@ public:
                               ArrayRef<Requirement> requirements,
                               bool isKnownCanonical = false);
 
+  /// Create a new placeholder generic signature from a set of generic
+  /// parameters. This is necessary for recovery in invalid cases.
+  static GenericSignature forInvalid(ArrayRef<GenericTypeParamType *> params);
+
   /// Produce a new generic signature which drops all of the marker
   /// protocol conformance requirements associated with this one.
   GenericSignature withoutMarkerProtocols() const;
@@ -502,8 +506,8 @@ public:
                       ArrayRef<GenericTypeParamType *> genericParams,
                       ArrayRef<Requirement> requirements);
   
-  void print(raw_ostream &OS, PrintOptions Options = PrintOptions()) const;
-  void print(ASTPrinter &Printer, PrintOptions Opts = PrintOptions()) const;
+  void print(raw_ostream &OS, const PrintOptions &Options = PrintOptions()) const;
+  void print(ASTPrinter &Printer, const PrintOptions &Opts = PrintOptions()) const;
   SWIFT_DEBUG_DUMP;
   std::string getAsString() const;
 
@@ -606,7 +610,11 @@ enum class GenericSignatureErrorFlags {
 
   /// The Knuth-Bendix completion procedure failed to construct a confluent
   /// rewrite system.
-  CompletionFailed = (1<<2)
+  CompletionFailed = (1<<2),
+
+  /// A request evaluator cycle prevented us from computing this generic
+  /// signature.
+  CircularReference = (1<<3),
 };
 
 using GenericSignatureErrors = OptionSet<GenericSignatureErrorFlags>;
@@ -616,6 +624,23 @@ using GenericSignatureErrors = OptionSet<GenericSignatureErrorFlags>;
 /// above set of error flags.
 using GenericSignatureWithError = llvm::PointerIntPair<GenericSignature, 3,
                                                        GenericSignatureErrors>;
+
+/// Build a generic signature from the given requirements, which are not
+/// required to be minimal or canonical, and may contain unresolved
+/// DependentMemberTypes. The generic signature is returned with the
+/// error flags (if any) that were raised while building the signature.
+///
+/// \param baseSignature if non-null, the new parameters and requirements
+///// are added on; existing requirements of the base signature might become
+///// redundant. Otherwise if null, build a new signature from scratch.
+/// \param allowInverses if true, default requirements to Copyable/Escapable are
+/// expanded for generic parameters.
+GenericSignatureWithError buildGenericSignatureWithError(
+    ASTContext &ctx,
+    GenericSignature baseSignature,
+    SmallVector<GenericTypeParamType *, 2> addedParameters,
+    SmallVector<Requirement, 2> addedRequirements,
+    bool allowInverses);
 
 } // end namespace swift
 

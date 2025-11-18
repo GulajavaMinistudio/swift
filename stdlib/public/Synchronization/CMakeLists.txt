@@ -37,18 +37,12 @@ set(SWIFT_SYNCHRONIZATION_GYB_SOURCES
 
 set(SWIFT_SYNCHRONIZATION_DARWIN_DEPENDENCIES)
 
-if(SWIFT_BUILD_SDK_OVERLAY)
-  set(SWIFT_SYNCHRONIZATION_DARWIN_DEPENDENCIES Darwin)
-endif()
-
 if((SWIFT_BUILD_CLANG_OVERLAYS
     OR SWIFT_BUILD_TEST_SUPPORT_MODULES)
    AND (NOT DEFINED SWIFT_BUILD_CLANG_OVERLAYS_SKIP_BUILTIN_FLOAT
         OR NOT SWIFT_BUILD_CLANG_OVERLAYS_SKIP_BUILTIN_FLOAT))
-  # We need to make this dependency explicit because this library
-  # imports Darwin and Darwin re-exports _Builtin_float,
-  # but in most configurations we pull Darwin from the SDK,
-  # meaning we specify no Darwin dependency in the build system
+  # This library imports Darwin from the SDK, which re-exports
+  # _Builtin_float which is part of this build.
   list(APPEND SWIFT_SYNCHRONIZATION_DARWIN_DEPENDENCIES _Builtin_float)
 endif()
 
@@ -65,6 +59,13 @@ set(SWIFT_SYNCHRONIZATION_LINUX_SOURCES
   Mutex/SpinLoopHint.swift
 )
 
+# FreeBSD sources
+
+set(SWIFT_SYNCHRONIZATION_FREEBSD_SOURCES
+  Mutex/FreeBSDImpl.swift
+  Mutex/Mutex.swift
+)
+
 # Wasm sources
 
 set(SWIFT_SYNCHRONIZATION_WASM_SOURCES
@@ -79,6 +80,13 @@ set(SWIFT_SYNCHRONIZATION_WINDOWS_SOURCES
   Mutex/WindowsImpl.swift
 )
 
+# OpenBSD sources
+
+set(SWIFT_SYNCHRONIZATION_OPENBSD_SOURCES
+  Mutex/Mutex.swift
+  Mutex/OpenBSDImpl.swift
+)
+
 set(SWIFT_SYNCHRNOIZATION_SWIFT_FLAGS
   ${SWIFT_STANDARD_LIBRARY_SWIFT_FLAGS}
   "-enable-builtin-module"
@@ -88,7 +96,7 @@ set(SWIFT_SYNCHRNOIZATION_SWIFT_FLAGS
   "-strict-memory-safety"
 )
 
-add_swift_target_library(swiftSynchronization ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_STDLIB IMPORTS_NON_OSSA 
+add_swift_target_library(swiftSynchronization ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_STDLIB
   ${SWIFT_SYNCHRONIZATION_SOURCES}
 
   GYB_SOURCES
@@ -112,6 +120,10 @@ add_swift_target_library(swiftSynchronization ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES
     ${SWIFT_SYNCHRONIZATION_WASM_SOURCES}
   SWIFT_SOURCES_DEPENDS_WINDOWS
     ${SWIFT_SYNCHRONIZATION_WINDOWS_SOURCES}
+  SWIFT_SOURCES_DEPENDS_FREEBSD
+    ${SWIFT_SYNCHRONIZATION_FREEBSD_SOURCES}
+  SWIFT_SOURCES_DEPENDS_OPENBSD
+    ${SWIFT_SYNCHRONIZATION_OPENBSD_SOURCES}
   SWIFT_SOURCES_DEPENDS_FREESTANDING
     Mutex/MutexUnavailable.swift
 
@@ -135,6 +147,10 @@ add_swift_target_library(swiftSynchronization ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES
     Android
   SWIFT_MODULE_DEPENDS_WINDOWS
     WinSDK
+  SWIFT_MODULE_DEPENDS_FREEBSD
+    Glibc
+  SWIFT_MODULE_DEPENDS_OPENBSD
+    Glibc
 
   SWIFT_COMPILE_FLAGS
     ${SWIFT_SYNCHRNOIZATION_SWIFT_FLAGS}
@@ -153,6 +169,12 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB)
   add_custom_target(embedded-synchronization)
   add_dependencies(embedded-libraries embedded-synchronization)
 
+  set(SWIFT_ENABLE_REFLECTION OFF)
+  set(SWIFT_STDLIB_SUPPORT_BACK_DEPLOYMENT OFF)
+  set(SWIFT_STDLIB_STABLE_ABI OFF)
+  set(SWIFT_STDLIB_ENABLE_OBJC_INTEROP OFF)
+  set(SWIFT_STDLIB_ENABLE_VECTOR_TYPES OFF)
+
   foreach(entry ${EMBEDDED_STDLIB_TARGET_TRIPLES})
     string(REGEX REPLACE "[ \t]+" ";" list "${entry}")
     list(GET list 0 arch)
@@ -163,13 +185,13 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB)
     if("${arch}" MATCHES "avr")
       continue()
     endif()
-    
+
     set(SWIFT_SDK_embedded_ARCH_${arch}_MODULE "${mod}")
     set(SWIFT_SDK_embedded_LIB_SUBDIR "embedded")
     set(SWIFT_SDK_embedded_ARCH_${arch}_TRIPLE "${triple}")
-    set(SWIFT_SDK_embedded_PATH ${SWIFT_SDK_OSX_PATH})
-    set(SWIFT_SDK_embedded_ARCH_${arch}_PATH ${SWIFT_SDK_OSX_PATH})
-    set(SWIFT_SDK_embedded_USE_ISYSROOT TRUE)
+    if(SWIFT_EMBEDDED_STDLIB_SDKS_FOR_TARGET_TRIPLES)
+      set(SWIFT_SDK_embedded_ARCH_${arch}_PATH "${EMBEDDED_STDLIB_SDK_FOR_${triple}}")
+    endif()
     add_swift_target_library_single(
       embedded-synchronization-${mod}
       swiftSynchronization

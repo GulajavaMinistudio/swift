@@ -7,9 +7,11 @@
 # See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 
 swift_compiler_sources(Optimizer
+  AllocBoxToStack.swift
   AssumeSingleThreaded.swift
   AsyncDemotion.swift
   BooleanLiteralFolding.swift
+  ConstantCapturePropagation.swift
   CleanupDebugSteps.swift
   ClosureSpecialization.swift
   ComputeEscapeEffects.swift
@@ -24,8 +26,10 @@ swift_compiler_sources(Optimizer
   LifetimeDependenceDiagnostics.swift
   LifetimeDependenceInsertion.swift
   LifetimeDependenceScopeFixup.swift
+  LoopInvariantCodeMotion.swift
   ObjectOutliner.swift
   ObjCBridgingOptimization.swift
+  MandatoryDestroyHoisting.swift
   MergeCondFails.swift
   NamedReturnValueOptimization.swift
   RedundantLoadElimination.swift
@@ -33,5 +37,7 @@ swift_compiler_sources(Optimizer
   SimplificationPasses.swift
   StackPromotion.swift
   StripObjectHeaders.swift
+  TempLValueElimination.swift
   TempRValueElimination.swift
+  PackSpecialization.swift
 )

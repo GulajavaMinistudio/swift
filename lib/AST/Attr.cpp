@@ -18,7 +18,6 @@
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTPrinter.h"
 #include "swift/AST/AvailabilityDomain.h"
-#include "swift/AST/AvailabilityInference.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -291,13 +290,6 @@ const char *IsolatedTypeAttr::getIsolationKindName(IsolationKind kind) {
 
 void IsolatedTypeAttr::printImpl(ASTPrinter &printer,
                                  const PrintOptions &options) const {
-  // Suppress the attribute if requested.
-  switch (getIsolationKind()) {
-  case IsolationKind::Dynamic:
-    if (options.SuppressIsolatedAny) return;
-    break;
-  }
-
   printer.callPrintStructurePre(PrintStructureKind::BuiltinAttribute);
   printer.printAttrName("@isolated");
   printer << "(" << getIsolationKindName() << ")";
@@ -354,6 +346,16 @@ bool DeclAttribute::canAttributeAppearOnDeclKind(DeclAttrKind DAK, DeclKind DK) 
 #include "swift/AST/DeclNodes.def"
   }
   llvm_unreachable("bad DeclKind");
+}
+
+void DeclAttribute::attachToDecl(Decl *D) {
+  ASSERT(D);
+  switch (getKind()) {
+#define DECL_ATTR(_, CLASS, ...)                                               \
+  case DeclAttrKind::CLASS:                                                    \
+    return static_cast<CLASS##Attr *>(this)->attachToDeclImpl(D);
+#include "swift/AST/DeclAttr.def"
+  }
 }
 
 // Ensure that every DeclAttribute subclass implements its own CloneAttr.
@@ -421,8 +423,9 @@ DeclAttributes::getBackDeployed(const ASTContext &ctx,
 
     // We have an attribute that is active for the platform, but
     // is it more specific than our current best?
-    if (!bestAttr || inheritsAvailabilityFromPlatform(
-                         backDeployedAttr->Platform, bestAttr->Platform)) {
+    if (!bestAttr ||
+        inheritsAvailabilityFromPlatform(backDeployedAttr->getPlatform(),
+                                         bestAttr->getPlatform())) {
       bestAttr = backDeployedAttr;
     }
   }
@@ -557,8 +560,8 @@ static void printShortFormBackDeployed(ArrayRef<const DeclAttribute *> Attrs,
     if (!isFirst)
       Printer << ", ";
     auto *attr = cast<BackDeployedAttr>(DA);
-    Printer << platformString(attr->Platform) << " "
-            << attr->Version.getAsString();
+    Printer << platformString(attr->getPlatform()) << " "
+            << attr->getVersion().getAsString();
     isFirst = false;
   }
   Printer << ")";
@@ -771,9 +774,9 @@ static std::optional<PlatformKind> referencedPlatform(const DeclAttribute *attr,
     }
     return std::nullopt;
   case DeclAttrKind::BackDeployed:
-    return static_cast<const BackDeployedAttr *>(attr)->Platform;
+    return static_cast<const BackDeployedAttr *>(attr)->getPlatform();
   case DeclAttrKind::OriginallyDefinedIn:
-    return static_cast<const OriginallyDefinedInAttr *>(attr)->Platform;
+    return static_cast<const OriginallyDefinedInAttr *>(attr)->getPlatform();
   default:
     return std::nullopt;
   }
@@ -811,6 +814,7 @@ void DeclAttributes::print(ASTPrinter &Printer, const PrintOptions &Options,
   AttributeVector modifiers;
   bool libraryLevelAPI =
       D && D->getASTContext().LangOpts.LibraryLevel == LibraryLevel::API;
+  auto *SF = D ? D->getDeclContext()->getParentSourceFile() : nullptr;
 
   for (auto DA : llvm::reverse(FlattenedAttrs)) {
     // Don't skip implicit custom attributes. Custom attributes like global
@@ -836,7 +840,7 @@ void DeclAttributes::print(ASTPrinter &Printer, const PrintOptions &Options,
     // a macro.
     if (Options.SuppressExpandedMacros) {
       if (auto customAttr = dyn_cast<CustomAttr>(DA)) {
-        if (D->getResolvedMacro(const_cast<CustomAttr *>(customAttr)))
+        if (customAttr->getResolvedMacro())
           continue;
       }
     }
@@ -854,6 +858,16 @@ void DeclAttributes::print(ASTPrinter &Printer, const PrintOptions &Options,
       auto semanticAttr = D->getSemanticAvailableAttr(availableAttr);
       if (!semanticAttr)
         continue;
+
+      // In the public interfaces of -library-level=api modules, skip @available
+      // attributes that refer to domains imported from @_spiOnly modules.
+      if (Options.printPublicInterface() && libraryLevelAPI) {
+        if (auto *domainDecl = semanticAttr->getDomain().getDecl()) {
+          if (SF->getRestrictedImportKind(domainDecl->getModuleContext()) ==
+              RestrictedImportKind::SPIOnly)
+            continue;
+        }
+      }
 
       if (isShortAvailable(*semanticAttr)) {
         if (semanticAttr->isSwiftLanguageModeSpecific())
@@ -973,7 +987,7 @@ static void printAvailableAttr(const Decl *D, const SemanticAvailableAttr &Attr,
   // attributes that are universally unavailable in Swift, we must print them
   // as universally unavailable instead.
   // FIXME: Reconsider this, it's a weird special case.
-  if (Domain.isSwiftLanguage() && Attr.isUnconditionallyUnavailable())
+  if (Domain.isSwiftLanguageMode() && Attr.isUnconditionallyUnavailable())
     Printer << "*";
   else
     Printer << Domain.getNameForAttributePrinting();
@@ -1015,7 +1029,8 @@ static void printAvailableAttr(const Decl *D, const SemanticAvailableAttr &Attr,
   if (!Attr.getMessage().empty()) {
     Printer << ", message: ";
     Printer.printEscapedStringLiteral(Attr.getMessage());
-  } else if (Domain.isSwiftLanguage() && Attr.isUnconditionallyUnavailable())
+  } else if (Domain.isSwiftLanguageMode() &&
+             Attr.isUnconditionallyUnavailable())
     Printer << ", message: \"Not available in Swift\"";
 }
 
@@ -1094,7 +1109,7 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
   case DeclAttrKind::OriginallyDefinedIn: {
     auto Attr = cast<OriginallyDefinedInAttr>(this);
     auto Name = D->getDeclContext()->getParentModule()->getName().str();
-    if (Options.IsForSwiftInterface && Attr->ManglingModuleName == Name)
+    if (Options.IsForSwiftInterface && Attr->getManglingModuleName() == Name)
       return false;
     break;
   }
@@ -1114,6 +1129,7 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
   case DeclAttrKind::AccessControl:
   case DeclAttrKind::ReferenceOwnership:
   case DeclAttrKind::Effects:
+  case DeclAttrKind::Export:
   case DeclAttrKind::Optimize:
   case DeclAttrKind::Exclusivity:
   case DeclAttrKind::NonSendable:
@@ -1133,7 +1149,18 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
       // Don't print into SIL. Necessary bits have already been generated.
       return false;
     } else {
-      Printer.printSimpleAttr(getAttrName(), /*needAt=*/true);
+      auto attrName = getAttrName();
+      if (getKind() == DeclAttrKind::Inline &&
+          cast<InlineAttr>(this)->getKind() == InlineKind::Always &&
+          Options.SuppressInlineAlways) {
+        attrName = "inline(__always)";
+        Printer.printSimpleAttr(attrName, /*needAt=*/true);
+        Printer << ' ';
+        // Add @inlinable
+        Printer.printSimpleAttr("inlinable", /*needAt=*/true);
+      } else {
+        Printer.printSimpleAttr(attrName, /*needAt=*/true);
+      }
     }
     return true;
 
@@ -1195,13 +1222,15 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     Printer.printAttrName("@_originallyDefinedIn");
     Printer << "(module: ";
     auto Attr = cast<OriginallyDefinedInAttr>(this);
-    Printer << "\"" << Attr->ManglingModuleName;
-    ASSERT(!Attr->ManglingModuleName.empty());
-    ASSERT(!Attr->LinkerModuleName.empty());
-    if (Attr->LinkerModuleName != Attr->ManglingModuleName)
-      Printer << ";" << Attr->LinkerModuleName;
-    Printer << "\", " << platformString(Attr->Platform) << " " <<
-      Attr->MovedVersion.getAsString();
+    auto ManglingModuleName = Attr->getManglingModuleName();
+    auto LinkerModuleName = Attr->getLinkerModuleName();
+    Printer << "\"" << ManglingModuleName;
+    ASSERT(!ManglingModuleName.empty());
+    ASSERT(!LinkerModuleName.empty());
+    if (LinkerModuleName != ManglingModuleName)
+      Printer << ";" << LinkerModuleName;
+    Printer << "\", " << platformString(Attr->getPlatform()) << " "
+            << Attr->getMovedVersion().getAsString();
     Printer << ")";
     break;
   }
@@ -1239,9 +1268,17 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     break;
   }
 
-  case DeclAttrKind::CDecl:
-    Printer << "@_cdecl(\"" << cast<CDeclAttr>(this)->Name << "\")";
+  case DeclAttrKind::CDecl: {
+    auto Attr = cast<CDeclAttr>(this);
+    if (Attr->Underscored)
+      Printer << "@_cdecl(\"" << cast<CDeclAttr>(this)->Name << "\")";
+    else {
+      Printer << "@c";
+      if (!Attr->Name.empty())
+        Printer << "(" << cast<CDeclAttr>(this)->Name << ")";
+    }
     break;
+  }
 
   case DeclAttrKind::Expose: {
     Printer.printAttrName("@_expose");
@@ -1252,6 +1289,9 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
       break;
     case ExposureKind::Cxx:
       Printer << "(Cxx";
+      break;
+    case ExposureKind::NotCxx:
+      Printer << "(!Cxx";
       break;
     }
     if (!cast<ExposeAttr>(this)->Name.empty())
@@ -1283,7 +1323,7 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
   }
 
   case DeclAttrKind::Section:
-    Printer.printAttrName("@_section");
+    Printer.printAttrName("@section");
     Printer << "(\"" << cast<SectionAttr>(this)->Name << "\")";
     break;
 
@@ -1310,39 +1350,45 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     break;
   }
 
+  case DeclAttrKind::Specialized:
   case DeclAttrKind::Specialize: {
-    auto *attr = cast<SpecializeAttr>(this);
+    auto *attr = cast<AbstractSpecializeAttr>(this);
     // Don't print the _specialize attribute if it is marked spi and we are
     // asked to skip SPI.
     if (Options.printPublicInterface() && !attr->getSPIGroups().empty())
       return false;
 
     Printer << "@" << getAttrName() << "(";
-    auto exported = attr->isExported() ? "true" : "false";
-    auto kind = attr->isPartialSpecialization() ? "partial" : "full";
-    auto target = attr->getTargetFunctionName();
-    Printer << "exported: "<<  exported << ", ";
-    for (auto id : attr->getSPIGroups()) {
-      Printer << "spi: " << id << ", ";
-    }
-    Printer << "kind: " << kind << ", ";
-    if (target)
-      Printer << "target: " << target << ", ";
-    SmallVector<SemanticAvailableAttr, 8> semanticAvailAttrs;
-    for (auto availAttr : attr->getAvailableAttrs()) {
-      if (auto semanticAttr = D->getSemanticAvailableAttr(availAttr))
-        semanticAvailAttrs.push_back(*semanticAttr);
-    }
 
-    if (!semanticAvailAttrs.empty()) {
-      Printer << "availability: ";
-      if (semanticAvailAttrs.size() == 1) {
-        printAvailableAttr(D, semanticAvailAttrs[0], Printer, Options);
-        Printer << "; ";
-      } else {
-        printShortFormAvailable(D, semanticAvailAttrs, Printer, Options,
-                                true /*forAtSpecialize*/);
-        Printer << "; ";
+    // The non-underscored @specialize attribute currently does not support
+    // parameters so lets not print them.
+    if (!attr->isPublic()) {
+      auto exported = attr->isExported() ? "true" : "false";
+      auto kind = attr->isPartialSpecialization() ? "partial" : "full";
+      auto target = attr->getTargetFunctionName();
+      Printer << "exported: "<<  exported << ", ";
+      for (auto id : attr->getSPIGroups()) {
+        Printer << "spi: " << id << ", ";
+      }
+      Printer << "kind: " << kind << ", ";
+      if (target)
+        Printer << "target: " << target << ", ";
+      SmallVector<SemanticAvailableAttr, 8> semanticAvailAttrs;
+      for (auto availAttr : attr->getAvailableAttrs()) {
+        if (auto semanticAttr = D->getSemanticAvailableAttr(availAttr))
+          semanticAvailAttrs.push_back(*semanticAttr);
+      }
+
+      if (!semanticAvailAttrs.empty()) {
+        Printer << "availability: ";
+        if (semanticAvailAttrs.size() == 1) {
+          printAvailableAttr(D, semanticAvailAttrs[0], Printer, Options);
+          Printer << "; ";
+        } else {
+          printShortFormAvailable(D, semanticAvailAttrs, Printer, Options,
+                                  true /*forAtSpecialize*/);
+          Printer << "; ";
+        }
       }
     }
     SmallVector<Requirement, 4> requirementsScratch;
@@ -1374,9 +1420,10 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
                     if (typeErased)
                       Printer << "@_noMetadata ";
                   }
-                  auto OptionsCopy = Options;
-                  OptionsCopy.PrintInternalLayoutName = typeErased;
-                  req.print(Printer, OptionsCopy);
+
+                  PrintOptions::OverrideScope scope(Options);
+                  OVERRIDE_PRINT_OPTION(scope, PrintInternalLayoutName, typeErased);
+                  req.print(Printer, Options);
                 },
                 [&] { Printer << ", "; });
 
@@ -1436,14 +1483,8 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
   }
 
   case DeclAttrKind::Custom: {
-    Printer.callPrintNamePre(PrintNameContext::Attribute);
-    Printer << "@";
     auto *attr = cast<CustomAttr>(this);
-    if (auto type = attr->getType())
-      type.print(Printer, Options);
-    else
-      attr->getTypeRepr()->print(Printer, Options);
-    Printer.printNamePost(PrintNameContext::Attribute);
+    attr->printCustomAttr(Printer, Options);
     break;
   }
 
@@ -1510,8 +1551,8 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     Printer.printAttrName("@backDeployed");
     Printer << "(before: ";
     auto Attr = cast<BackDeployedAttr>(this);
-    Printer << platformString(Attr->Platform) << " " <<
-      Attr->Version.getAsString();
+    Printer << platformString(Attr->getPlatform()) << " "
+            << Attr->getVersion().getAsString();
     Printer << ")";
     break;
   }
@@ -1526,6 +1567,18 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
       break;
     case NonIsolatedModifier::NonSending:
       Printer << "(nonsending)";
+      break;
+    }
+    break;
+  }
+
+  case DeclAttrKind::InheritActorContext: {
+    Printer.printAttrName("@_inheritActorContext");
+    switch (cast<InheritActorContextAttr>(this)->getModifier()) {
+    case InheritActorContextModifier::None:
+      break;
+    case InheritActorContextModifier::Always:
+      Printer << "(always)";
       break;
     }
     break;
@@ -1671,7 +1724,11 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
 
   case DeclAttrKind::Lifetime: {
     auto *attr = cast<LifetimeAttr>(this);
-    Printer << attr->getLifetimeEntry()->getString();
+    if (!attr->isUnderscored() || Options.SuppressLifetimes) {
+      Printer << "@lifetime" << attr->getLifetimeEntry()->getString();
+    } else {
+      Printer << "@_lifetime" << attr->getLifetimeEntry()->getString();
+    }
     break;
   }
 
@@ -1685,7 +1742,7 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
                     ->getVarAtSimilarStructuralPosition(
                                       const_cast<VarDecl *>(cast<VarDecl>(D)));
     if (abiDecl) {
-      auto optionsCopy = Options;
+      PrintOptions::OverrideScope scope(Options);
 
       // Don't print any attributes marked with `ForbiddenInABIAttr`.
       // (Reminder: There is manual logic in `PrintAST::printAttributes()`
@@ -1697,15 +1754,28 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
           continue;
 
         if (attrKind == DeclAttrKind::AccessControl)
-          optionsCopy.PrintAccess = false;
+          OVERRIDE_PRINT_OPTION(scope, PrintAccess, false);
         else
-          optionsCopy.ExcludeAttrList.push_back(attrKind);
+          scope.addExcludedAttr(attrKind);
       }
 
-      abiDecl->print(Printer, optionsCopy);
+      abiDecl->print(Printer, Options);
     }
     Printer << ")";
 
+    break;
+  }
+
+  case DeclAttrKind::Nonexhaustive: {
+    auto *attr = cast<NonexhaustiveAttr>(this);
+    Printer << "@nonexhaustive";
+    switch (attr->getMode()) {
+    case NonexhaustiveMode::Error:
+      break;
+    case NonexhaustiveMode::Warning:
+      Printer << "(warn)";
+      break;
+    }
     break;
   }
 
@@ -1785,7 +1855,7 @@ StringRef DeclAttribute::getAttrName() const {
   case DeclAttrKind::CDecl:
     if (cast<CDeclAttr>(this)->Underscored)
       return "_cdecl";
-    return "cdecl";
+    return "c";
   case DeclAttrKind::SwiftNativeObjCRuntimeBase:
     return "_swift_native_objc_runtime_base";
   case DeclAttrKind::Semantics:
@@ -1811,8 +1881,10 @@ StringRef DeclAttribute::getAttrName() const {
     switch (cast<InlineAttr>(this)->getKind()) {
     case InlineKind::Never:
       return "inline(never)";
-    case InlineKind::Always:
+    case InlineKind::AlwaysUnderscored:
       return "inline(__always)";
+    case InlineKind::Always:
+      return "inline(always)";
     }
     llvm_unreachable("Invalid inline kind");
   }
@@ -1861,6 +1933,15 @@ StringRef DeclAttribute::getAttrName() const {
       case EffectsKind::Custom:
         return "_effects";
     }
+  case DeclAttrKind::Export: {
+    switch (cast<ExportAttr>(this)->exportKind) {
+    case ExportKind::Interface:
+      return "export(interface)";
+    case ExportKind::Implementation:
+      return "export(implementation)";
+    }
+    llvm_unreachable("Invalid export kind");
+  }
   case DeclAttrKind::AccessControl:
   case DeclAttrKind::SetterAccess: {
     AccessLevel access = cast<AbstractAccessControlAttr>(this)->getAccess();
@@ -1876,6 +1957,8 @@ StringRef DeclAttribute::getAttrName() const {
     return "<<ObjC bridged>>";
   case DeclAttrKind::SynthesizedProtocol:
     return "<<synthesized protocol>>";
+  case DeclAttrKind::Specialized:
+    return "specialized";
   case DeclAttrKind::Specialize:
     return "_specialize";
   case DeclAttrKind::StorageRestrictions:
@@ -1903,7 +1986,7 @@ StringRef DeclAttribute::getAttrName() const {
   case DeclAttrKind::Expose:
     return "_expose";
   case DeclAttrKind::Section:
-    return "_section";
+    return "section";
   case DeclAttrKind::Documentation:
     return "_documentation";
   case DeclAttrKind::Nonisolated:
@@ -1914,6 +1997,13 @@ StringRef DeclAttribute::getAttrName() const {
       return "nonisolated(unsafe)";
     case NonIsolatedModifier::NonSending:
       return "nonisolated(nonsending)";
+    }
+  case DeclAttrKind::InheritActorContext:
+    switch (cast<InheritActorContextAttr>(this)->getModifier()) {
+    case InheritActorContextModifier::None:
+      return "_inheritActorContext";
+    case InheritActorContextModifier::Always:
+      return "_inheritActorContext(always)";
     }
   case DeclAttrKind::MacroRole:
     switch (cast<MacroRoleAttr>(this)->getMacroSyntax()) {
@@ -1934,7 +2024,9 @@ StringRef DeclAttribute::getAttrName() const {
       return "_allowFeatureSuppression";
     }
   case DeclAttrKind::Lifetime:
-    return "lifetime";
+    return cast<LifetimeAttr>(this)->isUnderscored() ? "_lifetime" : "lifetime";
+  case DeclAttrKind::Nonexhaustive:
+    return "nonexhaustive";
   }
   llvm_unreachable("bad DeclAttrKind");
 }
@@ -2061,10 +2153,11 @@ PrivateImportAttr *PrivateImportAttr::create(ASTContext &Ctxt, SourceLoc AtLoc,
 DynamicReplacementAttr::DynamicReplacementAttr(SourceLoc atLoc,
                                                SourceRange baseRange,
                                                DeclNameRef name,
+                                               DeclNameLoc nameLoc,
                                                SourceRange parenRange)
     : DeclAttribute(DeclAttrKind::DynamicReplacement, atLoc, baseRange,
                     /*Implicit=*/false),
-      ReplacedFunctionName(name) {
+      ReplacedFunctionName(name),  ReplacedFunctionNameLoc(nameLoc) {
   Bits.DynamicReplacementAttr.HasTrailingLocationInfo = true;
   getTrailingLocations()[0] = parenRange.Start;
   getTrailingLocations()[1] = parenRange.End;
@@ -2073,11 +2166,12 @@ DynamicReplacementAttr::DynamicReplacementAttr(SourceLoc atLoc,
 DynamicReplacementAttr *
 DynamicReplacementAttr::create(ASTContext &Ctx, SourceLoc AtLoc,
                                SourceLoc DynReplLoc, SourceLoc LParenLoc,
-                               DeclNameRef ReplacedFunction, SourceLoc RParenLoc) {
+                               DeclNameRef ReplacedFunction,
+                               DeclNameLoc nameLoc, SourceLoc RParenLoc) {
   void *mem = Ctx.Allocate(totalSizeToAlloc<SourceLoc>(2),
                            alignof(DynamicReplacementAttr));
   return new (mem) DynamicReplacementAttr(
-      AtLoc, SourceRange(DynReplLoc, RParenLoc), ReplacedFunction,
+      AtLoc, SourceRange(DynReplLoc, RParenLoc), ReplacedFunction, nameLoc,
       SourceRange(LParenLoc, RParenLoc));
 }
 
@@ -2257,7 +2351,7 @@ AvailableAttr *AvailableAttr::createUnavailableInSwift(ASTContext &C,
                                                        StringRef Message,
                                                        StringRef Rename) {
   return new (C) AvailableAttr(
-      SourceLoc(), SourceRange(), AvailabilityDomain::forSwiftLanguage(),
+      SourceLoc(), SourceRange(), AvailabilityDomain::forSwiftLanguageMode(),
       SourceLoc(), Kind::Unavailable, Message, Rename,
       /*Introduced=*/{}, SourceRange(), /*Deprecated=*/{}, SourceRange(),
       /*Obsoleted=*/{}, SourceRange(),
@@ -2269,7 +2363,7 @@ AvailableAttr *AvailableAttr::createSwiftLanguageModeVersioned(
     ASTContext &C, StringRef Message, StringRef Rename,
     llvm::VersionTuple Introduced, llvm::VersionTuple Obsoleted) {
   return new (C) AvailableAttr(
-      SourceLoc(), SourceRange(), AvailabilityDomain::forSwiftLanguage(),
+      SourceLoc(), SourceRange(), AvailabilityDomain::forSwiftLanguageMode(),
       SourceLoc(), Kind::Default, Message, Rename, Introduced, SourceRange(),
       /*Deprecated=*/{}, SourceRange(), Obsoleted, SourceRange(),
       /*Implicit=*/false,
@@ -2301,6 +2395,10 @@ AvailableAttr *AvailableAttr::createUnavailableInEmbedded(ASTContext &C,
       /*Implicit=*/false, /*IsSPI=*/false);
 }
 
+llvm::VersionTuple BackDeployedAttr::getVersion() const {
+  return canonicalizePlatformVersion(getPlatform(), getParsedVersion());
+}
+
 bool BackDeployedAttr::isActivePlatform(const ASTContext &ctx,
                                         bool forTargetVariant) const {
   return isPlatformActive(Platform, ctx.LangOpts, forTargetVariant);
@@ -2328,14 +2426,14 @@ bool AvailableAttr::isEquivalent(const AvailableAttr *other,
                 ==  attachedTo->getSemanticAvailableAttr(other)->getDomain();
 }
 
-static StringRef getManglingModuleName(StringRef OriginalModuleName) {
+static StringRef parseManglingModuleName(StringRef OriginalModuleName) {
   auto index = OriginalModuleName.find(";");
   return index == StringRef::npos
       ? OriginalModuleName
       : OriginalModuleName.slice(0, index);
 }
 
-static StringRef getLinkerModuleName(StringRef OriginalModuleName) {
+static StringRef parseLinkerModuleName(StringRef OriginalModuleName) {
   auto index = OriginalModuleName.find(";");
   return index == StringRef::npos
       ? OriginalModuleName
@@ -2343,22 +2441,22 @@ static StringRef getLinkerModuleName(StringRef OriginalModuleName) {
 }
 
 OriginallyDefinedInAttr::OriginallyDefinedInAttr(
-    SourceLoc AtLoc, SourceRange Range,
-    StringRef OriginalModuleName,
-    PlatformKind Platform,
-    const llvm::VersionTuple MovedVersion, bool Implicit)
-  : DeclAttribute(DeclAttrKind::OriginallyDefinedIn, AtLoc, Range,
-                  Implicit),
-    ManglingModuleName(getManglingModuleName(OriginalModuleName)),
-    LinkerModuleName(getLinkerModuleName(OriginalModuleName)),
-    Platform(Platform),
-    MovedVersion(MovedVersion) {}
+    SourceLoc AtLoc, SourceRange Range, StringRef OriginalModuleName,
+    PlatformKind Platform, const llvm::VersionTuple MovedVersion, bool Implicit)
+    : DeclAttribute(DeclAttrKind::OriginallyDefinedIn, AtLoc, Range, Implicit),
+      ManglingModuleName(parseManglingModuleName(OriginalModuleName)),
+      LinkerModuleName(parseLinkerModuleName(OriginalModuleName)),
+      Platform(Platform), MovedVersion(MovedVersion) {}
+
+llvm::VersionTuple OriginallyDefinedInAttr::getMovedVersion() const {
+  return canonicalizePlatformVersion(getPlatform(), getParsedMovedVersion());
+}
 
 std::optional<OriginallyDefinedInAttr::ActiveVersion>
 OriginallyDefinedInAttr::isActivePlatform(const ASTContext &ctx) const {
   OriginallyDefinedInAttr::ActiveVersion Result;
   Result.Platform = Platform;
-  Result.Version = MovedVersion;
+  Result.Version = getMovedVersion();
   Result.ManglingModuleName = ManglingModuleName;
   Result.LinkerModuleName = LinkerModuleName;
   if (isPlatformActive(Platform, ctx.LangOpts, /*TargetVariant*/false)) {
@@ -2381,6 +2479,35 @@ OriginallyDefinedInAttr *OriginallyDefinedInAttr::clone(ASTContext &C,
   return new (C) OriginallyDefinedInAttr(
       implicit ? SourceLoc() : AtLoc, implicit ? SourceRange() : getRange(),
       ManglingModuleName, LinkerModuleName, Platform, MovedVersion, implicit);
+}
+
+void ABIAttr::attachToDeclImpl(Decl *D) {
+  // Register the relationship between `D` and `abiDecl`. This is necessary for
+  // `ABIRoleInfo::ABIRoleInfo()` to determine that `abiDecl` is ABI-only and
+  // locate its API counterpart.
+  Decl *owner = D;
+
+  // The ABIAttr on a VarDecl ought to point to its PBD.
+  if (auto VD = dyn_cast<VarDecl>(owner)) {
+    if (auto PBD = VD->getParentPatternBinding())
+      owner = PBD;
+  }
+
+  auto record = [&](Decl *decl) {
+    auto &evaluator = owner->getASTContext().evaluator;
+    DeclABIRoleInfoRequest(decl).recordABIOnly(evaluator, owner);
+  };
+
+  if (auto abiPBD = dyn_cast<PatternBindingDecl>(abiDecl)) {
+    // Add to *every* VarDecl in the ABI PBD, even ones that don't properly
+    // match anything in the API PBD.
+    for (auto i : range(abiPBD->getNumPatternEntries())) {
+      abiPBD->getPattern(i)->forEachVariable(record);
+    }
+    return;
+  }
+
+  record(abiDecl);
 }
 
 bool AvailableAttr::isUnconditionallyUnavailable() const {
@@ -2422,31 +2549,35 @@ bool AvailableAttr::isNoAsync() const {
   llvm_unreachable("Unhandled AvailableAttr::Kind in switch.");
 }
 
-SpecializeAttr::SpecializeAttr(SourceLoc atLoc, SourceRange range,
-                               TrailingWhereClause *clause, bool exported,
+AbstractSpecializeAttr::AbstractSpecializeAttr(DeclAttrKind DK,
+                               SourceLoc atLoc, SourceRange range,
+                               TrailingWhereClause *clause,
+                               bool exported,
                                SpecializationKind kind,
                                GenericSignature specializedSignature,
                                DeclNameRef targetFunctionName,
+                               DeclNameLoc targetFunctionNameLoc,
                                ArrayRef<Identifier> spiGroups,
                                ArrayRef<AvailableAttr *> availableAttrs,
                                size_t typeErasedParamsCount)
-    : DeclAttribute(DeclAttrKind::Specialize, atLoc, range,
-                    /*Implicit=*/clause == nullptr),
+    : DeclAttribute(DK, atLoc, range, /*Implicit=*/clause == nullptr),
       trailingWhereClause(clause), specializedSignature(specializedSignature),
-      targetFunctionName(targetFunctionName), numSPIGroups(spiGroups.size()),
+      targetFunctionName(targetFunctionName),
+      targetFunctionNameLoc(targetFunctionNameLoc),
+      numSPIGroups(spiGroups.size()),
       numAvailableAttrs(availableAttrs.size()),
       numTypeErasedParams(typeErasedParamsCount),
       typeErasedParamsInitialized(false) {
   std::uninitialized_copy(spiGroups.begin(), spiGroups.end(),
-                          getTrailingObjects<Identifier>());
+                          getSubclassTrailingObjects<Identifier>());
   std::uninitialized_copy(availableAttrs.begin(), availableAttrs.end(),
-                          getTrailingObjects<AvailableAttr *>());
+                          getSubclassTrailingObjects<AvailableAttr *>());
 
-  Bits.SpecializeAttr.exported = exported;
-  Bits.SpecializeAttr.kind = unsigned(kind);
+  Bits.AbstractSpecializeAttr.exported = exported;
+  Bits.AbstractSpecializeAttr.kind = unsigned(kind);
 }
 
-TrailingWhereClause *SpecializeAttr::getTrailingWhereClause() const {
+TrailingWhereClause *AbstractSpecializeAttr::getTrailingWhereClause() const {
   return trailingWhereClause;
 }
 
@@ -2455,19 +2586,18 @@ SpecializeAttr *SpecializeAttr::create(ASTContext &Ctx, SourceLoc atLoc,
                                        TrailingWhereClause *clause,
                                        bool exported, SpecializationKind kind,
                                        DeclNameRef targetFunctionName,
+                                       DeclNameLoc targetFunctionNameLoc,
                                        ArrayRef<Identifier> spiGroups,
                                        ArrayRef<AvailableAttr *> availableAttrs,
                                        GenericSignature specializedSignature) {
   size_t typeErasedParamsCount = 0;
-  if (Ctx.LangOpts.hasFeature(Feature::LayoutPrespecialization)) {
-    if (clause != nullptr) {
-      for (auto &req : clause->getRequirements()) {
-        if (req.getKind() == RequirementReprKind::LayoutConstraint) {
-          if (auto *attributedTy =
-                  dyn_cast<AttributedTypeRepr>(req.getSubjectRepr())) {
-            if (attributedTy->has(TypeAttrKind::NoMetadata)) {
-              typeErasedParamsCount += 1;
-            }
+  if (clause != nullptr) {
+    for (auto &req : clause->getRequirements()) {
+      if (req.getKind() == RequirementReprKind::LayoutConstraint) {
+        if (auto *attributedTy =
+                dyn_cast<AttributedTypeRepr>(req.getSubjectRepr())) {
+          if (attributedTy->has(TypeAttrKind::NoMetadata)) {
+            typeErasedParamsCount += 1;
           }
         }
       }
@@ -2480,7 +2610,8 @@ SpecializeAttr *SpecializeAttr::create(ASTContext &Ctx, SourceLoc atLoc,
 
   return new (mem)
       SpecializeAttr(atLoc, range, clause, exported, kind, specializedSignature,
-                     targetFunctionName, spiGroups, availableAttrs, typeErasedParamsCount);
+                     targetFunctionName, targetFunctionNameLoc, spiGroups,
+                     availableAttrs, typeErasedParamsCount);
 }
 
 SpecializeAttr *SpecializeAttr::create(ASTContext &ctx, bool exported,
@@ -2494,7 +2625,7 @@ SpecializeAttr *SpecializeAttr::create(ASTContext &ctx, bool exported,
   void *mem = ctx.Allocate(size, alignof(SpecializeAttr));
   return new (mem) SpecializeAttr(
       SourceLoc(), SourceRange(), nullptr, exported, kind, specializedSignature,
-      targetFunctionName, spiGroups, availableAttrs, 0);
+      targetFunctionName, DeclNameLoc(), spiGroups, availableAttrs, 0);
 }
 
 SpecializeAttr *SpecializeAttr::create(
@@ -2508,25 +2639,93 @@ SpecializeAttr *SpecializeAttr::create(
   void *mem = ctx.Allocate(size, alignof(SpecializeAttr));
   auto *attr = new (mem) SpecializeAttr(
       SourceLoc(), SourceRange(), nullptr, exported, kind, specializedSignature,
-      targetFunctionName, spiGroups, availableAttrs, typeErasedParams.size());
+      targetFunctionName, DeclNameLoc(), spiGroups, availableAttrs,
+      typeErasedParams.size());
   attr->setTypeErasedParams(typeErasedParams);
-  attr->resolver = resolver;
-  attr->resolverContextData = data;
+  attr->setResolver(resolver, data);
   return attr;
 }
 
-ValueDecl * SpecializeAttr::getTargetFunctionDecl(const ValueDecl *onDecl) const {
+// @specialize
+//
+SpecializedAttr *SpecializedAttr::create(ASTContext &Ctx, SourceLoc atLoc,
+                                       SourceRange range,
+                                       TrailingWhereClause *clause,
+                                       bool exported, SpecializationKind kind,
+                                       DeclNameRef targetFunctionName,
+                                       DeclNameLoc targetFunctionNameLoc,
+                                       ArrayRef<Identifier> spiGroups,
+                                       ArrayRef<AvailableAttr *> availableAttrs,
+                                       GenericSignature specializedSignature) {
+  size_t typeErasedParamsCount = 0;
+  if (clause != nullptr) {
+    for (auto &req : clause->getRequirements()) {
+      if (req.getKind() == RequirementReprKind::LayoutConstraint) {
+        if (auto *attributedTy =
+                dyn_cast<AttributedTypeRepr>(req.getSubjectRepr())) {
+          if (attributedTy->has(TypeAttrKind::NoMetadata)) {
+            typeErasedParamsCount += 1;
+          }
+        }
+      }
+    }
+  }
+
+  unsigned size = totalSizeToAlloc<Identifier, AvailableAttr *, Type>(
+      spiGroups.size(), availableAttrs.size(), typeErasedParamsCount);
+  void *mem = Ctx.Allocate(size, alignof(SpecializedAttr));
+
+  return new (mem)
+      SpecializedAttr(atLoc, range, clause, exported, kind, specializedSignature,
+                     targetFunctionName, targetFunctionNameLoc, spiGroups,
+                     availableAttrs, typeErasedParamsCount);
+}
+
+SpecializedAttr *SpecializedAttr::create(ASTContext &ctx, bool exported,
+                                       SpecializationKind kind,
+                                       ArrayRef<Identifier> spiGroups,
+                                       ArrayRef<AvailableAttr *> availableAttrs,
+                                       GenericSignature specializedSignature,
+                                       DeclNameRef targetFunctionName) {
+  unsigned size = totalSizeToAlloc<Identifier, AvailableAttr *, Type>(
+      spiGroups.size(), availableAttrs.size(), 0);
+  void *mem = ctx.Allocate(size, alignof(SpecializedAttr));
+  return new (mem) SpecializedAttr(
+      SourceLoc(), SourceRange(), nullptr, exported, kind,
+      specializedSignature, targetFunctionName, DeclNameLoc(), spiGroups,
+      availableAttrs, 0);
+}
+
+SpecializedAttr *SpecializedAttr::create(
+    ASTContext &ctx, bool exported, SpecializationKind kind,
+    ArrayRef<Identifier> spiGroups, ArrayRef<AvailableAttr *> availableAttrs,
+    ArrayRef<Type> typeErasedParams, GenericSignature specializedSignature,
+    DeclNameRef targetFunctionName, LazyMemberLoader *resolver,
+    uint64_t data) {
+  unsigned size = totalSizeToAlloc<Identifier, AvailableAttr *, Type>(
+      spiGroups.size(), availableAttrs.size(), typeErasedParams.size());
+  void *mem = ctx.Allocate(size, alignof(SpecializedAttr));
+  auto *attr = new (mem) SpecializedAttr(
+      SourceLoc(), SourceRange(), nullptr, exported, kind, specializedSignature,
+      targetFunctionName, DeclNameLoc(), spiGroups, availableAttrs,
+      typeErasedParams.size());
+  attr->setTypeErasedParams(typeErasedParams);
+  attr->setResolver(resolver, data);
+  return attr;
+}
+
+ValueDecl * AbstractSpecializeAttr::getTargetFunctionDecl(const ValueDecl *onDecl) const {
   return evaluateOrDefault(onDecl->getASTContext().evaluator,
                            SpecializeAttrTargetDeclRequest{
-                               onDecl, const_cast<SpecializeAttr *>(this)},
+                               onDecl, const_cast<AbstractSpecializeAttr *>(this)},
                            nullptr);
 }
 
-GenericSignature SpecializeAttr::getSpecializedSignature(
+GenericSignature AbstractSpecializeAttr::getSpecializedSignature(
     const AbstractFunctionDecl *onDecl) const {
   return evaluateOrDefault(onDecl->getASTContext().evaluator,
                            SerializeAttrGenericSignatureRequest{
-                               onDecl, const_cast<SpecializeAttr *>(this)},
+                               onDecl, const_cast<AbstractSpecializeAttr *>(this)},
                            nullptr);
 }
 
@@ -2565,7 +2764,7 @@ bool sameElements(ArrayRef<Element> first, ArrayRef<Element> second) {
   return sameElements(first, second, std::equal_to<Element>());
 }
 
-bool SpecializeAttr::isEquivalent(const SpecializeAttr *other,
+bool AbstractSpecializeAttr::isEquivalent(const AbstractSpecializeAttr *other,
                                   Decl *attachedTo) const {
   if (isExported() != other->isExported() ||
       getSpecializationKind() != other->getSpecializationKind() ||
@@ -2599,7 +2798,7 @@ SPIAccessControlAttr::SPIAccessControlAttr(SourceLoc atLoc, SourceRange range,
                     /*Implicit=*/false),
       numSPIGroups(spiGroups.size()) {
   std::uninitialized_copy(spiGroups.begin(), spiGroups.end(),
-                          getTrailingObjects<Identifier>());
+                          getTrailingObjects());
 }
 
 SPIAccessControlAttr *
@@ -2637,8 +2836,7 @@ DifferentiableAttr::DifferentiableAttr(bool implicit, SourceLoc atLoc,
   assert((diffKind != DifferentiabilityKind::Normal &&
           diffKind != DifferentiabilityKind::Forward) &&
          "'Normal' and 'Forward' are not supported");
-  std::copy(params.begin(), params.end(),
-            getTrailingObjects<ParsedAutoDiffParameter>());
+  std::copy(params.begin(), params.end(), getTrailingObjects());
 }
 
 DifferentiableAttr::DifferentiableAttr(Decl *original, bool implicit,
@@ -2682,9 +2880,10 @@ DifferentiableAttr::create(AbstractFunctionDecl *original, bool implicit,
                                       derivativeGenSig);
 }
 
-void DifferentiableAttr::setOriginalDeclaration(Decl *originalDeclaration) {
-  assert(originalDeclaration && "Original declaration must be non-null");
-  assert(!OriginalDeclaration &&
+void DifferentiableAttr::attachToDeclImpl(Decl *originalDeclaration) {
+  // FIXME: This doesn't properly handle PatternBindingDecls with multiple
+  // VarDecls.
+  assert(!OriginalDeclaration || OriginalDeclaration == originalDeclaration &&
          "Original declaration cannot have already been set");
   OriginalDeclaration = originalDeclaration;
 }
@@ -2740,8 +2939,7 @@ DerivativeAttr::DerivativeAttr(bool implicit, SourceLoc atLoc,
     : DeclAttribute(DeclAttrKind::Derivative, atLoc, baseRange, implicit),
       BaseTypeRepr(baseTypeRepr), OriginalFunctionName(std::move(originalName)),
       NumParsedParameters(params.size()) {
-  std::copy(params.begin(), params.end(),
-            getTrailingObjects<ParsedAutoDiffParameter>());
+  std::copy(params.begin(), params.end(), getTrailingObjects());
 }
 
 DerivativeAttr::DerivativeAttr(bool implicit, SourceLoc atLoc,
@@ -2793,9 +2991,10 @@ void DerivativeAttr::setOriginalFunctionResolver(
   ResolverContextData = resolverContextData;
 }
 
-void DerivativeAttr::setOriginalDeclaration(Decl *originalDeclaration) {
-  assert(originalDeclaration && "Original declaration must be non-null");
-  assert(!OriginalDeclaration &&
+void DerivativeAttr::attachToDeclImpl(Decl *originalDeclaration) {
+  // FIXME: This doesn't properly handle PatternBindingDecls with multiple
+  // VarDecls.
+  assert(!OriginalDeclaration || OriginalDeclaration == originalDeclaration &&
          "Original declaration cannot have already been set");
   OriginalDeclaration = originalDeclaration;
 }
@@ -2807,8 +3006,7 @@ TransposeAttr::TransposeAttr(bool implicit, SourceLoc atLoc,
     : DeclAttribute(DeclAttrKind::Transpose, atLoc, baseRange, implicit),
       BaseTypeRepr(baseTypeRepr), OriginalFunctionName(std::move(originalName)),
       NumParsedParameters(params.size()) {
-  std::uninitialized_copy(params.begin(), params.end(),
-                          getTrailingObjects<ParsedAutoDiffParameter>());
+  std::uninitialized_copy(params.begin(), params.end(), getTrailingObjects());
 }
 
 TransposeAttr::TransposeAttr(bool implicit, SourceLoc atLoc,
@@ -2846,9 +3044,9 @@ StorageRestrictionsAttr::StorageRestrictionsAttr(
     : DeclAttribute(DeclAttrKind::StorageRestrictions, AtLoc, Range, Implicit),
       NumInitializes(initializes.size()), NumAccesses(accesses.size()) {
   std::uninitialized_copy(initializes.begin(), initializes.end(),
-                          getTrailingObjects<Identifier>());
+                          getTrailingObjects());
   std::uninitialized_copy(accesses.begin(), accesses.end(),
-                          getTrailingObjects<Identifier>() + NumInitializes);
+                          getTrailingObjects() + NumInitializes);
 }
 
 StorageRestrictionsAttr *
@@ -2917,16 +3115,26 @@ bool ImplementsAttr::isEquivalent(const ImplementsAttr *other,
           && getProtocol(DC) == other->getProtocol(DC);
 }
 
+DeclContext *CustomAttrOwner::getDeclContext() const {
+  ASSERT(!Owner.isNull());
+  if (auto *D = getAsDecl())
+    return D->getDeclContext();
+
+  return Owner.dyn_cast<DeclContext *>();
+}
+
 CustomAttr::CustomAttr(SourceLoc atLoc, SourceRange range, TypeExpr *type,
+                       CustomAttrOwner owner,
                        CustomAttributeInitializer *initContext,
                        ArgumentList *argList, bool implicit)
     : DeclAttribute(DeclAttrKind::Custom, atLoc, range, implicit),
-      typeExpr(type), argList(argList), initContext(initContext) {
+      typeExpr(type), argList(argList), owner(owner), initContext(initContext) {
   assert(type);
   isArgUnsafeBit = false;
 }
 
 CustomAttr *CustomAttr::create(ASTContext &ctx, SourceLoc atLoc, TypeExpr *type,
+                               CustomAttrOwner owner,
                                CustomAttributeInitializer *initContext,
                                ArgumentList *argList, bool implicit) {
   assert(type);
@@ -2935,7 +3143,17 @@ CustomAttr *CustomAttr::create(ASTContext &ctx, SourceLoc atLoc, TypeExpr *type,
     range.End = argList->getEndLoc();
 
   return new (ctx)
-      CustomAttr(atLoc, range, type, initContext, argList, implicit);
+      CustomAttr(atLoc, range, type, owner, initContext, argList, implicit);
+}
+
+void CustomAttr::attachToDeclImpl(Decl *D) {
+  // Prefer to set the parent PatternBindingDecl as the owner for a VarDecl,
+  // this ensures we can handle PBDs with multiple vars.
+  if (auto *VD = dyn_cast<VarDecl>(D)) {
+    if (auto *PBD = VD->getParentPatternBinding())
+      D = PBD;
+  }
+  owner = D;
 }
 
 std::pair<UnqualifiedIdentTypeRepr *, DeclRefTypeRepr *>
@@ -2953,6 +3171,40 @@ CustomAttr::destructureMacroRef() {
     }
   }
   return {nullptr, nullptr};
+}
+
+ASTContext &CustomAttr::getASTContext() const {
+  return getOwner().getDeclContext()->getASTContext();
+}
+
+bool CustomAttr::shouldPreferPropertyWrapperOverMacro() const {
+  // If we have a VarDecl in a local context, prefer to use a property wrapper
+  // if one exists. This is necessary since we don't properly support peer
+  // declarations in local contexts, so want to use a property wrapper if one
+  // exists.
+  if (auto *D = getOwner().getAsDecl()) {
+    if ((isa<VarDecl>(D) || isa<PatternBindingDecl>(D)) &&
+        D->getDeclContext()->isLocalContext()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+NominalTypeDecl *CustomAttr::getNominalDecl() const {
+  auto &eval = getASTContext().evaluator;
+  auto *mutThis = const_cast<CustomAttr *>(this);
+  return evaluateOrDefault(eval, CustomAttrNominalRequest{mutThis}, nullptr);
+}
+
+MacroDecl *CustomAttr::getResolvedMacro() const {
+  auto &eval = getASTContext().evaluator;
+  auto *mutThis = const_cast<CustomAttr *>(this);
+
+  auto declRef =
+      evaluateOrDefault(eval, ResolveMacroRequest{mutThis}, ConcreteDeclRef());
+
+  return dyn_cast_or_null<MacroDecl>(declRef.getDecl());
 }
 
 TypeRepr *CustomAttr::getTypeRepr() const { return typeExpr->getTypeRepr(); }
@@ -3045,16 +3297,16 @@ bool MacroRoleAttr::hasNameKind(MacroIntroducedDeclNameKind kind) const {
   }) != getNames().end();
 }
 
-StringRef ExternAttr::getCName(const FuncDecl *D) const {
+StringRef ExternAttr::getCName(const ValueDecl *D) const {
   if (auto cName = this->Name)
     return cName.value();
   // If no name was specified, fall back on the Swift base name without mangling.
-  // Base name is always available and non-empty for FuncDecl.
+  // Base name is always available and non-empty for functions and variables.
   return D->getBaseIdentifier().str();
 }
 
-ExternAttr *ExternAttr::find(DeclAttributes &attrs, ExternKind kind) {
-  for (DeclAttribute *attr : attrs) {
+const ExternAttr *ExternAttr::find(const DeclAttributes &attrs, ExternKind kind) {
+  for (const DeclAttribute *attr : attrs) {
     if (auto *externAttr = dyn_cast<ExternAttr>(attr)) {
       if (externAttr->getExternKind() == kind)
         return externAttr;
@@ -3076,6 +3328,13 @@ DeclAttributes::getEffectiveSendableAttr() const {
 
   if (auto sendableAttr = getAttribute<SendableAttr>())
     return sendableAttr;
+
+  // ~Sendable on declarations imported from Objective-C.
+  for (auto *attr : getAttributes<SynthesizedProtocolAttr>()) {
+    if (attr->getProtocol()->isSpecificProtocol(KnownProtocolKind::Sendable) &&
+        attr->isSuppressed())
+      return nullptr;
+  }
 
   return assumedAttr;
 }
@@ -3108,7 +3367,7 @@ AllowFeatureSuppressionAttr::AllowFeatureSuppressionAttr(
   Bits.AllowFeatureSuppressionAttr.Inverted = inverted;
   Bits.AllowFeatureSuppressionAttr.NumFeatures = features.size();
   std::uninitialized_copy(features.begin(), features.end(),
-                          getTrailingObjects<Identifier>());
+                          getTrailingObjects());
 }
 
 AllowFeatureSuppressionAttr *AllowFeatureSuppressionAttr::create(
@@ -3130,8 +3389,15 @@ isEquivalent(const AllowFeatureSuppressionAttr *other, Decl *attachedTo) const {
 
 LifetimeAttr *LifetimeAttr::create(ASTContext &context, SourceLoc atLoc,
                                    SourceRange baseRange, bool implicit,
-                                   LifetimeEntry *entry) {
-  return new (context) LifetimeAttr(atLoc, baseRange, implicit, entry);
+                                   LifetimeEntry *entry, bool isUnderscored) {
+  return new (context)
+      LifetimeAttr(atLoc, baseRange, implicit, entry, isUnderscored);
+}
+
+std::string LifetimeAttr::getString() const {
+  return (isUnderscored() ? std::string("@_lifetime")
+                          : std::string("@lifetime")) +
+         getLifetimeEntry()->getString();
 }
 
 bool LifetimeAttr::isEquivalent(const LifetimeAttr *other,

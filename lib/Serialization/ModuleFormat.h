@@ -58,7 +58,7 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 949; // vector_base_addr instruction
+const uint16_t SWIFTMODULE_VERSION_MINOR = 974; // remove 'isCallerIsolated' bit from ParamDecl
 
 /// A standard hash seed used for all string hashes in a serialized module.
 ///
@@ -208,7 +208,11 @@ enum class ReadImplKind : uint8_t {
   Address,
   Read,
   Read2,
+  Borrow,
+  LastReadImplKind = Borrow,
 };
+static_assert(countBitsUsed(static_cast<unsigned>(
+                  ReadImplKind::LastReadImplKind)) <= 3);
 using ReadImplKindField = BCFixed<3>;
 
 // These IDs must \em not be renumbered or reordered without incrementing
@@ -222,8 +226,12 @@ enum class WriteImplKind : uint8_t {
   MutableAddress,
   Modify,
   Modify2,
+  Mutate,
+  LastWriteImplKind = Mutate,
 };
-using WriteImplKindField = BCFixed<3>;
+static_assert(countBitsUsed(static_cast<unsigned>(
+                  WriteImplKind::LastWriteImplKind)) <= 4);
+using WriteImplKindField = BCFixed<4>;
 
 // These IDs must \em not be renumbered or reordered without incrementing
 // the module version.
@@ -236,8 +244,12 @@ enum class ReadWriteImplKind : uint8_t {
   Modify2,
   StoredWithDidSet,
   InheritedWithDidSet,
+  Mutate,
+  LastReadWriteImplKind = Mutate,
 };
-using ReadWriteImplKindField = BCFixed<3>;
+static_assert(countBitsUsed(static_cast<unsigned>(
+                  ReadWriteImplKind::LastReadWriteImplKind)) <= 4);
+using ReadWriteImplKindField = BCFixed<4>;
 
 // These IDs must \em not be renumbered or reordered without incrementing
 // the module version.
@@ -344,6 +356,8 @@ enum AccessorKind : uint8_t {
   Modify2,
   Init,
   DistributedGet,
+  Borrow,
+  Mutate,
 };
 using AccessorKindField = BCFixed<4>;
 
@@ -428,8 +442,11 @@ enum class ResultConvention : uint8_t {
   UnownedInnerPointer,
   Autoreleased,
   Pack,
+  GuaranteedAddress,
+  Guaranteed,
+  Inout
 };
-using ResultConventionField = BCFixed<3>;
+using ResultConventionField = BCFixed<4>;
 
 /// These IDs must \em not be renumbered or reordered without incrementing the
 /// module version.
@@ -707,8 +724,9 @@ enum class FunctionTypeIsolation : uint8_t {
   NonIsolated,
   Parameter,
   Erased,
+  NonIsolatedNonsending,
+  // NOTE: All of the new kinds should be added above.
   GlobalActorOffset, // Add this to the global actor type ID
-  NonIsolatedCaller,
 };
 using FunctionTypeIsolationField = TypeIDField;
 
@@ -763,11 +781,12 @@ using GenericParamKindField = BCFixed<2>;
 // the module version.
 enum class AvailabilityDomainKind : uint8_t {
   Universal = 0,
-  SwiftLanguage,
+  SwiftLanguageMode,
   PackageDescription,
   Embedded,
   Platform,
   Custom,
+  StandaloneSwiftRuntime,
 };
 using AvailabilityDomainKindField = BCFixed<3>;
 
@@ -897,7 +916,6 @@ namespace control_block {
     TARGET,
     SDK_NAME,
     REVISION,
-    IS_OSSA,
     ALLOWABLE_CLIENT_NAME,
     CHANNEL,
     SDK_VERSION,
@@ -934,11 +952,6 @@ namespace control_block {
   using RevisionLayout = BCRecordLayout<
     REVISION,
     BCBlob
-  >;
-
-  using IsOSSALayout = BCRecordLayout<
-    IS_OSSA,
-    BCFixed<1>
   >;
 
   using AllowableClientLayout = BCRecordLayout<
@@ -986,7 +999,8 @@ namespace options_block {
     CXX_STDLIB_KIND,
     PUBLIC_MODULE_NAME,
     SWIFT_INTERFACE_COMPILER_VERSION,
-    STRICT_MEMORY_SAFETY
+    STRICT_MEMORY_SAFETY,
+    DEFERRED_CODE_GEN,
   };
 
   using SDKPathLayout = BCRecordLayout<
@@ -1087,6 +1101,10 @@ namespace options_block {
     STRICT_MEMORY_SAFETY
   >;
 
+  using DeferredCodeGenLayout = BCRecordLayout<
+    DEFERRED_CODE_GEN
+  >;
+
   using PublicModuleNameLayout = BCRecordLayout<
     PUBLIC_MODULE_NAME,
     BCBlob
@@ -1113,6 +1131,7 @@ namespace input_block {
     DEPENDENCY_DIRECTORY,
     MODULE_INTERFACE_PATH,
     IMPORTED_MODULE_SPIS,
+    IMPORTED_MODULE_PATH,
     EXTERNAL_MACRO,
   };
 
@@ -1121,14 +1140,20 @@ namespace input_block {
     ImportControlField, // import kind
     BCFixed<1>,         // scoped?
     BCFixed<1>,         // has spis?
-    BCBlob // module name, with submodule path pieces separated by \0s.
-           // If the 'scoped' flag is set, the final path piece is an access
-           // path within the module.
+    BCFixed<1>,         // has path?
+    BCBlob //  module name, with submodule path pieces separated by \0s.  If the
+           // 'scoped' flag is set, the final path piece is an access path
+           // within the module.
   >;
 
-  using ImportedModuleLayoutSPI = BCRecordLayout<
+  using ImportedModuleSPILayout = BCRecordLayout<
     IMPORTED_MODULE_SPIS,
     BCBlob // SPI names, separated by \0s
+  >;
+
+  using ImportedModulePathLayout = BCRecordLayout<
+    IMPORTED_MODULE_PATH,
+    BCBlob // Module file path
   >;
 
   using ExternalMacroLayout = BCRecordLayout<
@@ -1256,6 +1281,15 @@ namespace decls_block {
   using ABIOnlyCounterpartLayout = BCRecordLayout<
     ABI_ONLY_COUNTERPART,
     DeclIDField // API decl
+  >;
+
+  /// A field containing the pieces of a \c DeclNameRef and the information
+  /// needed to reconstruct it.
+  using DeclNameRefLayout = BCRecordLayout<
+    DECL_NAME_REF,
+    BCFixed<1>, // isCompoundName
+    BCFixed<1>, // hasModuleSelector
+    BCArray<IdentifierIDField> // module selector, base name, arg labels
   >;
 
   /// A placeholder for invalid types
@@ -1729,7 +1763,7 @@ namespace decls_block {
     BCFixed<1>,              // isCompileTimeLiteral?
     BCFixed<1>,              // isConst?
     BCFixed<1>,              // isSending?
-    BCFixed<1>,              // isCallerIsolated?
+    BCFixed<1>,              // isAddressable?
     DefaultArgumentField,    // default argument kind
     TypeIDField,             // default argument type
     ActorIsolationField,     // default argument isolation
@@ -2314,6 +2348,7 @@ namespace decls_block {
   using LifetimeDependenceLayout =
       BCRecordLayout<LIFETIME_DEPENDENCE,
                      BCVBR<4>,           // targetIndex
+                     BCVBR<4>,           // paramIndicesLength
                      BCFixed<1>,         // isImmortal
                      BCFixed<1>,         // hasInheritLifetimeParamIndices
                      BCFixed<1>,         // hasScopeLifetimeParamIndices
@@ -2374,6 +2409,11 @@ namespace decls_block {
   using InlineDeclAttrLayout = BCRecordLayout<
     Inline_DECL_ATTR,
     BCFixed<2>  // inline value
+  >;
+
+  using ExportDeclAttrLayout = BCRecordLayout<
+    Export_DECL_ATTR,
+    BCFixed<1>  // export kind value
   >;
 
   using NonSendableDeclAttrLayout = BCRecordLayout<
@@ -2440,16 +2480,18 @@ namespace decls_block {
 
   using SpecializeDeclAttrLayout = BCRecordLayout<
       Specialize_DECL_ATTR,
+      BCFixed<1>,              // isPublic flag (@specialized vs @_specialize)
       BCFixed<1>,              // exported flag
       BCFixed<1>,              // specialization kind
       GenericSignatureIDField, // specialized signature
       DeclIDField,             // target function
-      BCVBR<4>, // # of arguments (+1) or 1 if simple decl name, 0 if no target
       BCVBR<4>, // # of SPI groups
       BCVBR<4>, // # of availability attributes
-      BCVBR<4>, // # of type erased parameters
-      BCArray<IdentifierIDField> // target function pieces, spi groups, type erased params
+      BCArray<IdentifierIDField> // spi groups, type erased params
       >;
+  // Unused. We use the layout above.
+  using SpecializedDeclAttrLayout = BCRecordLayout<
+      Specialized_DECL_ATTR>;
 
   using StorageRestrictionsDeclAttrLayout = BCRecordLayout<
       StorageRestrictions_DECL_ATTR,
@@ -2468,7 +2510,6 @@ namespace decls_block {
   using DerivativeDeclAttrLayout = BCRecordLayout<
     Derivative_DECL_ATTR,
     BCFixed<1>, // Implicit flag.
-    IdentifierIDField, // Original name.
     BCFixed<1>, // Has original accessor kind?
     AccessorKindField, // Original accessor kind.
     DeclIDField, // Original function declaration.
@@ -2479,7 +2520,6 @@ namespace decls_block {
   using TransposeDeclAttrLayout = BCRecordLayout<
     Transpose_DECL_ATTR,
     BCFixed<1>, // Implicit flag.
-    IdentifierIDField, // Original name.
     DeclIDField, // Original function declaration.
     BCArray<BCFixed<1>> // Transposed parameter indices' bitvector.
   >;
@@ -2494,9 +2534,7 @@ namespace decls_block {
   using DynamicReplacementDeclAttrLayout = BCRecordLayout<
     DynamicReplacement_DECL_ATTR,
     BCFixed<1>, // implicit flag
-    DeclIDField, // replaced function
-    BCVBR<4>,   // # of arguments (+1) or zero if no name
-    BCArray<IdentifierIDField>
+    DeclIDField // replaced function
   >;
 
   using TypeEraserDeclAttrLayout = BCRecordLayout<
@@ -2526,7 +2564,7 @@ namespace decls_block {
   >;
 
   using ExposeDeclAttrLayout = BCRecordLayout<Expose_DECL_ATTR,
-                                              BCFixed<1>, // exposure kind
+                                              BCFixed<2>, // exposure kind
                                               BCFixed<1>, // implicit flag
                                               BCBlob      // declaration name
                                               >;
@@ -2553,6 +2591,12 @@ namespace decls_block {
                      BCFixed<1>  // implicit flag
                      >;
 
+  using InheritActorContextDeclAttrLayout =
+       BCRecordLayout<InheritActorContext_DECL_ATTR,
+                     BCFixed<1>, // the modifier (none = 0, always = 1)
+                     BCFixed<1>  // implicit flag
+                     >;
+
   using MacroRoleDeclAttrLayout = BCRecordLayout<
     MacroRole_DECL_ATTR,
     BCFixed<1>,                // implicit flag
@@ -2576,6 +2620,11 @@ namespace decls_block {
                      BCFixed<1>,         // hasScopeLifetimeParamIndices
                      BCArray<BCFixed<1>> // concatenated param indices
                      >;
+
+  using NonexhaustiveDeclAttrLayout = BCRecordLayout<
+    Nonexhaustive_DECL_ATTR,
+    BCFixed<2>  // mode
+  >;
 
   // clang-format on
 

@@ -1,4 +1,8 @@
-# Sending value risks causing data races
+# Sending value risks causing data races (SendingRisksDataRace)
+
+## Overview
+
+Sharing mutable state between concurrent tasks can cause data races in your program. Resolve this error by only accessing mutable state in one task at a time.
 
 If a type does not conform to `Sendable` the compiler will enforce that each instance of that type is only accessed by one concurrency domain at a time. The `sending 'x' risks causing data races` error indicates that your code can access a non-`Sendable` value from multiple concurrency domains at once.
 
@@ -7,7 +11,7 @@ For example, if a value can be accessed from the main actor, it's invalid to sen
 ```swift
 class Person {
   var name: String = ""
-    
+
   func printNameConcurrently() async {
     print(name)
   }
@@ -34,7 +38,7 @@ The most common fix is to change the `async` method to run on the caller's actor
 ```swift
 class Person {
   var name: String = ""
-    
+
   nonisolated(nonsending)
   func printNameConcurrently() async {
     print(name)

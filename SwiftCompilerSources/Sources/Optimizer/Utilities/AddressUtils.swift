@@ -125,7 +125,7 @@ extension AddressUseVisitor {
     case is SwitchEnumAddrInst, is CheckedCastAddrBranchInst,
          is SelectEnumAddrInst, is InjectEnumAddrInst,
          is StoreInst, is StoreUnownedInst, is StoreWeakInst,
-         is AssignInst, is AssignByWrapperInst, is AssignOrInitInst,
+         is AssignInst, is AssignOrInitInst,
          is TupleAddrConstructorInst, is InitBlockStorageHeaderInst,
          is RetainValueAddrInst, is ReleaseValueAddrInst,
          is DestroyAddrInst, is DeallocStackInst, 
@@ -159,7 +159,7 @@ extension AddressUseVisitor {
            .GenericFDiv, .GenericMul, .GenericFMul, .GenericSDiv,
            .GenericExactSDiv, .GenericShl, .GenericSRem, .GenericSub,
            .GenericFSub, .GenericUDiv, .GenericExactUDiv, .GenericURem,
-           .GenericFRem, .GenericXor, .TaskRunInline, .ZeroInitializer,
+           .GenericFRem, .GenericXor, .TaskRunInline, .ZeroInitializer, .PrepareInitialization,
            .GetEnumTag, .InjectEnumTag:
         return leafAddressUse(of: operand)
       default:
@@ -279,7 +279,7 @@ extension AccessBase {
     default:
       return nil
     }
-    return AddressInitializationWalker.findSingleInitializer(ofAddress: baseAddr, context: context)
+    return AddressInitializationWalker.findSingleInitializer(ofAddress: baseAddr, requireFullyAssigned: .value, context)
   }
 }
 
@@ -311,6 +311,8 @@ extension AccessBase {
 // modification of memory.
 struct AddressInitializationWalker: AddressDefUseWalker, AddressUseVisitor {
   let baseAddress: Value
+  let requireFullyAssigned: IsFullyAssigned
+  let onRead: WalkResult
   let context: any Context
 
   var walkDownCache = WalkerCache<SmallProjectionPath>()
@@ -318,18 +320,22 @@ struct AddressInitializationWalker: AddressDefUseWalker, AddressUseVisitor {
   var isProjected = false
   var initializer: AccessBase.Initializer?
 
-  static func findSingleInitializer(ofAddress baseAddr: Value, context: some Context)
+  static func findSingleInitializer(ofAddress baseAddr: Value, requireFullyAssigned: IsFullyAssigned,
+                                    allowRead: Bool = true, _ context: some Context)
     -> AccessBase.Initializer? {
 
-    var walker = AddressInitializationWalker(baseAddress: baseAddr, context)
+    var walker = AddressInitializationWalker(baseAddress: baseAddr, requireFullyAssigned, allowRead: allowRead, context)
     if walker.walkDownUses(ofAddress: baseAddr, path: SmallProjectionPath()) == .abortWalk {
       return nil
     }
     return walker.initializer
   }
 
-  private init(baseAddress: Value, _ context: some Context) {
+  private init(baseAddress: Value, _ requireFullyAssigned: IsFullyAssigned, allowRead: Bool, _ context: some Context) {
+    assert(requireFullyAssigned != .no)
     self.baseAddress = baseAddress
+    self.requireFullyAssigned = requireFullyAssigned
+    self.onRead = allowRead ? .continueWalk : .abortWalk
     self.context = context
     if let arg = baseAddress as? FunctionArgument {
       assert(!arg.convention.isIndirectIn, "@in arguments cannot be initialized")
@@ -387,12 +393,26 @@ extension AddressInitializationWalker {
     // FIXME: check mayWriteToMemory but ignore non-stores. Currently,
     // stores should all be checked my isAddressInitialization, but
     // this is not robust.
-    return .continueWalk
+    return onRead
   }
 
   mutating func appliedAddressUse(of operand: Operand, by apply: FullApplySite)
     -> WalkResult {
-    if operand.isAddressInitialization {
+    switch apply.fullyAssigns(operand: operand) {
+    case .no:
+      if onRead == .abortWalk {
+        return .abortWalk
+      }
+      break
+    case .lifetime:
+      if onRead == .abortWalk {
+        return .abortWalk
+      }
+      if requireFullyAssigned == .value  {
+        break
+      }
+      fallthrough
+    case .value:
       return setInitializer(instruction: operand.instruction)
     }
     guard let convention = apply.convention(of: operand) else {
@@ -403,26 +423,26 @@ extension AddressInitializationWalker {
 
   mutating func loadedAddressUse(of operand: Operand, intoValue value: Value)
     -> WalkResult {
-    return .continueWalk
+    return onRead
   }
 
   mutating func loadedAddressUse(of operand: Operand, intoAddress address: Operand)
     -> WalkResult {
-    return .continueWalk
+    return onRead
   }
 
   mutating func yieldedAddressUse(of operand: Operand) -> WalkResult {
     // An inout yield is a partial write. Initialization via coroutine is not supported, so we assume a prior
     // initialization must dominate the yield.
-    return .continueWalk
+    return onRead
   }
 
   mutating func dependentAddressUse(of operand: Operand, dependentValue value: Value) -> WalkResult {
-    return .continueWalk
+    return onRead
   }
 
   mutating func dependentAddressUse(of operand: Operand, dependentAddress address: Value) -> WalkResult {
-    return .continueWalk
+    return onRead
   }
 
   mutating func escapingAddressUse(of operand: Operand) -> WalkResult {
@@ -629,7 +649,7 @@ extension AddressOwnershipLiveRange {
     var reachableUses = Stack<LocalVariableAccess>(context)
     defer { reachableUses.deinitialize() }
 
-    localReachability.gatherKnownLifetimeUses(from: assignment, in: &reachableUses)
+    localReachability.gatherKnownLivenessUses(from: assignment, in: &reachableUses)
 
     let assignmentInst = assignment.instruction ?? allocation.parentFunction.entryBlock.instructions.first!
     var range = InstructionRange(begin: assignmentInst, context)
@@ -648,12 +668,10 @@ extension AddressOwnershipLiveRange {
 let addressOwnershipLiveRangeTest = FunctionTest("address_ownership_live_range") {
   function, arguments, context in
   let address = arguments.takeValue()
+  let begin = arguments.takeInstruction()
   print("Address: \(address)")
   print("Base: \(address.accessBase)")
-  let begin = address.definingInstructionOrTerminator ?? {
-    assert(address is FunctionArgument)
-    return function.instructions.first!
-  }()
+  print("Begin: \(begin)")
   let localReachabilityCache = LocalVariableReachabilityCache()
   guard var ownershipRange = AddressOwnershipLiveRange.compute(for: address, at: begin,
                                                                localReachabilityCache, context) else {

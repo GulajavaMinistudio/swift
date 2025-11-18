@@ -59,6 +59,7 @@ add_swift_host_library(swiftBasic STATIC
   ParseableOutput.cpp
   JSONSerialization.cpp
   LangOptions.cpp
+  LangOptionsBridging.cpp
   LoadDynamicLibrary.cpp
   Located.cpp
   Mangler.cpp
@@ -134,10 +135,8 @@ if(NOT "${SWIFT_VENDOR}" STREQUAL "")
       " -DSWIFT_VENDOR=\"\\\"${SWIFT_VENDOR}\\\"\"")
 endif()
 
-set(SWIFT_COMPILER_VERSION "" CACHE STRING
-    "The string that identifies the SCM commit(s) for this build")
-
 message(STATUS "Swift compiler version: ${SWIFT_COMPILER_VERSION}")
+message(STATUS "Swift toolchain version: ${SWIFT_TOOLCHAIN_VERSION}")
 message(STATUS "Embedded clang compiler version: ${CLANG_COMPILER_VERSION}")
 
 if(SWIFT_COMPILER_VERSION)
@@ -150,3 +149,7 @@ if(CLANG_COMPILER_VERSION)
     " -DCLANG_COMPILER_VERSION=\"\\\"${CLANG_COMPILER_VERSION}\\\"\"")
 endif()
 
+if(SWIFT_TOOLCHAIN_VERSION)
+  set_property(SOURCE Version.cpp APPEND_STRING PROPERTY COMPILE_FLAGS
+    " -DSWIFT_TOOLCHAIN_VERSION=\"\\\"${SWIFT_TOOLCHAIN_VERSION}\\\"\"")
+endif()

@@ -11,6 +11,7 @@
   #define NONSENDABLE __attribute__((__swift_attr__("@_nonSendable")))
   #define ASSUME_NONSENDABLE_BEGIN _Pragma("clang attribute ASSUME_NONSENDABLE.push (__attribute__((swift_attr(\"@_nonSendable(_assumed)\"))), apply_to = any(objc_interface, record, enum))")
   #define ASSUME_NONSENDABLE_END _Pragma("clang attribute ASSUME_NONSENDABLE.pop")
+  #define ASYNC_NAME(NAME) __attribute__((swift_async_name(#NAME)))
 #else
   // If we take this #else, we should see minor failures of some subtests,
   // but not systematic failures of everything that uses this header.
@@ -18,6 +19,7 @@
   #define NONSENDABLE
   #define ASSUME_NONSENDABLE_BEGIN
   #define ASSUME_NONSENDABLE_END
+  #define ASYNC_NAME(NAME)
 #endif
 
 #define NS_ENUM(_type, _name) enum _name : _type _name; \
@@ -133,6 +135,9 @@ typedef void (^NonsendableCompletionHandler)(NSString * _Nullable, NSString * _N
                           (void (^)(NSString *__nullable value,
                                     NSError *__nullable error))completionHandler
     MAIN_ACTOR;
+
+- (void)startAt:(__nullable NSDate *)value
+     completion:(void (^_Nonnull)(void))completion;
 @end
 
 @protocol RefrigeratorDelegate<NSObject>
@@ -260,7 +265,7 @@ typedef NS_ERROR_ENUM(unsigned, SendableErrorCode, SendableErrorDomain) {
 typedef NS_ERROR_ENUM(unsigned, NonSendableErrorCode, NonSendableErrorDomain) {
   NonSendableErrorCodeFoo, NonSendableErrorCodeBar
 } NONSENDABLE;
-// expected-warning@-3 {{cannot make error code type 'NonSendableErrorCode' non-sendable because Swift errors are always sendable}}
+// expected-warning@-3 {{cannot make error code type 'NonSendableErrorCode' non-Sendable because Swift errors are always sendable}}
 
 UI_ACTOR
 @interface PictureFrame : NSObject
@@ -376,6 +381,15 @@ MAIN_ACTOR
 
 @protocol FailableFloatLoader
 - (void)loadFloatOrThrowWithCompletionHandler:(void (^)(float, NSError* __nullable)) completionHandler;
+@end
+
+NONSENDABLE
+@interface ImportObjCAsyncGetter : NSObject
+
+- (void)getSendableClassesWithCompletionHandler:
+    (void (^SENDABLE)(NSArray<SendableClass *> *myClasses))handler
+    ASYNC_NAME(getter:sendableClasses());
+
 @end
 
 #pragma clang assume_nonnull end

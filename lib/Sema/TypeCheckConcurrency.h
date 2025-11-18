@@ -208,12 +208,20 @@ struct ActorReferenceResult {
     /// potentially from a different node, so it must be marked 'distributed'.
     Distributed = 1 << 2,
 
-    /// The declaration is being accessed from a @preconcurrency context.
+    /// The declaration is marked as `@preconcurrency` or being accessed
+    /// from a @preconcurrency context.
     Preconcurrency = 1 << 3,
 
     /// Only arguments cross an isolation boundary, e.g. because they
     /// escape into an actor in a nonisolated actor initializer.
     OnlyArgsCrossIsolation = 1 << 4,
+
+    /// The reference to the declaration is invalid but has to be downgraded
+    /// to a warning because it was accepted by the older compilers or because
+    /// the declaration predates concurrency and is marked as such.
+    ///
+    /// NOTE: This flag is set for `Preconcurrency` declarations.
+    CompatibilityDowngrade = 1 << 5,
   };
 
   using Options = OptionSet<Flags>;
@@ -327,6 +335,11 @@ bool diagnoseNonSendableTypesInReference(
 void diagnoseMissingSendableConformance(
     SourceLoc loc, Type type, const DeclContext *fromDC, bool preconcurrency);
 
+/// Produce a diagnostic for a missing conformance to SendableMetatype
+void diagnoseMissingSendableMetatypeConformance(SourceLoc loc, Type type,
+                                                const DeclContext *fromDC,
+                                                bool preconcurrency);
+
 /// If the given nominal type is public and does not explicitly
 /// state whether it conforms to Sendable, provide a diagnostic.
 void diagnoseMissingExplicitSendable(NominalTypeDecl *nominal);
@@ -353,7 +366,7 @@ enum class SendableCheck {
 
   /// Sendable conformance was implied by a protocol that inherits from
   /// Sendable and also predates concurrency.
-  ImpliedByStandardProtocol,
+  ImpliedByPreconcurrencyProtocol,
 
   /// Implicit conformance to Sendable.
   Implicit,
@@ -367,7 +380,7 @@ enum class SendableCheck {
 static inline bool isImplicitSendableCheck(SendableCheck check) {
   switch (check) {
   case SendableCheck::Explicit:
-  case SendableCheck::ImpliedByStandardProtocol:
+  case SendableCheck::ImpliedByPreconcurrencyProtocol:
     return false;
 
   case SendableCheck::Implicit:
@@ -596,8 +609,7 @@ bool diagnoseSendabilityErrorBasedOn(
 /// and perform any necessary resolution and diagnostics, returning the
 /// global actor attribute and type it refers to (or \c std::nullopt).
 std::optional<std::pair<CustomAttr *, NominalTypeDecl *>>
-checkGlobalActorAttributes(SourceLoc loc, DeclContext *dc,
-                           ArrayRef<CustomAttr *> attrs);
+checkGlobalActorAttributes(SourceLoc loc, ArrayRef<CustomAttr *> attrs);
 
 /// Get the explicit global actor specified for a closure.
 Type getExplicitGlobalActor(ClosureExpr *closure);
@@ -777,6 +789,13 @@ bool checkIsolatedConformancesInContext(
 bool checkIsolatedConformancesInContext(
     Type type, SourceLoc loc, const DeclContext *dc,
     HandleConformanceIsolationFn handleBad = doNotDiagnoseConformanceIsolation);
+
+/// For a protocol conformance that does not have a "raw" isolation, infer its isolation.
+///
+/// - hasKnownIsolatedWitness: indicates when it is known that there is an actor-isolated witness, meaning
+///   that this operation will not look at other witnesses to determine if they are all nonisolated.
+ActorIsolation inferConformanceIsolation(
+    NormalProtocolConformance *conformance, bool hasKnownIsolatedWitness);
 
 } // end namespace swift
 

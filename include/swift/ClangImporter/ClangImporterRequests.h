@@ -342,15 +342,9 @@ private:
 };
 
 enum class CxxRecordSemanticsKind {
-  Trivial,
-  Owned,
-  MoveOnly,
+  Value,
   Reference,
   Iterator,
-  // A record that is either not copyable/movable or not destructible.
-  MissingLifetimeOperation,
-  // A record that has no copy and no move operations
-  UnavailableConstructors,
   // A C++ record that represents a Swift class type exposed to C++ from Swift.
   SwiftClassType
 };
@@ -576,10 +570,91 @@ private:
 void simple_display(llvm::raw_ostream &out, EscapabilityLookupDescriptor desc);
 SourceLoc extractNearestSourceLoc(EscapabilityLookupDescriptor desc);
 
+// Swift value semantics of C++ types
+// These are usually equivalent, with the exception of references.
+// When a reference type is copied, the pointer’s value is copied rather than
+// the object’s storage. This means reference types can be imported as
+// copyable to Swift, even when they are non-copyable in C++.
+enum class CxxValueSemanticsKind {
+  Unknown,
+  Copyable,
+  MoveOnly,
+  // A record that is either not copyable/movable or not destructible.
+  MissingLifetimeOperation,
+  // A record that has no copy and no move operations
+  UnavailableConstructors,
+};
+
+struct CxxValueSemanticsDescriptor final {
+  const clang::Type *type;
+  ClangImporter::Implementation *importerImpl;
+
+  friend llvm::hash_code hash_value(const CxxValueSemanticsDescriptor &desc) {
+    return llvm::hash_combine(desc.type);
+  }
+
+  friend bool operator==(const CxxValueSemanticsDescriptor &lhs,
+                         const CxxValueSemanticsDescriptor &rhs) {
+    return lhs.type == rhs.type;
+  }
+
+  friend bool operator!=(const CxxValueSemanticsDescriptor &lhs,
+                         const CxxValueSemanticsDescriptor &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+class CxxValueSemantics
+    : public SimpleRequest<CxxValueSemantics,
+                           CxxValueSemanticsKind(
+                               CxxValueSemanticsDescriptor),
+                           RequestFlags::Cached> {
+public:
+  using SimpleRequest::SimpleRequest;
+
+  bool isCached() const { return true; }
+
+private:
+  friend SimpleRequest;
+
+  CxxValueSemanticsKind evaluate(Evaluator &evaluator,
+                                 CxxValueSemanticsDescriptor desc) const;
+};
+
+void simple_display(llvm::raw_ostream &out, CxxValueSemanticsDescriptor desc);
+SourceLoc extractNearestSourceLoc(CxxValueSemanticsDescriptor desc);
+
+struct ClangDeclExplicitSafetyDescriptor final {
+  const clang::Decl *decl;
+  bool isClass;
+
+  ClangDeclExplicitSafetyDescriptor(const clang::Decl *decl, bool isClass)
+      : decl(decl), isClass(isClass) {}
+
+  friend llvm::hash_code
+  hash_value(const ClangDeclExplicitSafetyDescriptor &desc) {
+    return llvm::hash_combine(desc.decl, desc.isClass);
+  }
+
+  friend bool operator==(const ClangDeclExplicitSafetyDescriptor &lhs,
+                         const ClangDeclExplicitSafetyDescriptor &rhs) {
+    return lhs.decl == rhs.decl && lhs.isClass == rhs.isClass;
+  }
+
+  friend bool operator!=(const ClangDeclExplicitSafetyDescriptor &lhs,
+                         const ClangDeclExplicitSafetyDescriptor &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+void simple_display(llvm::raw_ostream &out,
+                    ClangDeclExplicitSafetyDescriptor desc);
+SourceLoc extractNearestSourceLoc(ClangDeclExplicitSafetyDescriptor desc);
+
 /// Determine the safety of the given Clang declaration.
 class ClangDeclExplicitSafety
     : public SimpleRequest<ClangDeclExplicitSafety,
-                           ExplicitSafety(SafeUseOfCxxDeclDescriptor),
+                           ExplicitSafety(ClangDeclExplicitSafetyDescriptor),
                            RequestFlags::Cached> {
 public:
   using SimpleRequest::SimpleRequest;
@@ -592,7 +667,8 @@ private:
   friend SimpleRequest;
 
   // Evaluation.
-  ExplicitSafety evaluate(Evaluator &evaluator, SafeUseOfCxxDeclDescriptor desc) const;
+  ExplicitSafety evaluate(Evaluator &evaluator,
+                          ClangDeclExplicitSafetyDescriptor desc) const;
 };
 
 #define SWIFT_TYPEID_ZONE ClangImporter
