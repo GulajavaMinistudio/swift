@@ -571,6 +571,8 @@ if (-not $PinnedBuild) {
 }
 
 $PinnedToolchain = [IO.Path]::GetFileNameWithoutExtension($PinnedBuild)
+# Use a shorter name in paths to avoid going over the path length limit.
+$ToolchainVersionIdentifier = $PinnedToolchain -replace 'swift-(.+?)-windows10.*', '$1'
 
 if ($EnableCAS -and ($UseHostToolchain -or ($PinnedVersion -ne "0.0.0"))) {
   throw "CAS currently requires using a main-branch pinned toolchain."
@@ -1298,16 +1300,6 @@ function Get-Dependencies {
         Expand-ZipFile "$FileName.zip" "$BinaryCache" "$FileName"
         Write-Success "$ArchName Python $PythonVersion"
       }
-      if (-not $EmbeddedPython) {
-        return
-      }
-      $PythonPTHPath = "$BinaryCache/$FileName/$(Get-PythonLibName)._pth"
-      $PythonPTHContent = [System.IO.File]::ReadAllText($PythonPTHPath).Replace("#import site","import site")
-      [System.IO.File]::WriteAllText($PythonPTHPath, $PythonPTHContent)
-      $GetPipURL = "https://bootstrap.pypa.io/get-pip.py"
-      $GetPipPath = "$BinaryCache/$FileName/get-pip.py"
-      $WebClient.DownloadFile($GetPipURL, $GetPipPath)
-      Invoke-Program -Silent "$(Get-PythonExecutable)" $GetPipPath
     }
 
     function Install-PIPIfNeeded {
@@ -1400,7 +1392,7 @@ function Get-Dependencies {
 
     # TODO(compnerd) stamp/validate that we need to re-extract
     New-Item -ItemType Directory -ErrorAction Ignore $BinaryCache\toolchains | Out-Null
-    Extract-Toolchain "$PinnedToolchain.exe" $BinaryCache $PinnedToolchain.TrimStart("swift-").TrimEnd("-arm64").TrimEnd("-a-windows10")
+    Extract-Toolchain "$PinnedToolchain.exe" $BinaryCache $ToolchainVersionIdentifier
     Write-Success "Swift Toolchain $PinnedVersion"
 
     if ($Android) {
@@ -1454,9 +1446,7 @@ function Get-Dependencies {
 }
 
 function Get-PinnedToolchainToolsDir() {
-  $ToolchainName = $PinnedToolchain.TrimStart("swift-").TrimEnd("-a-windows10")
-
-  $ToolchainsRoot = [IO.Path]::Combine("$BinaryCache\toolchains", "$ToolchainName", "LocalApp", "Programs", "Swift", "Toolchains")
+  $ToolchainsRoot = [IO.Path]::Combine("$BinaryCache\toolchains", "$ToolchainVersionIdentifier", "LocalApp", "Programs", "Swift", "Toolchains")
 
   # NOTE: Add a workaround for the main snapshots that inadvertently used the
   # wrong version when they were built. This allows use of the nightly snapshot
@@ -1481,17 +1471,13 @@ function Get-PinnedToolchainToolsDir() {
 }
 
 function Get-PinnedToolchainSDK([OS] $OS = $BuildPlatform.OS, [string] $Identifier = $OS.ToString()) {
-  $ToolchainName = $PinnedToolchain.TrimStart("swift-").TrimEnd("-a-windows10")
-
-  return [IO.Path]::Combine("$BinaryCache\", "toolchains", $ToolchainName,
+  return [IO.Path]::Combine("$BinaryCache\", "toolchains", $ToolchainVersionIdentifier,
     "LocalApp", "Programs", "Swift", "Platforms", (Get-PinnedToolchainVersion),
     "$($OS.ToString()).platform", "Developer", "SDKs", "$Identifier.sdk")
 }
 
 function Get-PinnedToolchainRuntime() {
-  $ToolchainName = $PinnedToolchain.TrimStart("swift-").TrimEnd("-a-windows10")
-
-  return [IO.Path]::Combine("$BinaryCache\", "toolchains", $ToolchainName,
+  return [IO.Path]::Combine("$BinaryCache\", "toolchains", $ToolchainVersionIdentifier,
     "LocalApp", "Programs", "Swift", "Runtimes", (Get-PinnedToolchainVersion),
     "usr", "bin")
 }
@@ -3523,6 +3509,7 @@ function Build-Subprocess([Hashtable] $Platform) {
     -Defines @{
       BUILD_SHARED_LIBS = "NO";
       CMAKE_STATIC_LIBRARY_PREFIX_Swift = "lib";
+      SwiftSystem_DIR = (Get-ProjectCMakeModules $Platform System);
     }
 }
 
@@ -4080,13 +4067,38 @@ function Build-Inspect([Hashtable] $Platform) {
     }
 }
 
-function Build-DocC() {
-  Build-SPMProject `
-    -Action Build `
+function Build-SymbolKit([hashtable] $Platform) {
+  Build-CMakeProject `
+    -Src $SourceCache\swift-docc-symbolkit `
+    -Bin $(Get-ProjectBinaryCache $Platform SymbolKit) `
+    -BuildTargets default `
+    -Platform $Platform `
+    -UseBuiltCompilers C,Swift `
+    -SwiftSDK (Get-SwiftSDK -OS $Platform.OS -Identifier $Platform.DefaultSDK) `
+    -Defines @{
+      CMAKE_STATIC_LIBRARY_PREFIX_Swift = "lib";
+    }
+}
+
+function Build-DocC([hashtable] $Platform) {
+  Build-CMakeProject `
     -Src $SourceCache\swift-docc `
-    -Bin $(Get-ProjectBinaryCache $BuildPlatform DocC) `
-    -Platform $BuildPlatform `
-    --product docc
+    -Bin (Get-ProjectBinaryCache $BuildPlatform DocC) `
+    -InstallTo "$($Platform.ToolchainInstallRoot)\usr" `
+    -Platform $Platform `
+    -UseBuiltCompilers C,Swift `
+    -SwiftSDK (Get-SwiftSDK -OS $Platform.OS -Identifier $Platform.DefaultSDK) `
+    -Defines @{
+      BUILD_SHARED_LIBS = "YES";
+      CMAKE_STATIC_LIBRARY_PREFIX_Swift = "lib";
+      ArgumentParser_DIR = (Get-ProjectCMakeModules $Platform ArgumentParser);
+      SwiftASN1_DIR = (Get-ProjectCMakeModules $Platform ASN1);
+      SwiftCrypto_DIR = (Get-ProjectCMakeModules $Platform Crypto);
+      SwiftMarkdown_DIR = (Get-ProjectCMakeModules $Platform Markdown);
+      LMDB_DIR = (Get-ProjectCMakeModules $Platform LMDB);
+      SymbolKit_DIR = (Get-ProjectCMakeModules $Platform SymbolKit);
+      "cmark-gfm_DIR" = "$($Platform.ToolchainInstallRoot)\usr\lib\cmake";
+    }
 }
 
 function Test-PackageManager() {
@@ -4305,12 +4317,12 @@ if (-not $SkipBuild) {
           foreach ($Build in $WindowsSDKBuilds) {
             Invoke-BuildStep Build-ExperimentalSDK $Build
 
-            Get-ChildItem "${SDKROOT}\usr\lib\swift\windows" -Filter "*.lib" -File -ErrorAction Ignore | ForEach-Object {
+            Get-ChildItem -ErrorAction Ignore "${SDKROOT}\usr\lib\swift\windows" -Filter "*.lib" -File | ForEach-Object {
               Write-Host -BackgroundColor DarkRed -ForegroundColor White "$($_.FullName) is not nested in an architecture directory"
               Move-Item $_.FullName "${SDKROOT}\usr\lib\swift\windows\$($Build.Architecture.LLVMName)\" | Out-Null
             }
 
-            Get-ChildItem "${SDKROOT}\usr\lib\swift_static\windows" -Filter "*.lib" -File -ErrorAction Ignore | ForEach-Object {
+            Get-ChildItem -ErrorAction Ignore "${SDKROOT}\usr\lib\swift_static\windows" -Filter "*.lib" -File | ForEach-Object {
               Write-Host -BackgroundColor DarkRed -ForegroundColor White "$($_.FullName) is not nested in an architecture directory"
               Move-Item $_.FullName "${SDKROOT}\usr\lib\swift_static\windows\$($Build.Architecture.LLVMName)\" | Out-Null
             }
@@ -4387,7 +4399,7 @@ if (-not $SkipBuild) {
               Move-Item $_.FullName "${SDKROOT}\usr\lib\swift\android\$($Build.Architecture.LLVMName)\" | Out-Null
             }
 
-            Get-ChildItem "${SDKROOT}\usr\lib\swift_static\android" -File | Where-Object { $_.Name -match ".a$|.so$" } | ForEach-Object {
+            Get-ChildItem -ErrorAction Ignore "${SDKROOT}\usr\lib\swift_static\android" -File | Where-Object { $_.Name -match ".a$|.so$" } | ForEach-Object {
               Write-Host -BackgroundColor DarkRed -ForegroundColor White "$($_.FullName) is not nested in an architecture directory"
               Move-Item $_.FullName "${SDKROOT}\usr\lib\swift_static\android\$($Build.Architecture.LLVMName)\" | Out-Null
             }
@@ -4461,7 +4473,8 @@ if (-not $SkipBuild -and $IncludeNoAsserts) {
   Build-NoAssertsToolchain
 }
 
-if (-not $SkipBuild -and -not $IsCrossCompiling) {
+if (-not $SkipBuild) {
+  Invoke-BuildStep Build-SymbolKit $HostPlatform
   Invoke-BuildStep Build-DocC $HostPlatform
 }
 
