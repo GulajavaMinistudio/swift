@@ -128,10 +128,13 @@ final public class ClassDecl: NominalTypeDecl {
   final public var destructor: DestructorDecl {
     bridged.Class_getDestructor().getAs(DestructorDecl.self)
   }
+
+  public var isForeign: Bool { bridged.Class_isForeign() }
 }
 
 final public class ProtocolDecl: NominalTypeDecl {
   public var requiresClass: Bool { bridged.ProtocolDecl_requiresClass() }
+  public var isMarkerProtocol: Bool { bridged.ProtocolDecl_isMarkerProtocol() }
 }
 
 final public class BuiltinTupleDecl: NominalTypeDecl {}
@@ -179,10 +182,12 @@ final public class ParamDecl: VarDecl {
 final public class SubscriptDecl: AbstractStorageDecl, GenericContext {}
 
 public class AbstractFunctionDecl: ValueDecl, GenericContext {
-  public var isOverridden: Bool { bridged.AbstractFunction_isOverridden() }
+  final public var isOverridden: Bool { bridged.AbstractFunction_isOverridden() }
 }
 
-final public class ConstructorDecl: AbstractFunctionDecl {}
+final public class ConstructorDecl: AbstractFunctionDecl {
+  public var isInheritable: Bool { bridged.Constructor_isInheritable() }
+}
 
 final public class DestructorDecl: AbstractFunctionDecl {
   final public var isIsolated: Bool { bridged.Destructor_isIsolated() }

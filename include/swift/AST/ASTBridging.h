@@ -83,6 +83,7 @@ enum class RequirementReprKind : unsigned;
 }
 
 struct BridgedASTType;
+struct BridgedASTTypeArray;
 class BridgedCanType;
 class BridgedASTContext;
 class BridgedLangOptions;
@@ -346,8 +347,11 @@ struct BridgedDeclObj {
   BRIDGED_INLINE bool Struct_hasUnreferenceableStorage() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedASTType Class_getSuperclass() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedDeclObj Class_getDestructor() const;
+  BRIDGED_INLINE bool Class_isForeign() const;
   BRIDGED_INLINE bool ProtocolDecl_requiresClass() const;
+  BRIDGED_INLINE bool ProtocolDecl_isMarkerProtocol() const;
   BRIDGED_INLINE bool AbstractFunction_isOverridden() const;
+  BRIDGED_INLINE bool Constructor_isInheritable() const;
   BRIDGED_INLINE bool Destructor_isIsolated() const;
   BRIDGED_INLINE bool EnumElementDecl_hasAssociatedValues() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedParameterList
@@ -2985,6 +2989,22 @@ struct BridgedASTType {
     ObjC
   };
 
+  enum class FunctionTypeRepresentation {
+    Thick = 0,
+    Block,
+    Thin,
+    CFunctionPointer,
+    Method = 8,
+    ObjCMethod,
+    WitnessMethod,
+    Closure,
+    CXXMethod,
+    KeyPathAccessorGetter,
+    KeyPathAccessorSetter,
+    KeyPathAccessorEquals,
+    KeyPathAccessorHash
+  };
+
   swift::TypeBase * _Nullable type;
 
   BRIDGED_INLINE swift::Type unbridged() const;
@@ -3028,6 +3048,7 @@ struct BridgedASTType {
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedASTType getBuiltinVectorElementType() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedCanType getBuiltinFixedArrayElementType() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedCanType getBuiltinFixedArraySizeType() const;
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedASTType getOptionalType() const;
   BRIDGED_INLINE bool isBuiltinFixedWidthInteger(SwiftInt width) const;
   BRIDGED_INLINE bool isOptional() const;
   BRIDGED_INLINE bool isBuiltinType() const;
@@ -3047,6 +3068,7 @@ struct BridgedASTType {
   BRIDGED_INLINE BridgedOptionalInt getValueOfIntegerType() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedSubstitutionMap getContextSubstitutionMap() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedGenericSignature getInvocationGenericSignatureOfFunctionType() const;
+  BRIDGED_INLINE FunctionTypeRepresentation getFunctionTypeRepresentation() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedASTType subst(BridgedSubstitutionMap substMap) const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedASTType mapOutOfEnvironment() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedCanType
@@ -3060,6 +3082,8 @@ struct BridgedASTType {
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedConformance checkConformance(BridgedDeclObj proto) const;
   BRIDGED_INLINE bool containsSILPackExpansionType() const;
   BRIDGED_INLINE bool isSILPackElementAddress() const;
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedASTTypeArray
+  BoundGenericType_getGenericArgs() const;
 };
 
 class BridgedCanType {

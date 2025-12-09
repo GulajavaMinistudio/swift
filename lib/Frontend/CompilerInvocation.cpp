@@ -568,9 +568,10 @@ static void ParseModuleInterfaceArgs(ModuleInterfaceOptions &Opts,
                    OPT_disable_module_selectors_in_module_interface,
                    false);
   } else if (auto envValue = ::getenv("SWIFT_MODULE_SELECTORS_IN_INTERFACES")) {
-    Opts.UseModuleSelectors = llvm::StringSwitch<bool>(envValue)
-        .CasesLower("false", "no", "off", "0", false)
-        .Default(true);
+    Opts.UseModuleSelectors =
+        llvm::StringSwitch<bool>(envValue)
+            .CasesLower({"false", "no", "off", "0"}, false)
+            .Default(true);
   } else {
     // Any heuristics we might add would go here.
     Opts.UseModuleSelectors = false;
@@ -905,8 +906,8 @@ static bool ParseEnabledFeatureArgs(LangOptions &Opts, ArgList &Args,
 
     // If the current language mode enables the feature by default then
     // diagnose and skip it.
-    if (auto firstVersion = feature->getLanguageVersion()) {
-      if (Opts.isSwiftVersionAtLeast(*firstVersion)) {
+    if (auto firstVersion = feature->getLanguageMode()) {
+      if (Opts.isLanguageModeAtLeast(*firstVersion)) {
         Diags.diagnose(SourceLoc(),
                        diag::warning_upcoming_feature_on_by_default,
                        feature->getName(), *firstVersion);
@@ -1283,8 +1284,8 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   // Add a future feature if it is not already implied by the language version.
   auto addFutureFeatureIfNotImplied = [&](Feature feature) {
     // Check if this feature was introduced already in this language version.
-    if (auto firstVersion = feature.getLanguageVersion()) {
-      if (Opts.isSwiftVersionAtLeast(*firstVersion))
+    if (auto firstVersion = feature.getLanguageMode()) {
+      if (Opts.isLanguageModeAtLeast(*firstVersion))
         return;
     }
 
@@ -1315,6 +1316,13 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   if (ParseEnabledFeatureArgs(Opts, Args, Diags, FrontendOpts))
     HadError = true;
+
+  // Do not allow both versions of SuppressedAssociatedTypes at the same time.
+  // Pick the version with defaults if both are specified.
+  if (Opts.hasFeature(SuppressedAssociatedTypes) &&
+      Opts.hasFeature(SuppressedAssociatedTypesWithDefaults)) {
+    Opts.disableFeature(SuppressedAssociatedTypes);
+  }
 
   Opts.EnableAppExtensionLibraryRestrictions |= Args.hasArg(OPT_enable_app_extension_library);
   Opts.EnableAppExtensionRestrictions |= Args.hasArg(OPT_enable_app_extension);
@@ -1454,7 +1462,7 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   if (Args.hasFlag(OPT_enable_nonfrozen_enum_exhaustivity_diagnostics,
                    OPT_disable_nonfrozen_enum_exhaustivity_diagnostics,
-                   Opts.isSwiftVersionAtLeast(5))) {
+                   Opts.isLanguageModeAtLeast(5))) {
     Opts.enableFeature(Feature::NonfrozenEnumExhaustivity);
   }
 
@@ -1870,7 +1878,7 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
                      A->getAsString(Args), A->getValue());
       HadError = true;
     }
-  } else if (Opts.isSwiftVersionAtLeast(6)) {
+  } else if (Opts.isLanguageModeAtLeast(6)) {
     Opts.UseCheckedAsyncObjCBridging = true;
   }
 
@@ -3223,8 +3231,12 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
   if (const Arg *A = Args.getLastArg(OPT_save_optimization_record_passes))
     Opts.OptRecordPasses = A->getValue();
 
-  if (const Arg *A = Args.getLastArg(OPT_save_optimization_record_path))
-    Opts.OptRecordFile = A->getValue();
+  // Only use getLastArg for single -save-optimization-record-path.
+  // With multiple paths (multi-threaded WMO), FrontendTool will populate
+  // OptRecordFile and AuxOptRecordFiles from command-line arguments.
+  auto allOptRecordPaths = Args.getAllArgValues(OPT_save_optimization_record_path);
+  if (allOptRecordPaths.size() == 1)
+    Opts.OptRecordFile = allOptRecordPaths[0];
 
   // If any of the '-g<kind>', except '-gnone', is given,
   // tell the SILPrinter to print debug info as well

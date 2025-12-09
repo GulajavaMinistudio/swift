@@ -809,6 +809,7 @@ struct BridgedInstruction {
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedConformanceArray InitExistentialRefInst_getConformances() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedCanType InitExistentialRefInst_getFormalConcreteType() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedConformanceArray InitExistentialAddrInst_getConformances() const;
+  SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedCanType InitExistentialAddrInst_getFormalConcreteType() const;
   BRIDGED_INLINE bool OpenExistentialAddr_isImmutable() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedGlobalVar GlobalAccessInst_getGlobal() const;
   SWIFT_IMPORT_UNSAFE BRIDGED_INLINE BridgedGlobalVar AllocGlobalInst_getGlobal() const;
@@ -1627,8 +1628,12 @@ struct BridgedVerifier {
   static void runSwiftFunctionVerification(swift::SILFunction * _Nonnull f, swift::SILContext * _Nonnull context);
 
   static void registerVerifier(VerifyFunctionFn verifyFunctionFn);
-  static void verifierError(BridgedStringRef message, OptionalBridgedInstruction atInstruction,
+  static void verifierError(BridgedStringRef message,
+                            OptionalBridgedInstruction atInstruction);
+  static void verifierError(BridgedStringRef message,
                             OptionalBridgedArgument atArgument);
+  static void verifierError(BridgedStringRef message,
+                            OptionalBridgedValue atValue);
 };
 
 struct BridgedUtilities {

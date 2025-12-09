@@ -629,6 +629,21 @@ SILDeclRef LinkEntity::getSILDeclRef() const {
   return ref;
 }
 
+static bool isLazyEmissionOfPublicSymbolInMultipleModulesPossible(CanType ty) {
+  // In embedded existenitals mode we generate lazy public metadata on demand
+  // which makes it non unique.
+  if (ty->getASTContext().LangOpts.hasFeature(Feature::EmbeddedExistentials)) {
+    if (auto nominal = ty->getAnyNominal()) {
+      if (SILDeclRef::declHasNonUniqueDefinition(nominal)) {
+        return true;
+      }
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
 SILLinkage LinkEntity::getLinkage(ForDefinition_t forDefinition) const {
   // For when `this` is a protocol conformance of some kind.
   auto getLinkageAsConformance = [&] {
@@ -657,6 +672,11 @@ SILLinkage LinkEntity::getLinkage(ForDefinition_t forDefinition) const {
   // Most type metadata depend on the formal linkage of their type.
   case Kind::ValueWitnessTable: {
     auto type = getType();
+
+    // In embedded existenitals mode we generate lazy public metadata on demand
+    // which makes it non unique.
+    if (isLazyEmissionOfPublicSymbolInMultipleModulesPossible(type))
+       return SILLinkage::Shared;
 
     // Builtin types, (), () -> () and so on are in the runtime.
     if (!type.getAnyNominal())
@@ -696,11 +716,10 @@ SILLinkage LinkEntity::getLinkage(ForDefinition_t forDefinition) const {
     if (isForcedShared())
       return SILLinkage::Shared;
 
-    // In embedded existenitals mode we generate metadata for tuple types.
-    if (getType()->getASTContext().LangOpts.hasFeature(Feature::EmbeddedExistentials) &&
-        isa<TupleType>(getType())) {
+    // In embedded existenitals mode we generate lazy public metadata on demand
+    // which makes it non unique.
+    if (isLazyEmissionOfPublicSymbolInMultipleModulesPossible(getType()))
       return SILLinkage::Shared;
-    }
 
     auto *nominal = getType().getAnyNominal();
     switch (getMetadataAddress()) {
@@ -1766,7 +1785,8 @@ bool LinkEntity::hasNonUniqueDefinition() const {
       getKind() == Kind::ReadOnlyGlobalObject)
     return getSILGlobalVariable()->hasNonUniqueDefinition();
 
-  if (getKind() == Kind::TypeMetadata) {
+  if (getKind() == Kind::TypeMetadata ||
+      getKind() == Kind::ValueWitnessTable) {
     // For a nominal type, check its declaration.
     CanType type = getType();
     if (auto nominal = type->getAnyNominal()) {

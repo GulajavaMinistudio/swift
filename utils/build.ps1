@@ -279,7 +279,7 @@ $DefaultPinned = @{
   };
   ARM64 = @{
     PinnedBuild = "https://download.swift.org/development/windows10-arm64/swift-DEVELOPMENT-SNAPSHOT-2025-11-03-a/swift-DEVELOPMENT-SNAPSHOT-2025-11-03-a-windows10-arm64.exe"
-    PinnedSHA256 = "A4394A53082BC0346A0D85C6B4A52F540A29517D594288707B8C1D6BAA0B9E55";
+    PinnedSHA256 = "D3F22B491E91F65996861246262D069BFA150E55DECBCB4AEE9FC6C7FD529F18";
     PinnedVersion = "0.0.0";
   };
 }
@@ -2273,7 +2273,7 @@ function Get-CompilersDefines([Hashtable] $Platform, [string] $Variant, [switch]
     LLDB_PYTHON_EXE_RELATIVE_PATH = "python.exe";
     LLDB_PYTHON_EXT_SUFFIX = ".pyd";
     LLDB_PYTHON_RELATIVE_PATH = "lib/site-packages";
-    LLDB_PYTHON_DLL_RELATIVE_PATH = "../../../../Python-$PythonVersion";
+    LLDB_PYTHON_DLL_RELATIVE_PATH = "../../../../Python-$PythonVersion/usr/bin";
     LLDB_TABLEGEN = (Join-Path -Path $BuildTools -ChildPath "lldb-tblgen.exe");
     LLDB_TEST_MAKE = "$BinaryCache\GnuWin32Make-4.4.1\bin\make.exe";
     LLVM_CONFIG_PATH = (Join-Path -Path $BuildTools -ChildPath "llvm-config.exe");
