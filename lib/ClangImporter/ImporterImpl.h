@@ -706,6 +706,10 @@ public:
 
   bool isDefaultArgSafeToImport(const clang::ParmVarDecl *param);
 
+  bool needsClosureConstructor(const clang::CXXRecordDecl *recordDecl) const;
+
+  bool isSwiftFunctionWrapper(const clang::RecordDecl *decl) const;
+
   ValueDecl *importBaseMemberDecl(ValueDecl *decl, DeclContext *newContext,
                                   ClangInheritanceInfo inheritance);
 
@@ -966,11 +970,8 @@ public:
   ClangModuleUnit *getClangModuleForDecl(const clang::Decl *D,
                                          bool allowForwardDeclaration = false);
 
-  /// Returns the module \p MI comes from, or \c None if \p MI does not have
-  /// a valid associated module.
-  ///
-  /// The returned module may be null (but not \c None) if \p MI comes from
-  /// an imported header.
+  /// Returns the module \p Node comes from, or \c nullptr if \p Node does not
+  /// have a valid owning module.
   const clang::Module *getClangOwningModule(ClangNode Node) const;
 
   /// Whether NSUInteger can be imported as Int in certain contexts. If false,
@@ -1123,6 +1124,12 @@ public:
 
   Type applyImportTypeAttrs(ImportTypeAttrs attrs, Type type,
                  llvm::function_ref<void(Diagnostic &&)> addImportDiagnosticFn);
+
+  /// Determines whether the given Clang declaration has conflicting
+  /// Swift attributes and emits diagnostics for any violations found.
+  ///
+  /// \param decl The Clang record or function declaration to validate.
+  void validateSwiftAttributes(const clang::NamedDecl *decl);
 
   /// If we already imported a given decl, return the corresponding Swift decl.
   /// Otherwise, return nullptr.

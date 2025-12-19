@@ -293,10 +293,24 @@ void ConstraintSystem::assignFixedType(TypeVariableType *typeVar, Type type,
 
       // If the protocol has a default type, check it.
       if (auto defaultType = TypeChecker::getDefaultType(literalProtocol, DC)) {
-        // Check whether the nominal types match. This makes sure that we
-        // properly handle Array vs. Array<T>.
-        if (defaultType->getAnyNominal() != type->getAnyNominal()) {
-          increaseScore(SK_NonDefaultLiteral, locator);
+        auto isDefaultType = [&defaultType](Type type) {
+          // Check whether the nominal types match. This makes sure that we
+          // properly handle Array vs. Array<T>.
+          return defaultType->getAnyNominal() == type->getAnyNominal();
+        };
+
+        if (!isDefaultType(type)) {
+          // Treat `std.string` as a default type just like we do
+          // Swift standard library `String`. This helps to disambiguate
+          // operator overloads that use `std.string` vs. a custom C++
+          // type that conforms to `ExpressibleByStringLiteral` as well.
+          bool isCxxDefaultType =
+              literalProtocol->isSpecificProtocol(
+                  KnownProtocolKind::ExpressibleByStringLiteral) &&
+              type->isCxxString();
+
+          increaseScore(SK_NonDefaultLiteral, locator,
+                        isCxxDefaultType ? 1 : 2);
         }
       }
 
@@ -5309,10 +5323,12 @@ ConstraintSystem::inferKeyPathLiteralCapability(KeyPathExpr *keyPath) {
   return success(mutability, isSendable);
 }
 
-TypeVarBindingProducer::TypeVarBindingProducer(BindingSet &bindings)
-    : BindingProducer(bindings.getConstraintSystem(),
-                      bindings.getTypeVariable()->getImpl().getLocator()),
-      TypeVar(bindings.getTypeVariable()), CanBeNil(bindings.canBeNil()) {
+TypeVarBindingProducer::TypeVarBindingProducer(
+    ConstraintSystem &cs,
+    TypeVariableType *typeVar,
+    const BindingSet &bindings)
+    : BindingProducer(cs, typeVar->getImpl().getLocator()),
+      TypeVar(typeVar), CanBeNil(bindings.canBeNil()) {
   if (bindings.isDirectHole()) {
     auto *locator = getLocator();
     // If this type variable is associated with a code completion token
@@ -5370,8 +5386,7 @@ TypeVarBindingProducer::TypeVarBindingProducer(BindingSet &bindings)
     if (viableBindings.size() == 1) {
       addBinding(viableBindings.front());
     } else {
-      for (const auto &entry : bindings.Defaults) {
-        auto *constraint = entry.second;
+      for (auto *constraint : bindings.Defaults) {
         Bindings.push_back(getDefaultBinding(constraint));
       }
     }
@@ -5384,9 +5399,7 @@ TypeVarBindingProducer::TypeVarBindingProducer(BindingSet &bindings)
   }
 
   // Infer defaults based on "uncovered" literal protocol requirements.
-  for (const auto &info : bindings.Literals) {
-    const auto &literal = info.second;
-
+  for (const auto &literal : bindings.Literals) {
     if (!literal.viableAsBinding())
       continue;
 
@@ -5409,8 +5422,7 @@ TypeVarBindingProducer::TypeVarBindingProducer(BindingSet &bindings)
   {
     bool noBindings = Bindings.empty();
 
-    for (const auto &entry : bindings.Defaults) {
-      auto *constraint = entry.second;
+    for (auto *constraint : bindings.Defaults) {
       if (noBindings) {
         // If there are no direct or transitive bindings to attempt
         // let's add defaults to the list right away.

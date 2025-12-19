@@ -295,6 +295,9 @@ def dependency_scan_cache_path : Separate<["-"], "dependency-scan-cache-path">,
 def dependency_scan_cache_remarks : Flag<["-"], "Rdependency-scan-cache">,
   HelpText<"Emit remarks indicating use of the serialized module dependency scanning cache.">;
 
+def dependency_scan_remarks : Flag<["-"], "Rdependency-scan">,
+  HelpText<"Emit remarks for various steps taken by the dependency scanner.">;
+
 def parallel_scan : Flag<["-"], "parallel-scan">,
    HelpText<"Perform dependency scanning in-parallel.">;
 def no_parallel_scan : Flag<["-"], "no-parallel-scan">,
@@ -1596,6 +1599,10 @@ def gen_reproducer : Flag<["-"], "gen-reproducer">,
 def gen_reproducer_dir
     : Separate<["-"], "gen-reproducer-dir">,
       HelpText<"Path to directory where reproducers write to.">;
+
+def disable_embedded_existentials
+    : Flag<["-"], "disable-embedded-existentials">,
+      HelpText<"Disable embedded existential support.">;
 
 } // end let Flags = [FrontendOption, NoDriverOption, HelpHidden]
 
