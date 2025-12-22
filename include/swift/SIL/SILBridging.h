@@ -290,7 +290,9 @@ struct BridgedType {
   BRIDGED_INLINE bool isEscapable(BridgedFunction f) const;
   BRIDGED_INLINE bool isExactSuperclassOf(BridgedType t) const;
   BRIDGED_INLINE bool isMarkedAsImmortal() const;
+  BRIDGED_INLINE bool isHeapObjectReferenceType() const;
   BRIDGED_INLINE bool isAddressableForDeps(BridgedFunction f) const;
+  bool isAutodiffBranchTracingEnumInVJP(BridgedFunction vjp) const;
   BRIDGED_INLINE SWIFT_IMPORT_UNSAFE BridgedASTType getRawLayoutSubstitutedLikeType() const;
   BRIDGED_INLINE SWIFT_IMPORT_UNSAFE BridgedASTType getRawLayoutSubstitutedCountType() const;
   BRIDGED_INLINE bool mayHaveCustomDeinit(BridgedFunction f) const;
@@ -594,6 +596,7 @@ struct BridgedFunction {
   bool isConvertPointerToPointerArgument() const;
   bool isAddressor() const;
   bool isAutodiffVJP() const;
+  bool isAutodiffSubsetParametersThunk() const;
   SwiftInt specializationLevel() const;
   SWIFT_IMPORT_UNSAFE BridgedSubstitutionMap getMethodSubstitutions(BridgedSubstitutionMap contextSubs,
                                                                     BridgedCanType selfType) const;
