@@ -491,10 +491,13 @@ public:
 
   const Version CurrentVersion;
 
-  constexpr static const char * const moduleImportBufferName =
-    "<swift-imported-modules>";
-  constexpr static const char * const bridgingHeaderBufferName =
-    "<bridging-header-import>";
+  constexpr static const char *const moduleImportBufferName =
+      "<swift-imported-modules>";
+  constexpr static const char *const bridgingHeaderBufferName =
+      "<bridging-header-import>";
+  /// The name of system vfsoverlay.
+  constexpr static const char *const clangSystemVFSOverlayName =
+      "<clang-system-vfs-overlay>";
 
 private:
   DiagnosticWalker Walker;
@@ -624,6 +627,11 @@ public:
   /// Writes the mangled name of \p clangDecl to \p os.
   void getMangledName(clang::MangleContext *mangler,
                       const clang::NamedDecl *clangDecl, raw_ostream &os);
+
+  /// Writes the Itanium mangled name (even on platforms that do not use Itanium
+  /// mangling, such as Windows) of \p clangDecl to \p os.
+  void getItaniumMangledName(const clang::NamedDecl *clangDecl,
+                             raw_ostream &os);
 
 private:
   /// The Importer may be configured to load modules of a different OS Version
@@ -973,10 +981,6 @@ public:
   /// Clang decl.
   ClangModuleUnit *getClangModuleForDecl(const clang::Decl *D,
                                          bool allowForwardDeclaration = false);
-
-  /// Returns the module \p Node comes from, or \c nullptr if \p Node does not
-  /// have a valid owning module.
-  const clang::Module *getClangOwningModule(ClangNode Node) const;
 
   /// Whether NSUInteger can be imported as Int in certain contexts. If false,
   /// should always be imported as UInt.
@@ -2016,6 +2020,7 @@ void getNormalInvocationArguments(std::vector<std::string> &invocationArgStrs,
 void addCommonInvocationArguments(std::vector<std::string> &invocationArgStrs,
                                   ASTContext &ctx,
                                   bool requiresBuiltinHeadersInSystemModules,
+                                  bool needSystemVFSOverlay,
                                   bool ignoreClangTarget);
 
 /// Finds a particular kind of nominal by looking through typealiases.
@@ -2237,6 +2242,13 @@ const clang::RecordDecl *
 getRefParentOrDiag(const clang::RecordDecl *decl, ASTContext &ctx,
                    ClangImporter::Implementation *importerImpl);
 
+
+/// Returns the module \p Node comes from, or \c nullptr if \p Node does not
+/// have a valid owning module.
+///
+/// Note that \p Node cannot itself be a clang::Module.
+const clang::Module *getClangOwningModule(ClangNode Node,
+                                          const clang::ASTContext &ClangCtx);
 } // end namespace importer
 } // end namespace swift
 

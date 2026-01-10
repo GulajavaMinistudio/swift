@@ -150,7 +150,7 @@ func alignedAlloc(size: Int, alignment: Int) -> UnsafeMutableRawPointer? {
 }
 
 @c
-public func swift_coroFrameAlloc(_ size: Int, _ type: UInt) -> UnsafeMutableRawPointer? {
+public func swift_coroFrameAlloc(_ size: Int, _ type: UInt64) -> UnsafeMutableRawPointer? {
   return unsafe alignedAlloc(
     size: size,
     alignment: _swift_MinAllocationAlignment)
@@ -649,20 +649,6 @@ fileprivate func storeRelease(_ atomic: UnsafeMutablePointer<Int>, newValue: Int
 fileprivate func storeRelaxed(_ atomic: UnsafeMutablePointer<Int>, newValue: Int) {
   Builtin.atomicstore_monotonic_Word(atomic._rawValue, newValue._builtinWordValue)
 }
-
-/// Exclusivity checking
-
-@c
-public func swift_beginAccess(pointer: UnsafeMutableRawPointer, buffer: UnsafeMutableRawPointer, flags: UInt, pc: UnsafeMutableRawPointer) {
-  // TODO: Add actual exclusivity checking.
-}
-
-@c
-public func swift_endAccess(buffer: UnsafeMutableRawPointer) {
-  // TODO: Add actual exclusivity checking.
-}
-
-
 
 // Once
 
